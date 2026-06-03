@@ -1,7 +1,7 @@
 import streamlit as st
 
 from core.models import get_db, Novel, Chapter, Collaborator
-from core.workflow import create_new_novel
+from core.workflow import create_new_novel, delete_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key
 from core.agents import IdeaAgent
 from core.permissions import generate_invite_code
@@ -49,7 +49,6 @@ def page_project_management():
                         st.write("")
                         st.write("")
                         if st.button("打开", key=f"open_{novel.id}", use_container_width=True, type="primary"):
-                            # 查找协作者身份
                             db = get_db()
                             collab = db.query(Collaborator).filter_by(
                                 novel_id=novel.id,
@@ -68,6 +67,40 @@ def page_project_management():
                                 st.rerun()
                             else:
                                 st.warning(f"你尚未加入项目「{novel.title}」，请通过邀请码加入。")
+
+                        # 删除按钮（仅 owner 可见）
+                        identity = st.session_state.get("collab_identity") or {}
+                        is_owner = (identity.get("role") == "owner" and
+                                    identity.get("novel_id") == novel.id)
+                        # 也对项目列表中当前用户是 owner 的项目显示（查 DB）
+                        if not is_owner:
+                            db = get_db()
+                            own_collab = db.query(Collaborator).filter_by(
+                                novel_id=novel.id,
+                                display_name=st.session_state["collab_display_name"],
+                                role="owner"
+                            ).first()
+                            db.close()
+                            is_owner = own_collab is not None
+                        if is_owner:
+                            if st.button("🗑️ 删除", key=f"del_{novel.id}", use_container_width=True):
+                                st.session_state["confirm_delete_id"] = novel.id
+
+                # 删除确认弹窗（在卡片外渲染，避免嵌套问题）
+                if st.session_state.get("confirm_delete_id") == novel.id:
+                    with st.container(border=True):
+                        st.warning(f"⚠️ 确认删除「{novel.title}」？此操作不可恢复，所有章节、人物、大纲数据将永久删除。")
+                        c1, c2 = st.columns(2)
+                        if c1.button("确认删除", key=f"confirm_del_{novel.id}", type="primary"):
+                            delete_novel(novel.id)
+                            if st.session_state.get("novel_id") == novel.id:
+                                st.session_state.novel_id = None
+                                st.session_state["collab_identity"] = None
+                            st.session_state["confirm_delete_id"] = None
+                            st.rerun()
+                        if c2.button("取消", key=f"cancel_del_{novel.id}"):
+                            st.session_state["confirm_delete_id"] = None
+                            st.rerun()
 
         # 加入项目（通过邀请码）
         st.divider()

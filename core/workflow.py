@@ -993,3 +993,124 @@ def load_novel(novel_id: int) -> "NovelWorkflow":
     加载已有小说项目
     """
     return NovelWorkflow(novel_id)
+
+
+def delete_novel(novel_id: int):
+    """
+    删除小说项目及所有关联数据
+    - 手动删无 cascade 的 NovelOutline / Comment
+    - ORM delete Novel 触发 SQLAlchemy cascade（chapters/characters/volumes/foreshadowings 等）
+    - 清理 LanceDB 向量片段
+    """
+    from core.models import Comment
+    from core.memory import _get_lancedb, TABLE_NAME
+
+    db = get_db()
+    try:
+        db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).delete()
+        db.query(Comment).filter(Comment.novel_id == novel_id).delete()
+        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+        if novel:
+            db.delete(novel)
+        db.commit()
+    finally:
+        db.close()
+
+    # 清理 LanceDB 向量
+    try:
+        ldb = _get_lancedb()
+        if TABLE_NAME in ldb.table_names():
+            table = ldb.open_table(TABLE_NAME)
+            table.delete(f"novel_id = {novel_id}")
+    except Exception:
+        pass  # 向量清理失败不影响主流程
+
+
+class NovelWorkflowImportMixin:
+    """文档导入功能（混入 NovelWorkflow）"""
+
+    def import_document_data(self, parsed: dict) -> WorkflowResult:
+        """
+        将 OutlineAgent.parse_document() 返回的结构化数据写入数据库
+
+        Args:
+            parsed: {total_outline, world_setting, characters, chapters}
+
+        Returns:
+            WorkflowResult with summary of what was written
+        """
+        summary = []
+        mem = self.memory.global_mem
+
+        # 整体大纲（只覆盖非空字段）
+        total_outline = parsed.get("total_outline", {})
+        if any(v for v in total_outline.values() if v):
+            existing = mem.get_outline()
+            outline_data = {}
+            fields = ["premise", "theme", "main_conflict", "protagonist_arc",
+                      "ending_summary", "story_structure"]
+            for f in fields:
+                val = total_outline.get(f)
+                if val:
+                    outline_data[f] = json.dumps(val, ensure_ascii=False) if isinstance(val, dict) else val
+            if outline_data:
+                if existing:
+                    outline_data["novel_id"] = self.novel_id
+                mem.save_outline(outline_data)
+                summary.append(f"整体大纲：更新了 {len(outline_data)} 个字段")
+
+        # 世界观设定（与已有内容合并，不覆盖已填字段）
+        world_setting = parsed.get("world_setting", {})
+        if world_setting:
+            existing_ws = mem.get_world_setting() or {}
+            merged = {**world_setting, **existing_ws}  # 已有的优先
+            mem.save_world_setting(merged)
+            new_keys = [k for k in world_setting if k not in existing_ws]
+            summary.append(f"世界观：新增 {len(new_keys)} 个条目")
+
+        # 人物档案（跳过已存在同名角色）
+        characters = parsed.get("characters", [])
+        added_chars = 0
+        for char_data in characters:
+            name = char_data.get("name", "").strip()
+            if not name:
+                continue
+            existing_char = mem.get_character(name)
+            if existing_char:
+                continue  # 不覆盖已有角色
+            # 过滤掉空字段
+            clean = {k: v for k, v in char_data.items() if v and k != "novel_id"}
+            clean["novel_id"] = self.novel_id
+            mem.save_character(clean)
+            added_chars += 1
+        if added_chars:
+            summary.append(f"人物：新增 {added_chars} 个")
+
+        # 章节大纲（更新或新建）
+        chapters = parsed.get("chapters", [])
+        updated_chapters = 0
+        for ch_data in chapters:
+            ch_num = ch_data.get("chapter_number")
+            if not ch_num:
+                continue
+            clean = {k: v for k, v in ch_data.items() if v and k != "novel_id"}
+            clean["novel_id"] = self.novel_id
+            # list 类型字段转 JSON string
+            for list_field in ["outline_characters", "outline_foreshadowing_set", "outline_foreshadowing_collect"]:
+                if isinstance(clean.get(list_field), list):
+                    clean[list_field] = json.dumps(clean[list_field], ensure_ascii=False)
+            existing_ch = mem.get_chapter_outline(ch_num)
+            if not existing_ch:
+                clean.setdefault("status", "outlined")
+            mem.save_chapter_outline(clean)
+            updated_chapters += 1
+        if updated_chapters:
+            summary.append(f"章节大纲：写入 {updated_chapters} 章")
+
+        if not summary:
+            return WorkflowResult(success=False, message="未从文档中提取到任何有效信息")
+        return WorkflowResult(success=True, message="，".join(summary))
+
+
+# 将 import_document_data 混入 NovelWorkflow
+NovelWorkflow.import_document_data = NovelWorkflowImportMixin.import_document_data

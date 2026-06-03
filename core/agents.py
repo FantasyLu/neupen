@@ -198,6 +198,78 @@ class OutlineAgent:
             return json.loads(response[json_start:json_end])
         return {}
 
+    PARSE_DOCUMENT_PROMPT = """你是一位专业的小说编辑，擅长从自由格式的大纲或设定文档中识别并提取结构化信息。
+
+你的任务：阅读用户提供的文档，识别其中包含的内容（整体大纲、世界观设定、人物档案、章节大纲），并将其结构化输出为 JSON。
+
+输出规则：
+- 只提取文档中实际存在的信息，不要凭空编造或补全
+- 文档里没有提到的字段留为空字符串或空数组，不要填入
+- 输出合法 JSON，不含其他文字
+
+输出格式：
+{
+  "total_outline": {
+    "premise": "前提设定",
+    "theme": "核心主题",
+    "main_conflict": "全书主要矛盾",
+    "protagonist_arc": "主角成长弧光",
+    "ending_summary": "结局概要",
+    "story_structure": {"act1": "第一幕", "act2": "第二幕", "act3": "第三幕"}
+  },
+  "world_setting": {
+    "键名": "对应的设定内容"
+  },
+  "characters": [
+    {
+      "name": "姓名",
+      "role": "主角/配角/反派等",
+      "age": "",
+      "gender": "",
+      "personality": "",
+      "background": "",
+      "appearance": "",
+      "motivations": "",
+      "relationships": "",
+      "is_main": true
+    }
+  ],
+  "chapters": [
+    {
+      "chapter_number": 1,
+      "title": "",
+      "outline_core_event": "",
+      "outline_conflict": "",
+      "outline_scene": "",
+      "outline_emotion": ""
+    }
+  ]
+}
+
+如果某一大类（如 characters）文档中完全没有涉及，输出空数组 []。
+total_outline 和 world_setting 的字段若文档未提及则留空字符串。"""
+
+    def parse_document(self, document_text: str) -> dict:
+        """
+        解析用户提供的自由格式大纲/设定文档，识别并提取各类结构化信息
+
+        Returns:
+            dict with keys: total_outline, world_setting, characters, chapters
+        """
+        user_prompt = f"""请解析以下文档，提取其中的结构化信息：
+
+{document_text[:12000]}{"...(内容过长已截断)" if len(document_text) > 12000 else ""}"""
+
+        response = self.llm.generate(
+            self.PARSE_DOCUMENT_PROMPT, user_prompt,
+            max_tokens=8192, cache_system=False
+        )
+        json_start = response.find("{")
+        json_end = response.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            return json.loads(response[json_start:json_end])
+        raise ValueError(f"文档解析返回格式错误：{response[:300]}")
+
     def close(self):
         self.memory.close()
 
