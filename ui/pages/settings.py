@@ -7,7 +7,7 @@ import json
 
 import streamlit as st
 
-from core.models import get_db, Novel, Chapter, Character, Foreshadowing
+from core.models import get_db, Novel, Chapter, Character, Foreshadowing, NovelDocument
 from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
@@ -31,10 +31,131 @@ def page_settings():
         st.error("项目不存在")
         return
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 世界观设定", "👤 人物档案", "📌 伏笔管理", "🤖 模型设置", "✍️ 风格迁移", "🔑 API Key"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📄 文档设定", "🌍 世界观设定", "👤 人物档案", "📌 伏笔管理", "🤖 模型设置", "✍️ 风格迁移", "🔑 API Key"])
+
+    # ---- 文档设定 ----
+    with tab1:
+        st.markdown("### 📄 文档设定")
+        st.caption("以自由 Markdown 格式记录小说的背景设定、科技/魔法体系、人物设定等，供创作时参考")
+
+        db = get_db()
+        docs = db.query(NovelDocument).filter(
+            NovelDocument.novel_id == novel_id
+        ).order_by(NovelDocument.sort_order, NovelDocument.id).all()
+        db.close()
+
+        doc_map = {d.doc_type: d for d in docs}
+
+        # 预置三种文档类型（不存在时自动初始化空文档）
+        DEFAULT_DOC_TYPES = [
+            ("background",  "🌍 背景设定",       0),
+            ("system",      "⚡ 科技/魔法体系",   1),
+            ("characters",  "👤 人物设定",        2),
+        ]
+
+        for doc_type, doc_label, sort_idx in DEFAULT_DOC_TYPES:
+            doc = doc_map.get(doc_type)
+            content_val = doc.content if doc else ""
+
+            with st.expander(doc_label, expanded=(not content_val)):
+                view_mode = st.radio(
+                    "模式", ["✏️ 编辑", "👁️ 预览"],
+                    horizontal=True, key=f"docmode_{doc_type}",
+                    label_visibility="collapsed"
+                )
+                if view_mode == "✏️ 编辑":
+                    new_content = st.text_area(
+                        "内容", value=content_val, height=320,
+                        placeholder=f"在此以 Markdown 格式记录{doc_label.split(' ', 1)[-1]}…",
+                        key=f"doctxt_{doc_type}", label_visibility="collapsed"
+                    )
+                    if st.button("💾 保存", key=f"docsave_{doc_type}",
+                                 disabled=not can_edit(novel_id), use_container_width=True):
+                        db = get_db()
+                        existing = db.query(NovelDocument).filter_by(
+                            novel_id=novel_id, doc_type=doc_type
+                        ).first()
+                        if existing:
+                            existing.content = new_content
+                        else:
+                            db.add(NovelDocument(
+                                novel_id=novel_id, doc_type=doc_type,
+                                title=doc_label.split(" ", 1)[-1],
+                                content=new_content, sort_order=sort_idx
+                            ))
+                        db.commit()
+                        db.close()
+                        st.success("✅ 已保存")
+                        st.rerun()
+                else:
+                    if content_val:
+                        st.markdown(content_val)
+                    else:
+                        st.info("暂无内容，切换到「编辑」模式开始记录")
+
+        # 自定义文档
+        custom_docs = [d for d in docs if d.doc_type == "custom"]
+        if custom_docs:
+            st.divider()
+            st.markdown("**自定义文档**")
+            for cdoc in custom_docs:
+                with st.expander(f"📝 {cdoc.title}", expanded=False):
+                    view_mode = st.radio(
+                        "模式", ["✏️ 编辑", "👁️ 预览"],
+                        horizontal=True, key=f"docmode_c{cdoc.id}",
+                        label_visibility="collapsed"
+                    )
+                    if view_mode == "✏️ 编辑":
+                        new_title = st.text_input("标题", value=cdoc.title, key=f"cdtitle_{cdoc.id}")
+                        new_content = st.text_area(
+                            "内容", value=cdoc.content or "", height=280,
+                            key=f"cdtxt_{cdoc.id}", label_visibility="collapsed"
+                        )
+                        col_save, col_del = st.columns([3, 1])
+                        if col_save.button("💾 保存", key=f"cdsave_{cdoc.id}",
+                                           disabled=not can_edit(novel_id), use_container_width=True):
+                            db = get_db()
+                            obj = db.query(NovelDocument).filter_by(id=cdoc.id).first()
+                            obj.title = new_title.strip() or obj.title
+                            obj.content = new_content
+                            db.commit()
+                            db.close()
+                            st.success("✅ 已保存")
+                            st.rerun()
+                        if col_del.button("🗑️", key=f"cddel_{cdoc.id}",
+                                          disabled=not can_edit(novel_id), use_container_width=True):
+                            db = get_db()
+                            db.query(NovelDocument).filter_by(id=cdoc.id).delete()
+                            db.commit()
+                            db.close()
+                            st.rerun()
+                    else:
+                        if cdoc.content:
+                            st.markdown(cdoc.content)
+                        else:
+                            st.info("暂无内容")
+
+        st.divider()
+        with st.form("new_doc_form"):
+            st.markdown("**➕ 新增自定义文档**")
+            new_doc_title = st.text_input("文档标题", placeholder="例如：门派体系、宗教设定…")
+            if st.form_submit_button("新增", disabled=not can_edit(novel_id)):
+                if new_doc_title.strip():
+                    db = get_db()
+                    db.add(NovelDocument(
+                        novel_id=novel_id, doc_type="custom",
+                        title=new_doc_title.strip(),
+                        content="",
+                        sort_order=len(custom_docs) + 10
+                    ))
+                    db.commit()
+                    db.close()
+                    st.rerun()
+                else:
+                    st.warning("请输入文档标题")
 
     # ---- 世界观设定 ----
-    with tab1:
+    with tab2:
         st.markdown("### 世界观设定")
         world_setting = novel.get_world_setting() if novel.world_setting else {}
 
@@ -102,7 +223,7 @@ def page_settings():
             st.rerun()
 
     # ---- 人物档案 ----
-    with tab2:
+    with tab3:
         db = get_db()
         chars = db.query(Character).filter(Character.novel_id == novel_id).order_by(
             Character.is_main.desc(), Character.name
@@ -195,7 +316,7 @@ def page_settings():
                                     st.error(result.message)
 
     # ---- 伏笔管理 ----
-    with tab3:
+    with tab4:
         db = get_db()
         fs_list = db.query(Foreshadowing).filter(
             Foreshadowing.novel_id == novel_id
@@ -359,7 +480,7 @@ def page_settings():
                     st.warning("请输入伏笔名称")
 
     # ---- 模型设置 ----
-    with tab4:
+    with tab5:
         # ── 区块 1：项目默认模型 ──────────────────────────────────────
         st.markdown("### 🤖 项目默认模型")
         st.caption("所有未单独配置的 Agent 均跟随此模型")
@@ -492,7 +613,7 @@ def page_settings():
         render_all_models_panel()
 
     # ---- 风格迁移 ----
-    with tab5:
+    with tab6:
         st.markdown("### ✍️ 风格迁移")
         st.caption("上传喜欢的作家作品片段，AI 自动提取写作风格特征，润色时将自动模仿该风格")
 
@@ -653,7 +774,7 @@ def page_settings():
                         + ("..." if len(novel_fresh.style_reference_text) > 1000 else ""))
 
     # ---- API Key 配置 ----
-    with tab6:
+    with tab7:
         st.markdown("### 🔑 API Key 配置")
         st.caption("在此管理各大模型提供商的 API Key，保存后立即生效，无需重启应用")
         render_api_key_form("settings_api_key_form")

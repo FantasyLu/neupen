@@ -72,6 +72,7 @@ class Novel(Base):
     foreshadowings = relationship("Foreshadowing", back_populates="novel", cascade="all, delete-orphan")
     timeline_events = relationship("TimelineEvent", back_populates="novel", cascade="all, delete-orphan")
     collaborators = relationship("Collaborator", back_populates="novel", cascade="all, delete-orphan")
+    documents = relationship("NovelDocument", back_populates="novel", cascade="all, delete-orphan")
 
     def get_world_setting(self) -> dict:
         """获取世界观设定（反序列化）"""
@@ -349,6 +350,28 @@ class NovelOutline(Base):
 
     def __repr__(self):
         return f"<NovelOutline novel_id={self.novel_id}>"
+
+
+class NovelDocument(Base):
+    """小说设定文档表（自由格式 Markdown，与结构化字段并存）"""
+    __tablename__ = "novel_documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, ForeignKey("novels.id"), nullable=False)
+    doc_type = Column(String(50), nullable=False,
+                      comment="文档类型：background / system / characters / custom")
+    title = Column(String(200), nullable=False, comment="文档标题")
+    content = Column(Text, default="", comment="Markdown 格式内容")
+    sort_order = Column(Integer, default=0, comment="排序序号")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    novel = relationship("Novel", back_populates="documents")
+
+    __table_args__ = (UniqueConstraint("novel_id", "doc_type", "title"),)
+
+    def __repr__(self):
+        return f"<NovelDocument novel_id={self.novel_id} type={self.doc_type} title={self.title}>"
 
 
 class Collaborator(Base):
