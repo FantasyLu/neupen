@@ -867,3 +867,85 @@ class ReaderAgent:
 
     def close(self):
         self.memory.close()
+
+
+# ======================================
+# Agent 7: 灵感对话
+# ======================================
+
+class IdeaAgent:
+    """
+    灵感对话 Agent
+    职责：通过多轮对话帮助用户将模糊灵感整理成结构化的小说方案
+    - 每轮只问一个问题，自然引导
+    - 信息足够时在回复末尾追加 [READY] 标记
+    - 支持从对话历史提取结构化项目配置
+    """
+
+    SYSTEM_PROMPT = """你是一位亲切的资深小说编辑，正在和一位有创作灵感的作者聊天。
+
+你的目标是通过轻松的对话，帮助对方把脑海中模糊的故事想法整理清楚。你需要了解：
+- 故事的核心：发生了什么事、主角是谁、有什么冲突
+- 大致风格：是爽文还是文学向，古风还是现代
+- 规模感：短篇还是长篇
+
+聊天原则：
+1. 语气轻松自然，像朋友聊天，不像填表格
+2. 每次只问一件事，不要一口气抛出多个问题
+3. 先让对方说，多倾听，适时引导
+4. 如果对方说得很笼统，帮他举例或追问细节
+5. 不需要每个信息都集齐，故事核心（梗概）+ 风格方向 + 大致篇幅 就够了
+
+当你认为已经掌握足够信息可以创建项目时（通常3-4轮对话后），在回复的最后一行单独追加：
+[READY]
+
+这个标记不要解释，用户看不到它，系统会自动识别。"""
+
+    EXTRACT_PROMPT = """根据以下对话记录，提取小说项目的关键信息，输出JSON格式。
+
+要求：
+- title：从对话中提炼一个简洁有力的标题，如果用户没提就根据故事自拟
+- logline：用一句话概括核心故事（主角+处境+目标/冲突），80字以内
+- genre：从以下选项中选最合适的一个：玄幻、修仙、都市、言情、悬疑、历史、科幻、末世、游戏、其他
+- writing_style：根据对话推断的风格偏好，例如"节奏明快，爽感优先"或"细腻写实，注重人物心理"，如无明显偏好则留空字符串
+- total_chapters：根据故事规模推断，短篇50-80章，中篇100-150章，长篇200章以上，默认100
+
+只输出JSON，不含其他文字：
+{
+  "title": "...",
+  "logline": "...",
+  "genre": "...",
+  "writing_style": "...",
+  "total_chapters": 100
+}"""
+
+    def __init__(self, model_id: str = None):
+        self.llm = NovelLLM(model_id)
+
+    def chat(self, messages: list) -> str:
+        """
+        多轮对话，返回 AI 回复
+        messages: [{"role": "user"/"assistant", "content": "..."}]
+        回复末尾可能含 [READY] 标记，调用方负责检测和剥离
+        """
+        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024)
+
+    def extract_project_config(self, messages: list) -> dict:
+        """
+        从对话历史中提取结构化项目配置
+        返回: {title, logline, genre, writing_style, total_chapters}
+        """
+        history_text = "\n".join(
+            f"{'用户' if m['role'] == 'user' else 'AI'}：{m['content']}"
+            for m in messages
+        )
+        user_prompt = f"【对话记录】\n{history_text}"
+        response = self.llm.generate(
+            self.EXTRACT_PROMPT, user_prompt,
+            max_tokens=1024, cache_system=False
+        )
+        json_start = response.find("{")
+        json_end = response.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            return json.loads(response[json_start:json_end])
+        raise ValueError(f"项目配置提取失败：{response[:300]}")

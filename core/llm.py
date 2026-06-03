@@ -376,6 +376,39 @@ class NovelLLM:
         else:
             yield from self._stream_openai(system_prompt, user_prompt, max_tokens)
 
+    def generate_chat(self, system_prompt: str, messages: list,
+                      max_tokens: int = 4096) -> str:
+        """
+        多轮对话接口
+        messages 格式: [{"role": "user"/"assistant", "content": "..."}]
+        """
+        if self.provider == "anthropic":
+            try:
+                import anthropic as _anthropic
+                response = self.client.messages.create(
+                    model=self.model_id,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=messages,
+                )
+                return response.content[0].text
+            except _anthropic.RateLimitError:
+                raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
+            except _anthropic.AuthenticationError:
+                raise RuntimeError("❌ Anthropic API Key 无效，请检查 ANTHROPIC_API_KEY")
+            except Exception as e:
+                raise RuntimeError(f"Anthropic API 调用失败：{e}")
+        else:
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model_id,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "system", "content": system_prompt}] + messages,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
+
     # ── Anthropic 后端 ──────────────────────────────────────────────
 
     def _generate_anthropic(self, system_prompt: str, user_prompt: str,

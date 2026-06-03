@@ -3,6 +3,7 @@ import streamlit as st
 from core.models import get_db, Novel, Chapter, Collaborator
 from core.workflow import create_new_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key
+from core.agents import IdeaAgent
 from core.permissions import generate_invite_code
 from ui.helpers import get_all_novels, format_status, format_approval_badge
 from ui.components.model_selector import build_model_options, render_model_card
@@ -11,7 +12,7 @@ from ui.components.model_selector import build_model_options, render_model_card
 def page_project_management():
     st.title("🏠 项目管理")
 
-    tab1, tab2 = st.tabs(["📚 我的项目", "➕ 新建项目"])
+    tab1, tab2, tab3 = st.tabs(["📚 我的项目", "➕ 新建项目", "💡 灵感对话"])
 
     with tab1:
         novels = get_all_novels()
@@ -230,3 +231,146 @@ def page_project_management():
                                 st.rerun()
                         except Exception as e:
                             st.error(f"创建失败：{e}")
+
+    with tab3:
+        st.markdown("### 💡 灵感对话")
+        st.caption("有什么故事想法？随便说说，AI 帮你理清思路，整理好后一键创建项目。")
+
+        # 选择对话用的模型
+        options, label_map = build_model_options()
+        default_label_idx = 0
+        for i, label in enumerate(options):
+            if label_map[label] == DEFAULT_MODEL_ID:
+                default_label_idx = i
+                break
+        chat_model_label = st.selectbox(
+            "对话模型", options, index=default_label_idx,
+            key="idea_model_select",
+            help="用于灵感对话和提取项目信息"
+        )
+        chat_model_id = label_map.get(chat_model_label, DEFAULT_MODEL_ID)
+
+        ok, err_msg = check_api_key(chat_model_id)
+        if not ok:
+            st.warning(f"所选模型的 API Key 未配置：{err_msg}")
+        else:
+            history: list = st.session_state.idea_chat_history
+
+            # 初始化开场白
+            if not history:
+                opening = "你好！有什么故事灵感想聊聊吗？可以是一句话、一个场景、甚至只是一种感觉——随便说说就行～"
+                history.append({"role": "assistant", "content": opening})
+
+            # 渲染历史消息
+            for msg in history:
+                with st.chat_message(msg["role"]):
+                    st.write(msg["content"])
+
+            # 用户输入
+            user_input = st.chat_input("说说你的想法…")
+            if user_input:
+                history.append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.write(user_input)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("思考中…"):
+                        try:
+                            agent = IdeaAgent(model_id=chat_model_id)
+                            raw_reply = agent.chat(history)
+                        except Exception as e:
+                            st.error(f"对话失败：{e}")
+                            history.pop()  # 移除刚加的用户消息
+                            st.stop()
+
+                # 检测并剥离 [READY] 标记
+                if "[READY]" in raw_reply:
+                    st.session_state.idea_agent_ready = True
+                    reply = raw_reply.replace("[READY]", "").rstrip()
+                else:
+                    reply = raw_reply
+
+                history.append({"role": "assistant", "content": reply})
+                with st.chat_message("assistant"):
+                    st.write(reply)
+                st.session_state.idea_chat_history = history
+                st.rerun()
+
+            # 用户消息 >= 2 条或 AI 已发出 READY 信号时，显示创建按钮
+            user_msg_count = sum(1 for m in history if m["role"] == "user")
+            if user_msg_count >= 2 or st.session_state.idea_agent_ready:
+                st.divider()
+                col_btn, col_clear = st.columns([3, 1])
+                with col_btn:
+                    if st.button("✅ 整理完了，创建项目并生成大纲", type="primary", use_container_width=True):
+                        with st.spinner("正在从对话中提取项目信息…"):
+                            try:
+                                agent = IdeaAgent(model_id=chat_model_id)
+                                config = agent.extract_project_config(history)
+                            except Exception as e:
+                                st.error(f"信息提取失败：{e}")
+                                st.stop()
+
+                        title = config.get("title", "未命名").strip() or "未命名"
+                        logline = config.get("logline", "").strip()
+                        genre = config.get("genre", "其他")
+                        writing_style = config.get("writing_style", "")
+                        total_chapters = int(config.get("total_chapters", 100))
+
+                        st.info(f"**标题**：{title}  |  **类型**：{genre}  |  **章节**：{total_chapters} 章\n\n**梗概**：{logline}")
+
+                        with st.spinner("正在创建项目…"):
+                            try:
+                                workflow = create_new_novel(
+                                    title, logline, genre, writing_style,
+                                    llm_model=chat_model_id
+                                )
+                                st.session_state.novel_id = workflow.novel_id
+
+                                db = get_db()
+                                novel_obj = db.query(Novel).filter(Novel.id == workflow.novel_id).first()
+                                invite_code = generate_invite_code()
+                                novel_obj.invite_code = invite_code
+                                owner = Collaborator(
+                                    novel_id=workflow.novel_id,
+                                    display_name=st.session_state["collab_display_name"],
+                                    role="owner",
+                                )
+                                db.add(owner)
+                                db.commit()
+                                db.refresh(owner)
+                                st.session_state["collab_identity"] = {
+                                    "collaborator_id": owner.id,
+                                    "novel_id": workflow.novel_id,
+                                    "display_name": owner.display_name,
+                                    "role": "owner",
+                                }
+                                db.close()
+
+                                progress_placeholder = st.empty()
+                                def progress_cb(msg):
+                                    progress_placeholder.info(msg)
+
+                                result = workflow.generate_outline(
+                                    total_chapters=total_chapters,
+                                    progress_callback=progress_cb
+                                )
+                                workflow.close()
+                                progress_placeholder.empty()
+
+                                if result.success:
+                                    # 清空对话历史
+                                    st.session_state.idea_chat_history = []
+                                    st.session_state.idea_agent_ready = False
+                                    st.success(f"✅ 项目「{title}」创建成功！")
+                                    st.session_state.page = "大纲管理"
+                                    st.rerun()
+                                else:
+                                    st.error(f"大纲生成失败：{result.message}")
+                            except Exception as e:
+                                st.error(f"创建失败：{e}")
+                with col_clear:
+                    if st.button("🗑️ 重新开始", use_container_width=True):
+                        st.session_state.idea_chat_history = []
+                        st.session_state.idea_agent_ready = False
+                        st.rerun()
