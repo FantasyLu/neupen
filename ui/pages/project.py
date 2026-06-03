@@ -6,7 +6,7 @@ from core.llm import DEFAULT_MODEL_ID, check_api_key
 from core.agents import IdeaAgent
 from core.permissions import generate_invite_code
 from ui.helpers import get_all_novels, format_status, format_approval_badge
-from ui.components.model_selector import build_model_options, render_model_card
+from ui.components.model_selector import build_model_options
 
 
 def page_project_management():
@@ -159,11 +159,6 @@ def page_project_management():
 
             generate_outline = st.checkbox("创建后立即生成大纲", value=True)
             submitted = st.form_submit_button("🚀 创建项目", use_container_width=True, type="primary")
-
-        # 显示所选模型的信息卡片
-        if selected_label in label_map:
-            chosen_model_id = label_map[selected_label]
-            render_model_card(chosen_model_id)
 
         if submitted:
             if not title.strip():
