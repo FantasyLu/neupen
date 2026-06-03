@@ -53,7 +53,7 @@ ANTHROPIC_API_KEY=sk-xxx docker compose up -d
 
 ### 方式二：Mac 客户端
 
-1. 从 [GitHub Releases](https://github.com/FantasyLu/neupen/releases) 下载 `neupen.dmg`
+1. 从 [GitHub Releases](https://github.com/FantasyLu/neupen/releases) 下载 `Neupen.dmg`
 2. 双击打开，将应用拖入 Applications
 3. 点击应用图标启动，浏览器自动打开
 
