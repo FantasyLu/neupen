@@ -277,18 +277,11 @@ def page_project_management():
                     with st.spinner("思考中…"):
                         try:
                             agent = IdeaAgent(model_id=chat_model_id)
-                            raw_reply = agent.chat(history)
+                            reply = agent.chat(history)
                         except Exception as e:
                             st.error(f"对话失败：{e}")
                             history.pop()  # 移除刚加的用户消息
                             st.stop()
-
-                # 检测并剥离 [READY] 标记
-                if "[READY]" in raw_reply:
-                    st.session_state.idea_agent_ready = True
-                    reply = raw_reply.replace("[READY]", "").rstrip()
-                else:
-                    reply = raw_reply
 
                 history.append({"role": "assistant", "content": reply})
                 with st.chat_message("assistant"):
@@ -296,9 +289,9 @@ def page_project_management():
                 st.session_state.idea_chat_history = history
                 st.rerun()
 
-            # 用户消息 >= 2 条或 AI 已发出 READY 信号时，显示创建按钮
+            # 用户发过至少一条消息后显示创建按钮，由用户自己决定何时创建
             user_msg_count = sum(1 for m in history if m["role"] == "user")
-            if user_msg_count >= 2 or st.session_state.idea_agent_ready:
+            if user_msg_count >= 1:
                 st.divider()
                 col_btn, col_clear = st.columns([3, 1])
                 with col_btn:
@@ -361,7 +354,6 @@ def page_project_management():
                                 if result.success:
                                     # 清空对话历史
                                     st.session_state.idea_chat_history = []
-                                    st.session_state.idea_agent_ready = False
                                     st.success(f"✅ 项目「{title}」创建成功！")
                                     st.session_state.page = "大纲管理"
                                     st.rerun()
@@ -372,5 +364,4 @@ def page_project_management():
                 with col_clear:
                     if st.button("🗑️ 重新开始", use_container_width=True):
                         st.session_state.idea_chat_history = []
-                        st.session_state.idea_agent_ready = False
                         st.rerun()

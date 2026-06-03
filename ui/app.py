@@ -29,7 +29,6 @@ def init_session_state():
         "collab_display_name": None,
         "collab_identity": None,
         "idea_chat_history": [],
-        "idea_agent_ready": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
