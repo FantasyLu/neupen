@@ -18,6 +18,18 @@ from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
 
 
+def _safe_json_loads(text: str) -> dict | list:
+    """json.loads with json-repair fallback for LLM output."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            from json_repair import repair_json
+            return json.loads(repair_json(text))
+        except Exception:
+            raise
+
+
 # ======================================
 # Agent 1: 大纲师
 # ======================================
@@ -148,13 +160,13 @@ class OutlineAgent:
 - 确保每章字数在2000-4000字能写完的量
 - 生成至少前20章的详细章纲，其余章节可以简略"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=16000)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000)
 
         # 提取 JSON
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
-            outline_data = json.loads(response[json_start:json_end])
+            outline_data = _safe_json_loads(response[json_start:json_end])
             return outline_data
         else:
             raise ValueError(f"大纲生成失败，无法解析JSON：{response[:500]}")
@@ -195,7 +207,7 @@ class OutlineAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
-            return json.loads(response[json_start:json_end])
+            return _safe_json_loads(response[json_start:json_end])
         return {}
 
     PARSE_DOCUMENT_PROMPT = """你是一位专业的小说编辑，擅长从自由格式的大纲或设定文档中识别并提取结构化信息。
@@ -267,7 +279,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return json.loads(response[json_start:json_end])
+            return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"文档解析返回格式错误：{response[:300]}")
 
     def close(self):
@@ -349,7 +361,7 @@ class CharacterAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
-            data = json.loads(response[json_start:json_end])
+            data = _safe_json_loads(response[json_start:json_end])
             return data.get("characters", [])
         return []
 
@@ -511,7 +523,7 @@ class WriterAgent:
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
-                data = json.loads(response[json_start:json_end])
+                data = _safe_json_loads(response[json_start:json_end])
                 return data.get("summary", ""), data.get("key_events", [])
         except Exception as e:
             print(f"⚠️ 章节摘要生成失败：{e}")
@@ -783,7 +795,7 @@ class PolisherAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return json.loads(response[json_start:json_end])
+            return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"风格分析返回格式错误：{response[:400]}")
 
     def close(self):
@@ -934,7 +946,7 @@ class ReaderAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return json.loads(response[json_start:json_end])
+            return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"读者模拟返回格式错误：{response[:400]}")
 
     def close(self):
@@ -1014,5 +1026,5 @@ class IdeaAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return json.loads(response[json_start:json_end])
+            return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"项目配置提取失败：{response[:300]}")

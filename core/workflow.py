@@ -914,7 +914,11 @@ class NovelWorkflow:
             if json_start < 0:
                 return WorkflowResult(success=False, message="LLM 返回格式异常，无法解析")
 
-            result = json.loads(response[json_start:json_end])
+            try:
+                result = json.loads(response[json_start:json_end])
+            except json.JSONDecodeError:
+                from json_repair import repair_json
+                result = json.loads(repair_json(response[json_start:json_end]))
             assignments = result.get("assignments", [])
 
             # 批量更新（使用 gm.db，与 active_fs 对象所在的 session 一致）

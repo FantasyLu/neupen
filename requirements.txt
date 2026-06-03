@@ -40,3 +40,6 @@ rich>=13.0.0
 
 # 数据库
 sqlalchemy>=2.0.0
+
+# JSON 修复（处理 LLM 输出的格式瑕疵）
+json-repair>=0.30.0
