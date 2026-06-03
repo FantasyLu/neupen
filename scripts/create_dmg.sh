@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="Neupen"
-DMG_NAME="${APP_NAME}.dmg"
+DMG_NAME="neupen.dmg"
 VOLUME_NAME="${APP_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
