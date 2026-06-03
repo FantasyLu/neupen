@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+data/api_keys.json
+
+# Runtime data
+data/
+
+# Build artifacts (Mac app)
+dist/
+build/
+*.dmg
+*.app
+
+# Claude Code local settings
+.claude/
+
+# macOS
+.DS_Store

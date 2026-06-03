@@ -1,0 +1,42 @@
+# ======================================
+# 中长篇小说创作Agent - 依赖包
+# ======================================
+
+# Agent框架
+crewai>=0.80.0
+crewai-tools>=0.14.0
+
+# Anthropic Claude API
+anthropic>=0.40.0
+
+# OpenAI-compatible API（DeepSeek / 豆包 / 通义千问 / Gemini）
+openai>=1.0.0
+
+# 向量数据库
+lancedb>=0.20.0
+
+# Streamlit UI
+streamlit>=1.40.0
+streamlit-agraph>=0.0.45
+
+# LangChain (CrewAI底层)
+langchain>=0.3.0
+langchain-anthropic>=0.3.0
+
+# 数据处理
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# 文档导出
+python-docx>=1.1.0
+reportlab>=4.2.0
+
+# Embedding 模型
+sentence-transformers>=3.0.0
+
+# 工具库
+tiktoken>=0.8.0
+rich>=13.0.0
+
+# 数据库
+sqlalchemy>=2.0.0

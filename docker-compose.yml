@@ -1,0 +1,18 @@
+services:
+  neupen:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - neupen_data:/app/data
+    environment:
+      # API Key 可通过环境变量注入，也可在应用内配置
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DOUBAO_API_KEY=${DOUBAO_API_KEY:-}
+      - QWEN_API_KEY=${QWEN_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  neupen_data:
