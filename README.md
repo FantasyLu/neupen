@@ -37,7 +37,7 @@
 无需安装 Python 环境，一条命令启动：
 
 ```bash
-git clone <repo-url> && cd neupen
+git clone https://github.com/FantasyLu/neupen.git && cd neupen
 docker compose up -d
 ```
 
@@ -53,7 +53,7 @@ ANTHROPIC_API_KEY=sk-xxx docker compose up -d
 
 ### 方式二：Mac 客户端
 
-1. 下载 `AI小说创作助手.dmg`
+1. 从 [GitHub Releases](https://github.com/FantasyLu/neupen/releases) 下载最新版 `.dmg`
 2. 双击打开，将应用拖入 Applications
 3. 点击应用图标启动，浏览器自动打开
 
