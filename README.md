@@ -34,7 +34,15 @@
 
 ### 方式一：Docker 一键部署（推荐）
 
-无需安装 Python 环境，一条命令启动：
+无需安装 Python 环境，一条命令启动。
+
+**前提**：需要先安装并启动 [Docker Desktop](https://www.docker.com/products/docker-desktop/)。Mac 用户可通过 Homebrew 安装：
+
+```bash
+brew install --cask docker
+```
+
+安装完成后打开 Docker Desktop，等待菜单栏鲸鱼图标变为 Running 状态，再执行：
 
 ```bash
 git clone https://github.com/FantasyLu/neupen.git && cd neupen
