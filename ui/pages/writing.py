@@ -17,7 +17,8 @@ from ui.components.collaboration import render_chapter_comments, render_approval
 
 
 def _extract_suggestion(text: str) -> str | None:
-    matches = re.findall(r'```(?:markdown|text)?\n(.*?)```', text, re.DOTALL)
+    # 匹配 chapter / markdown / text / 无语言标识 四种代码块
+    matches = re.findall(r'```(?:chapter|markdown|text)?\n(.*?)```', text, re.DOTALL)
     return matches[-1].strip() if matches else None
 
 
@@ -360,7 +361,7 @@ def page_writing():
                         else:
                             auto_msg = (
                                 "请阅读以下正文内容，从**故事节奏、人物表现、场景描写**三个维度指出具体不足，"
-                                "并给出修改后的完整版本（用代码块包裹，以便一键应用）。"
+                                "并给出修改后的完整版本（用 ```chapter 代码块包裹，以便一键写入编辑器）。"
                             )
                             history = st.session_state[chat_key]
                             history.append({"role": "user", "content": auto_msg})
@@ -450,7 +451,7 @@ def page_writing():
                                                                 f"「{c.get('description', '')}」\n"
                                                                 f"位置参考：{loc[:120]}\n"
                                                                 f"按方案「{sol}」修改，"
-                                                                f"直接输出完整修改后正文（代码块包裹）。"
+                                                                f"直接输出完整修改后正文（用 ```chapter 代码块包裹）。"
                                                             )
                                                             _reply = _agent.chat(
                                                                 [{"role": "user", "content": _msg}],
@@ -519,7 +520,7 @@ def page_writing():
                                                 f"**描述：** {c.get('description', '')}\n"
                                                 f"**位置：** {loc[:150] if loc else '见正文'}\n\n"
                                                 f"我希望：{user_idea.strip()}\n\n"
-                                                f"请给出修改后的完整正文（代码块包裹）。"
+                                                f"请给出修改后的完整正文（用 ```chapter 代码块包裹）。"
                                             )
                                         else:
                                             send_content = user_idea.strip()
