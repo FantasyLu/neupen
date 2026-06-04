@@ -85,20 +85,27 @@ def render_global_chat(novel_id: int):
             with st.chat_message(msg["role"]):
                 if msg["role"] == "assistant":
                     parts = _parse_response(msg["content"])
-                    for part in parts:
+                    for p_idx, part in enumerate(parts):
                         if part["type"] == "text":
                             st.markdown(part["content"])
                         else:
                             block_type = part["type"]
-                            label, _ = _APPLY_LABELS[block_type]
                             with st.container(border=True):
-                                st.caption(f"📄 {block_type} 内容")
                                 preview = part["content"][:150]
                                 st.markdown(preview + ("…" if len(part["content"]) > 150 else ""))
-                                if st.button(label,
-                                             key=f"global_apply_{novel_id}_{idx}_{block_type}",
-                                             use_container_width=True, type="primary"):
-                                    _apply_content(block_type, part["content"], novel_id)
+                                if block_type == "chapter":
+                                    # 章节内容已自动写入编辑器，只显示说明
+                                    st.caption("✅ 已自动写入编辑器")
+                                    if st.button("↩️ 重新写入编辑器",
+                                                 key=f"global_reapply_{novel_id}_{idx}_{p_idx}",
+                                                 use_container_width=True):
+                                        _apply_content("chapter", part["content"], novel_id)
+                                else:
+                                    label, _ = _APPLY_LABELS[block_type]
+                                    if st.button(label,
+                                                 key=f"global_apply_{novel_id}_{idx}_{p_idx}_{block_type}",
+                                                 use_container_width=True, type="primary"):
+                                        _apply_content(block_type, part["content"], novel_id)
                 else:
                     st.markdown(msg["content"])
 
@@ -126,6 +133,13 @@ def render_global_chat(novel_id: int):
 
         history.append({"role": "assistant", "content": reply})
         st.session_state[chat_key] = history
+
+        # chapter 块自动写入编辑器，无需用户点击
+        for part in _parse_response(reply):
+            if part["type"] == "chapter":
+                ch_num = st.session_state.get("writing_chapter") or 1
+                st.session_state[f"writing_pending_{novel_id}_{ch_num}"] = part["content"]
+
         st.rerun()
 
     if history:

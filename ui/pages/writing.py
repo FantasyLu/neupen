@@ -105,7 +105,7 @@ def page_writing():
         with st.container(height=340, border=True):
             history = st.session_state[chat_key]
             if not history:
-                st.caption("💡 可以讨论章节思路，或让 AI 建议修改。\n\nAI 提供新版文本时，会出现「应用」按钮。")
+                st.caption("💡 可以讨论章节思路，或让 AI 建议修改。AI 提供新版文本时会自动写入编辑器。")
             for idx, msg in enumerate(history):
                 with st.chat_message(msg["role"]):
                     text = msg["content"]
@@ -115,10 +115,10 @@ def page_writing():
                         if display:
                             st.markdown(display)
                         with st.container(border=True):
-                            st.caption("📄 AI 建议的新版文本")
                             st.markdown(suggestion[:200] + ("…" if len(suggestion) > 200 else ""))
-                            if st.button("📋 应用到编辑器", key=f"apply_writing_{novel_id}_{selected_ch_num}_{idx}",
-                                         use_container_width=True, type="primary"):
+                            st.caption("✅ 已自动写入编辑器")
+                            if st.button("↩️ 重新写入", key=f"reapply_writing_{novel_id}_{selected_ch_num}_{idx}",
+                                         use_container_width=True):
                                 st.session_state[pending_key] = suggestion
                                 st.rerun()
                     else:
@@ -140,6 +140,10 @@ def page_writing():
                     st.stop()
             history.append({"role": "assistant", "content": reply})
             st.session_state[chat_key] = history
+            # 自动写入编辑器（无需点击应用按钮）
+            auto_sug = _extract_suggestion(reply)
+            if auto_sug:
+                st.session_state[pending_key] = auto_sug
             st.rerun()
 
         if st.session_state[chat_key]:
@@ -262,7 +266,7 @@ def page_writing():
                 review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
 
                 if pending:
-                    st.info("💡 AI 建议的新版文本已就绪，编辑后点「保存」写入")
+                    st.info("💡 AI 已将建议写入编辑器，确认无误后点「保存」写入")
                     col_discard, _ = st.columns([1, 3])
                     with col_discard:
                         if st.button("❌ 放弃建议", key="discard_writing_pending"):
@@ -346,6 +350,10 @@ def page_writing():
                                     agent.close()
                                     history.append({"role": "assistant", "content": reply})
                                     st.session_state[chat_key] = history
+                                    # 自动写入编辑器
+                                    sug = _extract_suggestion(reply)
+                                    if sug:
+                                        st.session_state[pending_key] = sug
                                     st.rerun()
                                 except Exception as e:
                                     history.pop()
