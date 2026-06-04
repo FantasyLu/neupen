@@ -11,7 +11,7 @@ import streamlit as st
 from core.models import get_db, Chapter, ContentVersion
 from core.workflow import load_novel
 from core.permissions import can_edit, can_approve
-from core.agents import CanvasAgent
+from core.agents import CanvasAgent, ReviewerAgent
 from ui.helpers import format_chapter_status, format_approval_badge
 from ui.components.collaboration import render_chapter_comments, render_approval_status
 
@@ -258,7 +258,8 @@ def page_writing():
             ])
 
             with tab_text:
-                text_key = f"edit_content_{novel_id}_{selected_ch_num}"
+                text_key   = f"edit_content_{novel_id}_{selected_ch_num}"
+                review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
 
                 if pending:
                     st.info("💡 AI 建议的新版文本已就绪，编辑后点「保存」写入")
@@ -276,13 +277,24 @@ def page_writing():
 
                 st.text_area(
                     f"第{selected_ch_num}章正文",
-                    key=text_key, height=560,
+                    key=text_key, height=520,
                     placeholder="在此直接书写章节内容，或通过左侧 AI 生成后应用…",
                     disabled=not can_edit(novel_id)
                 )
+
                 if can_edit(novel_id):
                     change_summary = st.text_input("修改说明（可选）", placeholder="例如：修改了结尾段落")
-                    if st.button("💾 保存", type="primary"):
+                    btn1, btn2, btn3 = st.columns([2, 1, 1])
+                    with btn1:
+                        save_clicked = st.button("💾 保存", type="primary", use_container_width=True)
+                    with btn2:
+                        review_clicked = st.button("🔍 AI 审核", use_container_width=True,
+                                                   help="对当前编辑区内容发起审核，无需先保存")
+                    with btn3:
+                        suggest_clicked = st.button("✨ AI 建议", use_container_width=True,
+                                                    help="让 AI 提出改进建议，结果将显示在左侧聊天中")
+
+                    if save_clicked:
                         with st.spinner("保存中…"):
                             try:
                                 workflow = load_novel(novel_id)
@@ -295,13 +307,81 @@ def page_writing():
                                 if save_result.success:
                                     st.session_state[pending_key] = None
                                     st.success("✅ 已保存")
-                                    if save_result.data.get("review_report", {}).get("conflicts"):
-                                        st.warning("检测到潜在冲突，请检查审核 tab")
                                     st.rerun()
                                 else:
                                     st.error(save_result.message)
                             except Exception as e:
                                 st.error(f"保存失败：{e}")
+
+                    if review_clicked:
+                        current_text = st.session_state.get(text_key, "").strip()
+                        if not current_text:
+                            st.warning("编辑区没有内容，请先写一些内容再审核")
+                        else:
+                            with st.spinner("AI 审核中…"):
+                                try:
+                                    agent = ReviewerAgent(novel_id)
+                                    report = agent.review_chapter(selected_ch_num, current_text)
+                                    agent.close()
+                                    st.session_state[review_key] = report.to_dict()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"审核失败：{e}")
+
+                    if suggest_clicked:
+                        current_text = st.session_state.get(text_key, "").strip()
+                        if not current_text:
+                            st.warning("编辑区没有内容，请先写一些内容再请求建议")
+                        else:
+                            auto_msg = (
+                                "请阅读以下正文内容，从**故事节奏、人物表现、场景描写**三个维度指出具体不足，"
+                                "并给出修改后的完整版本（用代码块包裹，以便一键应用）。"
+                            )
+                            history = st.session_state[chat_key]
+                            history.append({"role": "user", "content": auto_msg})
+                            with st.spinner("AI 分析中…"):
+                                try:
+                                    agent = CanvasAgent(novel_id=novel_id, role="writer")
+                                    reply = agent.chat(history, document_content=current_text)
+                                    agent.close()
+                                    history.append({"role": "assistant", "content": reply})
+                                    st.session_state[chat_key] = history
+                                    st.rerun()
+                                except Exception as e:
+                                    history.pop()
+                                    st.session_state[chat_key] = history
+                                    st.error(f"AI 出错：{e}")
+
+                # 审核结果展示
+                manual_review = st.session_state.get(review_key)
+                if manual_review:
+                    st.divider()
+                    score   = manual_review.get("overall_score", 0)
+                    passed  = manual_review.get("passed", True)
+                    mc1, mc2 = st.columns([1, 3])
+                    with mc1:
+                        st.metric("审核评分", f"{score:.1f}/10")
+                    with mc2:
+                        st.markdown("✅ 通过" if passed else "❌ 发现问题")
+                        st.caption(manual_review.get("summary", ""))
+
+                    conflicts = manual_review.get("conflicts", [])
+                    if conflicts:
+                        for c in conflicts:
+                            sev  = c.get("severity", 0)
+                            icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
+                            with st.container(border=True):
+                                st.markdown(f"{icon} **[{c.get('type', '')}] 严重度 {sev}**")
+                                st.markdown(f"{c.get('description', '')}")
+                                sols = c.get("solutions", [])
+                                if sols:
+                                    st.caption("建议：" + " / ".join(sols[:2]))
+                    else:
+                        st.success("未发现明显问题")
+
+                    if st.button("清除审核结果", key="clear_manual_review", use_container_width=True):
+                        st.session_state[review_key] = None
+                        st.rerun()
 
                 st.divider()
                 render_approval_status(novel_id, selected_ch)
