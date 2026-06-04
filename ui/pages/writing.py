@@ -403,9 +403,20 @@ def page_writing():
                             loc  = (c.get("location") or "").strip()
                             sols = c.get("solutions", [])
 
+                            # ── 状态追踪（提前加载，供标题使用）
+                            done_key   = f"sol_done_{novel_id}_{selected_ch_num}_{i}"
+                            done_set   = st.session_state.get(done_key, set())
+                            issue_key  = f"review_issue_{novel_id}_{selected_ch_num}_{i}"
+                            if issue_key not in st.session_state:
+                                st.session_state[issue_key] = []
+                            issue_hist   = st.session_state[issue_key]
+                            has_ai_reply = any(m["role"] == "assistant" for m in issue_hist)
+                            is_handled   = bool(done_set) or has_ai_reply
+
                             with st.container(border=True):
-                                # ── 标题 + 描述
-                                st.markdown(f"{icon} **[{c.get('type', '未知')}] 严重度 {sev}**")
+                                # ── 标题 + 描述（含已处理徽章）
+                                badge = "  ✅ 已处理" if is_handled else "  ⏳ 待处理"
+                                st.markdown(f"{icon} **[{c.get('type', '未知')}] 严重度 {sev}**{badge}")
                                 st.markdown(c.get("description", ""))
 
                                 # ── 位置定位
@@ -418,47 +429,49 @@ def page_writing():
                                         st.caption("📍 原文位置：")
                                     st.code(loc[:250] + ("…" if len(loc) > 250 else ""), language=None)
 
-                                # ── 快捷方案按钮
+                                # ── 快捷方案按钮（已应用的显示标签）
                                 if sols and can_edit(novel_id):
                                     st.caption("快捷方案（AI 直接修改）：")
                                     for j, sol in enumerate(sols[:3]):
-                                        if st.button(
-                                            f"✏️ {sol[:55]}", use_container_width=True,
-                                            key=f"qapply_{novel_id}_{selected_ch_num}_{i}_{j}"
-                                        ):
-                                            cur = st.session_state.get(text_key, "").strip()
-                                            if cur:
-                                                with st.spinner("AI 修改中…"):
-                                                    try:
-                                                        _agent = CanvasAgent(novel_id=novel_id, role="writer")
-                                                        _msg = (
-                                                            f"请修改以下章节正文，针对问题：\n"
-                                                            f"「{c.get('description', '')}」\n"
-                                                            f"位置参考：{loc[:120]}\n"
-                                                            f"按方案「{sol}」修改，"
-                                                            f"直接输出完整修改后正文（代码块包裹）。"
-                                                        )
-                                                        _reply = _agent.chat(
-                                                            [{"role": "user", "content": _msg}],
-                                                            document_content=cur
-                                                        )
-                                                        _agent.close()
-                                                        _sug = _extract_suggestion(_reply)
-                                                        if _sug:
-                                                            st.session_state[pending_key] = _sug
-                                                            st.rerun()
-                                                    except Exception as _e:
-                                                        st.error(f"修改失败：{_e}")
+                                        if j in done_set:
+                                            st.success(f"✅ {sol[:55]}（已应用）")
+                                        else:
+                                            if st.button(
+                                                f"✏️ {sol[:55]}", use_container_width=True,
+                                                key=f"qapply_{novel_id}_{selected_ch_num}_{i}_{j}"
+                                            ):
+                                                cur = st.session_state.get(text_key, "").strip()
+                                                if cur:
+                                                    with st.spinner("AI 修改中…"):
+                                                        try:
+                                                            _agent = CanvasAgent(novel_id=novel_id, role="writer")
+                                                            _msg = (
+                                                                f"请修改以下章节正文，针对问题：\n"
+                                                                f"「{c.get('description', '')}」\n"
+                                                                f"位置参考：{loc[:120]}\n"
+                                                                f"按方案「{sol}」修改，"
+                                                                f"直接输出完整修改后正文（代码块包裹）。"
+                                                            )
+                                                            _reply = _agent.chat(
+                                                                [{"role": "user", "content": _msg}],
+                                                                document_content=cur
+                                                            )
+                                                            _agent.close()
+                                                            _sug = _extract_suggestion(_reply)
+                                                            if _sug:
+                                                                st.session_state[pending_key] = _sug
+                                                                done_set.add(j)
+                                                                st.session_state[done_key] = done_set
+                                                                st.rerun()
+                                                        except Exception as _e:
+                                                            st.error(f"修改失败：{_e}")
 
-                                # ── 对话式修改
-                                issue_key = f"review_issue_{novel_id}_{selected_ch_num}_{i}"
-                                if issue_key not in st.session_state:
-                                    st.session_state[issue_key] = []
-                                issue_hist = st.session_state[issue_key]
-
-                                with st.expander("💬 与 AI 讨论如何修改",
-                                                  expanded=bool(issue_hist)):
-                                    # 历史消息
+                                # ── 对话式修改（已讨论时标签变色）
+                                expander_label = (
+                                    "💬 与 AI 讨论如何修改  ✅ 已讨论"
+                                    if has_ai_reply else "💬 与 AI 讨论如何修改"
+                                )
+                                with st.expander(expander_label, expanded=bool(issue_hist)):
                                     for h_idx, hmsg in enumerate(issue_hist):
                                         with st.chat_message(hmsg["role"]):
                                             if hmsg["role"] == "assistant":
@@ -485,7 +498,6 @@ def page_writing():
                                             else:
                                                 st.markdown(hmsg["content"])
 
-                                    # 输入框
                                     _input_key = f"ii_{novel_id}_{selected_ch_num}_{i}"
                                     user_idea = st.text_input(
                                         "告诉 AI 你的修改思路…",
@@ -497,7 +509,6 @@ def page_writing():
                                         key=f"isend_{novel_id}_{selected_ch_num}_{i}"
                                     ) and user_idea.strip():
                                         cur2 = st.session_state.get(text_key, "").strip()
-                                        # 首条消息注入问题上下文
                                         if not issue_hist:
                                             send_content = (
                                                 f"我在审核章节时发现了一个问题：\n\n"
@@ -536,6 +547,10 @@ def page_writing():
 
                     if st.button("清除审核结果", key="clear_manual_review", use_container_width=True):
                         st.session_state[review_key] = None
+                        # 清除各问题的操作状态
+                        for _ci in range(len(conflicts)):
+                            st.session_state.pop(f"sol_done_{novel_id}_{selected_ch_num}_{_ci}", None)
+                            st.session_state.pop(f"review_issue_{novel_id}_{selected_ch_num}_{_ci}", None)
                         st.rerun()
 
                 # ── 大纲/设定同步检测 ─────────────────────────────
