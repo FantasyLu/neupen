@@ -77,9 +77,8 @@ def page_writing():
 
         st.divider()
         st.markdown("#### 写作参数")
-        word_target  = st.slider("目标字数", 1000, 6000, 3000, step=500)
-        auto_polish  = st.toggle("自动润色", value=True)
-        save_edit_mode = st.toggle("编辑模式", value=False, disabled=not can_edit(novel_id))
+        word_target = st.slider("目标字数", 1000, 6000, 3000, step=500)
+        auto_polish = st.toggle("自动润色", value=True)
 
         wc1, wc2 = st.columns(2)
         write_btn = wc1.button(
@@ -240,6 +239,8 @@ def page_writing():
                                     icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
                                     st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
                                     st.markdown(f"- {c.get('description', '')}")
+                        # 清除编辑区缓存，确保显示新生成的内容
+                        st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
                         st.rerun()
                     else:
                         st.session_state.is_writing = False
@@ -250,7 +251,7 @@ def page_writing():
 
         # 章节内容区（tabs）
         pending = st.session_state.get(pending_key)
-        if selected_ch and (selected_ch.content or pending):
+        if selected_ch:
 
             tab_text, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
                 "📝 正文", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
@@ -266,20 +267,22 @@ def page_writing():
                         if st.button("❌ 放弃建议", key="discard_writing_pending"):
                             st.session_state[pending_key] = None
                             st.rerun()
-                    # Pre-fill text area with AI suggestion
                     if st.session_state.get(text_key) != pending:
                         st.session_state[text_key] = pending
 
-                if pending or save_edit_mode:
-                    if text_key not in st.session_state:
-                        st.session_state[text_key] = selected_ch.content
+                # 始终可编辑，首次加载从数据库初始化
+                if text_key not in st.session_state:
+                    st.session_state[text_key] = selected_ch.content or ""
 
-                    st.text_area(
-                        f"第{selected_ch_num}章正文（编辑模式）",
-                        key=text_key, height=560
-                    )
+                st.text_area(
+                    f"第{selected_ch_num}章正文",
+                    key=text_key, height=560,
+                    placeholder="在此直接书写章节内容，或通过左侧 AI 生成后应用…",
+                    disabled=not can_edit(novel_id)
+                )
+                if can_edit(novel_id):
                     change_summary = st.text_input("修改说明（可选）", placeholder="例如：修改了结尾段落")
-                    if st.button("💾 保存修改", type="primary", disabled=not can_edit(novel_id)):
+                    if st.button("💾 保存", type="primary"):
                         with st.spinner("保存中…"):
                             try:
                                 workflow = load_novel(novel_id)
@@ -291,7 +294,7 @@ def page_writing():
                                 workflow.close()
                                 if save_result.success:
                                     st.session_state[pending_key] = None
-                                    st.success("✅ 修改已保存")
+                                    st.success("✅ 已保存")
                                     if save_result.data.get("review_report", {}).get("conflicts"):
                                         st.warning("检测到潜在冲突，请检查审核 tab")
                                     st.rerun()
@@ -299,14 +302,6 @@ def page_writing():
                                     st.error(save_result.message)
                             except Exception as e:
                                 st.error(f"保存失败：{e}")
-                else:
-                    st.text_area(
-                        f"第{selected_ch_num}章正文",
-                        value=selected_ch.content,
-                        height=560,
-                        key=f"view_content_{selected_ch_num}",
-                        disabled=True
-                    )
 
                 st.divider()
                 render_approval_status(novel_id, selected_ch)
@@ -409,11 +404,3 @@ def page_writing():
             with tab_comment:
                 render_chapter_comments(novel_id, selected_ch.id)
 
-        elif not st.session_state.is_writing:
-            if selected_ch and not selected_ch.content:
-                with st.container(border=True):
-                    st.info(f"第{selected_ch_num}章尚未生成内容，点击左侧「🚀 生成本章」开始创作")
-                    if selected_ch.outline_core_event:
-                        st.markdown(f"**章纲 - 核心事件：** {selected_ch.outline_core_event}")
-                    if selected_ch.outline_conflict:
-                        st.markdown(f"**主要冲突：** {selected_ch.outline_conflict}")
