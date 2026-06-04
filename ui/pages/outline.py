@@ -50,6 +50,71 @@ def _outline_to_markdown(novel_outline: NovelOutline) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _markdown_to_outline_fields(md: str) -> dict:
+    """从 Markdown 文档提取 NovelOutline 字段（按 ## 标题映射，无需 AI）"""
+    _HEADER_MAP = {
+        "前提设定": "premise",
+        "核心主题": "theme",
+        "主要矛盾": "main_conflict",
+        "主角弧光": "protagonist_arc",
+        "结局概要": "ending_summary",
+        "三幕结构": "__story_structure__",
+    }
+    sections: dict[str, list[str]] = {}
+    current_key = None
+
+    for line in md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            header = stripped[3:].strip()
+            current_key = _HEADER_MAP.get(header)
+        elif stripped == "---":
+            current_key = None
+        elif current_key is not None:
+            sections.setdefault(current_key, []).append(line)
+
+    result = {}
+    for key, lines in sections.items():
+        text = "\n".join(lines).strip()
+        if not text:
+            continue
+        if key == "__story_structure__":
+            act1 = act2 = act3 = ""
+            for line in text.splitlines():
+                if "**第一幕**：" in line:
+                    act1 = line.split("**第一幕**：", 1)[1].strip()
+                elif "**第二幕**：" in line:
+                    act2 = line.split("**第二幕**：", 1)[1].strip()
+                elif "**第三幕**：" in line:
+                    act3 = line.split("**第三幕**：", 1)[1].strip()
+            result["story_structure"] = json.dumps(
+                {"act1": act1, "act2": act2, "act3": act3}, ensure_ascii=False
+            )
+        else:
+            result[key] = text
+
+    # 如果没有识别到任何结构化标题，把整个内容存为 premise
+    if not result and md.strip():
+        result["premise"] = md.strip()
+
+    return result
+
+
+def _save_outline_direct(novel_id: int, fields: dict):
+    """直接将字段写入 NovelOutline，不经过 AI 解析"""
+    db = get_db()
+    outline = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+    if outline:
+        for k, v in fields.items():
+            if hasattr(outline, k):
+                setattr(outline, k, v)
+    else:
+        outline = NovelOutline(novel_id=novel_id, **fields)
+        db.add(outline)
+    db.commit()
+    db.close()
+
+
 def _extract_suggestion(text: str) -> str | None:
     """从 AI 回复中提取最后一个 markdown/text 代码块作为建议内容"""
     matches = re.findall(r'```(?:markdown|text)?\n(.*?)```', text, re.DOTALL)
@@ -164,31 +229,17 @@ def page_outline():
         with tab1:
             btn_c1, btn_c2, btn_c3 = st.columns([2, 2, 1])
             with btn_c1:
-                if st.button("💾 保存并解析", type="primary", use_container_width=True,
+                if st.button("💾 保存", type="primary", use_container_width=True,
                              disabled=not can_edit(novel_id)):
                     md = st.session_state.get(textarea_key, "").strip()
                     if md:
-                        with st.spinner("AI 解析并保存中…"):
-                            try:
-                                agent = OutlineAgent(novel_id)
-                                parsed = agent.parse_document(md)
-                                agent.close()
-                                workflow = load_novel(novel_id)
-                                result = workflow.import_document_data(parsed)
-                                workflow.close()
-                                if result.success:
-                                    # 刷新 textarea 内容
-                                    db = get_db()
-                                    new_outline = db.query(NovelOutline).filter(
-                                        NovelOutline.novel_id == novel_id).first()
-                                    db.close()
-                                    st.session_state[textarea_key] = _outline_to_markdown(new_outline)
-                                    st.success(f"✅ {result.message}")
-                                    st.rerun()
-                                else:
-                                    st.error(result.message)
-                            except Exception as e:
-                                st.error(f"保存失败：{e}")
+                        try:
+                            fields = _markdown_to_outline_fields(md)
+                            _save_outline_direct(novel_id, fields)
+                            st.success("✅ 大纲已保存")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"保存失败：{e}")
             with btn_c2:
                 if can_edit(novel_id) and st.button("🤖 重新生成大纲", use_container_width=True):
                     st.session_state["confirm_regen_outline"] = True
@@ -254,6 +305,86 @@ def page_outline():
 
         # ── Tab2: 章节大纲 ────────────────────────────────
         with tab2:
+            # ── 批量生成章纲 ──────────────────────────────
+            batch_result_key = f"batch_outline_result_{novel_id}"
+
+            with st.expander("🤖 AI 批量生成章纲", expanded=False):
+                if not can_edit(novel_id):
+                    st.warning("仅主笔可以生成章纲")
+                elif not chapters:
+                    st.info("请先生成章节列表（通过整体大纲生成）")
+                else:
+                    all_ch_nums = [c.chapter_number for c in chapters]
+                    ch_min, ch_max = all_ch_nums[0], all_ch_nums[-1]
+
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        range_start = st.number_input(
+                            "起始章节", min_value=ch_min, max_value=ch_max,
+                            value=ch_min, step=1, key="batch_range_start"
+                        )
+                    with rc2:
+                        range_end = st.number_input(
+                            "结束章节", min_value=range_start, max_value=ch_max,
+                            value=min(range_start + 9, ch_max), step=1, key="batch_range_end"
+                        )
+
+                    st.caption(f"将为第 {range_start}～{range_end} 章（共 {range_end - range_start + 1} 章）生成章纲")
+
+                    range_desc = st.text_area(
+                        "描述这段剧情的内容和进展",
+                        height=100,
+                        placeholder="例如：这10章完成主角进入魔法学院后的适应期，经历入学考核、结交同伴、遭遇第一个强敌，最终在一次危机中展现出潜力，引起教授关注。",
+                        key="batch_range_desc"
+                    )
+
+                    gen_btn = st.button(
+                        "✨ AI 生成章纲", type="primary", use_container_width=True,
+                        disabled=not range_desc.strip()
+                    )
+                    if gen_btn and range_desc.strip():
+                        with st.spinner(f"AI 正在为第{range_start}~{range_end}章设计章纲…"):
+                            try:
+                                agent = OutlineAgent(novel_id)
+                                result_list = agent.generate_chapter_range_outlines(
+                                    int(range_start), int(range_end), range_desc.strip()
+                                )
+                                agent.close()
+                                st.session_state[batch_result_key] = result_list
+                            except Exception as e:
+                                st.error(f"生成失败：{e}")
+
+            # 批量生成结果预览 & 确认保存
+            batch_result = st.session_state.get(batch_result_key)
+            if batch_result:
+                st.markdown("#### 📋 生成结果预览")
+                st.caption(f"共 {len(batch_result)} 章，确认后将写入数据库")
+                for item in batch_result:
+                    ch_num = item.get("chapter_number", "?")
+                    title  = item.get("title", "")
+                    core   = item.get("outline_core_event", "")
+                    st.markdown(f"**第{ch_num}章《{title}》** — {core[:80]}{'…' if len(core) > 80 else ''}")
+
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("✅ 确认保存", type="primary", use_container_width=True):
+                        with st.spinner("保存中…"):
+                            workflow = load_novel(novel_id)
+                            save_result = workflow.batch_update_chapter_outlines(batch_result)
+                            workflow.close()
+                        if save_result.success:
+                            st.success(f"✅ {save_result.message}")
+                            st.session_state[batch_result_key] = None
+                            st.rerun()
+                        else:
+                            st.error(save_result.message)
+                with bc2:
+                    if st.button("❌ 放弃", use_container_width=True):
+                        st.session_state[batch_result_key] = None
+                        st.rerun()
+
+                st.divider()
+
             max_published = max((c.chapter_number for c in chapters if c.status == "published"), default=0)
             show_foreshadowing_alerts(novel_id, max_published)
 

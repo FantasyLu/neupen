@@ -591,6 +591,42 @@ class NovelWorkflow:
         except Exception as e:
             return WorkflowResult(success=False, message=f"章纲更新失败：{e}")
 
+    def batch_update_chapter_outlines(self, outlines: list[dict]) -> WorkflowResult:
+        """
+        批量保存 AI 生成的章节大纲。
+
+        只写入 title / outline_* 字段，不触碰已写完（published）章节的内容。
+        若章节状态为 outline_pending，写入后自动升级为 outlined。
+        """
+        try:
+            allowed = {
+                "title", "outline_core_event", "outline_conflict",
+                "outline_scene", "outline_emotion", "outline_ending",
+            }
+            updated = skipped = 0
+            for data in outlines:
+                ch_num = data.get("chapter_number")
+                if not ch_num:
+                    continue
+                chapter = self.memory.global_mem.get_chapter_outline(int(ch_num))
+                if not chapter:
+                    skipped += 1
+                    continue
+                for field in allowed:
+                    val = data.get(field)
+                    if val:
+                        setattr(chapter, field, val)
+                if chapter.status == "outline_pending":
+                    chapter.status = "outlined"
+                updated += 1
+            self.db.commit()
+            msg = f"已更新 {updated} 章的大纲"
+            if skipped:
+                msg += f"（{skipped} 章章节不存在，已跳过）"
+            return WorkflowResult(success=True, message=msg, data={"updated": updated})
+        except Exception as e:
+            return WorkflowResult(success=False, message=f"批量更新失败：{e}")
+
     # ======================================
     # 风格迁移
     # ======================================

@@ -258,18 +258,20 @@ def page_writing():
             ])
 
             with tab_text:
-                content_to_show = pending if pending else selected_ch.content
+                text_key = f"edit_content_{novel_id}_{selected_ch_num}"
 
                 if pending:
                     st.info("💡 AI 建议的新版文本已就绪，编辑后点「保存」写入")
-                    if st.button("❌ 放弃建议", key="discard_writing_pending"):
-                        st.session_state[pending_key] = None
-                        st.rerun()
-
-                if save_edit_mode:
-                    text_key = f"edit_content_{novel_id}_{selected_ch_num}"
-                    if pending and st.session_state.get(text_key) != pending:
+                    col_discard, _ = st.columns([1, 3])
+                    with col_discard:
+                        if st.button("❌ 放弃建议", key="discard_writing_pending"):
+                            st.session_state[pending_key] = None
+                            st.rerun()
+                    # Pre-fill text area with AI suggestion
+                    if st.session_state.get(text_key) != pending:
                         st.session_state[text_key] = pending
+
+                if pending or save_edit_mode:
                     if text_key not in st.session_state:
                         st.session_state[text_key] = selected_ch.content
 
@@ -301,7 +303,7 @@ def page_writing():
                 else:
                     st.text_area(
                         f"第{selected_ch_num}章正文",
-                        value=content_to_show,
+                        value=selected_ch.content,
                         height=560,
                         key=f"view_content_{selected_ch_num}",
                         disabled=True

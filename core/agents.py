@@ -285,6 +285,66 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"文档解析返回格式错误：{response[:300]}")
 
+    def generate_chapter_range_outlines(self, start: int, end: int, description: str) -> list[dict]:
+        """
+        为指定章节范围批量生成章纲。
+
+        Args:
+            start: 起始章节号（含）
+            end:   结束章节号（含）
+            description: 用户对这些章节应完成哪些内容/进展的描述
+
+        Returns:
+            list[dict]，每项含 chapter_number / title / outline_core_event 等字段
+        """
+        global_ctx = self.memory.global_mem.build_global_context()
+        active_fs = self.memory.global_mem.get_active_foreshadowings()
+        fs_text = self._build_foreshadowing_schedule_prompt(active_fs)
+        fs_block = f"\n{fs_text}\n" if fs_text else ""
+
+        ch_count = end - start + 1
+
+        user_prompt = f"""请为第{start}章到第{end}章（共{ch_count}章）设计详细的章节大纲。
+
+【用户对这段剧情的要求】
+{description}
+{fs_block}
+【当前小说背景】
+{global_ctx}
+
+请返回一个 JSON 数组，严格包含 {ch_count} 个元素（章节号 {start} 到 {end}），格式如下：
+[
+  {{
+    "chapter_number": {start},
+    "title": "章节标题",
+    "outline_core_event": "本章最重要的事件（必填）",
+    "outline_conflict": "主要冲突或张力",
+    "outline_scene": "场景：时间、地点、氛围",
+    "outline_emotion": "情感基调",
+    "outline_ending": "结尾方式，给下一章留下悬念或钩子"
+  }},
+  ...
+]
+
+设计要求：
+- {ch_count} 章之间要有清晰的节奏变化（起伏感），不要每章都是同一种模式
+- 章节之间应有因果逻辑，前章的事件引发后章的反应
+- 内容方向必须符合用户描述，整体弧线要在这 {ch_count} 章内完整交代
+- 只返回 JSON 数组，不要任何其他文字"""
+
+        response = self.llm.generate(
+            self.SYSTEM_PROMPT, user_prompt,
+            max_tokens=min(3000 + ch_count * 400, 16000)
+        )
+
+        arr_start = response.find("[")
+        arr_end = response.rfind("]") + 1
+        if arr_start >= 0 and arr_end > arr_start:
+            result = _safe_json_loads(response[arr_start:arr_end])
+            if isinstance(result, list):
+                return result
+        raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
+
     def close(self):
         self.memory.close()
 
