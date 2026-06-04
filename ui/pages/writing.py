@@ -498,7 +498,10 @@ def page_writing():
                                             else:
                                                 st.markdown(hmsg["content"])
 
-                                    _input_key = f"ii_{novel_id}_{selected_ch_num}_{i}"
+                                    # 用计数器改变 key 来清空输入框（Streamlit 不允许直接修改 widget 的 state）
+                                    _clr_key  = f"ii_clr_{novel_id}_{selected_ch_num}_{i}"
+                                    _clr_cnt  = st.session_state.get(_clr_key, 0)
+                                    _input_key = f"ii_{novel_id}_{selected_ch_num}_{i}_{_clr_cnt}"
                                     user_idea = st.text_input(
                                         "告诉 AI 你的修改思路…",
                                         key=_input_key,
@@ -540,7 +543,8 @@ def page_writing():
                                         _sug3 = _extract_suggestion(_r)
                                         if _sug3:
                                             st.session_state[pending_key] = _sug3
-                                        st.session_state[_input_key] = ""
+                                        # 递增计数器 → 下次渲染创建新 key 的空输入框
+                                        st.session_state[_clr_key] = _clr_cnt + 1
                                         st.rerun()
                     else:
                         st.success("未发现明显问题")
@@ -551,6 +555,7 @@ def page_writing():
                         for _ci in range(len(conflicts)):
                             st.session_state.pop(f"sol_done_{novel_id}_{selected_ch_num}_{_ci}", None)
                             st.session_state.pop(f"review_issue_{novel_id}_{selected_ch_num}_{_ci}", None)
+                            st.session_state.pop(f"ii_clr_{novel_id}_{selected_ch_num}_{_ci}", None)
                         st.rerun()
 
                 # ── 大纲/设定同步检测 ─────────────────────────────
