@@ -76,9 +76,10 @@ class Novel(Base):
 
     def get_world_setting(self) -> dict:
         """获取世界观设定（反序列化）"""
-        if self.world_setting:
-            return json.loads(self.world_setting)
-        return {}
+        try:
+            return json.loads(self.world_setting) if self.world_setting else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def set_world_setting(self, data: dict):
         """设置世界观设定（序列化）"""
@@ -86,9 +87,10 @@ class Novel(Base):
 
     def get_style_profile(self) -> dict:
         """获取风格档案（反序列化）"""
-        if self.style_profile:
-            return json.loads(self.style_profile)
-        return {}
+        try:
+            return json.loads(self.style_profile) if self.style_profile else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def set_style_profile(self, data: dict):
         """设置风格档案（序列化）"""
@@ -143,10 +145,16 @@ class Character(Base):
     novel = relationship("Novel", back_populates="characters")
 
     def get_abilities(self) -> list:
-        return json.loads(self.abilities) if self.abilities else []
+        try:
+            return json.loads(self.abilities) if self.abilities else []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     def get_relationships(self) -> dict:
-        return json.loads(self.relationships) if self.relationships else {}
+        try:
+            return json.loads(self.relationships) if self.relationships else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def to_profile_text(self) -> str:
         """转为人设文字摘要（注入提示词用）"""
@@ -239,10 +247,16 @@ class Chapter(Base):
     __table_args__ = (UniqueConstraint("novel_id", "chapter_number"),)
 
     def get_outline_characters(self) -> list:
-        return json.loads(self.outline_characters) if self.outline_characters else []
+        try:
+            return json.loads(self.outline_characters) if self.outline_characters else []
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     def get_review_report(self) -> dict:
-        return json.loads(self.review_report) if self.review_report else {}
+        try:
+            return json.loads(self.review_report) if self.review_report else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def to_outline_text(self) -> str:
         """转为章纲文字摘要"""
@@ -252,11 +266,17 @@ class Chapter(Base):
         if self.outline_characters: parts.append(f"出场人物：{', '.join(self.get_outline_characters())}")
         if self.outline_scene: parts.append(f"场景：{self.outline_scene}")
         if self.outline_foreshadowing_set:
-            items = json.loads(self.outline_foreshadowing_set)
-            if items: parts.append(f"埋下伏笔：{', '.join(items)}")
+            try:
+                items = json.loads(self.outline_foreshadowing_set)
+                if items: parts.append(f"埋下伏笔：{', '.join(items)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
         if self.outline_foreshadowing_collect:
-            items = json.loads(self.outline_foreshadowing_collect)
-            if items: parts.append(f"回收伏笔：{', '.join(items)}")
+            try:
+                items = json.loads(self.outline_foreshadowing_collect)
+                if items: parts.append(f"回收伏笔：{', '.join(items)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
         if self.outline_emotion: parts.append(f"情感基调：{self.outline_emotion}")
         return "\n".join(parts)
 
