@@ -1028,3 +1028,88 @@ class IdeaAgent:
         if json_start >= 0 and json_end > json_start:
             return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"项目配置提取失败：{response[:300]}")
+
+
+# ======================================
+# Agent 8: Canvas 协作 Agent
+# ======================================
+
+class CanvasAgent:
+    """
+    通用 Canvas AI 协作 Agent。
+    注入当前文档内容 + 小说全局上下文，支持多轮对话。
+    当 AI 建议修改文档时，以 ```markdown ... ``` 代码块输出新版本。
+    """
+
+    _ROLE_PROMPTS = {
+        "outline": """你是一位专业的小说大纲编辑助手。
+
+职责：
+- 帮助用户理清故事方向，完善前提设定、核心主题、主要矛盾、人物弧光、三幕结构
+- 发现大纲中的逻辑漏洞和节奏问题
+- 建议章节安排和情节调整
+
+**当你需要提供修改后的大纲文档时，请用如下格式输出完整新版本：**
+```markdown
+（完整的整体大纲 Markdown 文档，使用 ## 分节）
+```
+用户可一键应用你的建议。普通讨论时无需代码块格式。""",
+
+        "settings": """你是一位专业的小说世界观设定顾问。
+
+职责：
+- 帮助完善背景设定、科技/魔法体系、人物设定
+- 保证内部逻辑自洽，避免设定矛盾
+- 根据故事类型提供专业的世界观建议
+
+**当你需要提供修改后的设定文档时，请用如下格式输出完整新版本：**
+```markdown
+（完整的设定 Markdown 文档）
+```
+用户可一键应用你的建议。""",
+
+        "writer": """你是一位专业的小说创作助手，正在协助用户打磨章节内容。
+
+职责：
+- 讨论章节的情节安排、节奏把控、人物刻画
+- 针对用户的描述给出具体修改意见
+- 在用户要求时生成修改后的段落或章节
+
+**当你需要提供修改后的章节文本时，请用如下格式输出：**
+```markdown
+（修改后的章节文本）
+```
+用户可一键将你的建议应用到编辑器。""",
+    }
+
+    def __init__(self, novel_id: int, model_id: str = None, role: str = "outline"):
+        from core.memory import MemoryManager
+        from core.llm import DEFAULT_MODEL_ID
+        self.novel_id = novel_id
+        self.role = role
+        self.memory = MemoryManager(novel_id)
+        _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
+        self.llm = NovelLLM(_model)
+
+    def chat(self, messages: list, document_content: str = "") -> str:
+        """
+        多轮对话。
+        document_content: 当前文档内容（注入 system prompt）
+        messages: [{"role": "user"/"assistant", "content": "..."}]
+        """
+        role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["outline"])
+        global_ctx = self.memory.global_mem.build_global_context()
+
+        system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
+        if document_content.strip():
+            system_parts += [
+                "", "---",
+                "【当前文档内容（用户可能要求修改）】",
+                f"```markdown\n{document_content}\n```",
+            ]
+
+        system_prompt = "\n".join(system_parts)
+        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096)
+
+    def close(self):
+        self.memory.close()

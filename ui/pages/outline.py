@@ -1,24 +1,66 @@
 """
-大纲管理页面
-整体大纲 / 章节大纲 / 导入文档
+大纲管理页面 — Canvas 布局
+左：AI 协作聊天  |  右：大纲文档编辑器（整体大纲 / 章节大纲 / 导入文档）
 """
-
 import json
+import re
 
 import streamlit as st
 
 from core.models import get_db, Novel, Chapter, Volume, NovelOutline
 from core.workflow import load_novel
 from core.permissions import can_edit
-from core.agents import OutlineAgent
+from core.agents import OutlineAgent, CanvasAgent
 from core.llm import DEFAULT_MODEL_ID
 from ui.helpers import format_chapter_status, format_approval_badge
 from ui.components.alerts import show_foreshadowing_alerts, show_outline_impact
 from ui.components.model_selector import build_model_options
 
 
+# ─────────────────────────────────────────────────
+# 辅助函数
+# ─────────────────────────────────────────────────
+
+def _outline_to_markdown(novel_outline: NovelOutline) -> str:
+    """将 NovelOutline 结构化字段转为 Markdown 文档供编辑"""
+    if not novel_outline:
+        return ""
+    parts = []
+    if novel_outline.premise:
+        parts.append(f"## 前提设定\n\n{novel_outline.premise}")
+    if novel_outline.theme:
+        parts.append(f"## 核心主题\n\n{novel_outline.theme}")
+    if novel_outline.main_conflict:
+        parts.append(f"## 主要矛盾\n\n{novel_outline.main_conflict}")
+    if novel_outline.protagonist_arc:
+        parts.append(f"## 主角弧光\n\n{novel_outline.protagonist_arc}")
+    if novel_outline.ending_summary:
+        parts.append(f"## 结局概要\n\n{novel_outline.ending_summary}")
+    if novel_outline.story_structure:
+        try:
+            s = json.loads(novel_outline.story_structure)
+            acts = "\n\n".join([
+                f"**第一幕**：{s.get('act1', '')}",
+                f"**第二幕**：{s.get('act2', '')}",
+                f"**第三幕**：{s.get('act3', '')}",
+            ])
+            parts.append(f"## 三幕结构\n\n{acts}")
+        except Exception:
+            pass
+    return "\n\n---\n\n".join(parts)
+
+
+def _extract_suggestion(text: str) -> str | None:
+    """从 AI 回复中提取最后一个 markdown/text 代码块作为建议内容"""
+    matches = re.findall(r'```(?:markdown|text)?\n(.*?)```', text, re.DOTALL)
+    return matches[-1].strip() if matches else None
+
+
+# ─────────────────────────────────────────────────
+# 主页面
+# ─────────────────────────────────────────────────
+
 def page_outline():
-    st.title("🗂 大纲管理")
     novel_id = st.session_state.novel_id
 
     db = get_db()
@@ -35,30 +77,145 @@ def page_outline():
     # 状态总览
     total = len(chapters)
     published = sum(1 for c in chapters if c.status == "published")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("总章数", total)
-    col2.metric("已完成", published)
-    col3.metric("总字数", f"{sum(c.word_count or 0 for c in chapters):,}")
-    col4.metric("进度", f"{published/total*100:.0f}%" if total else "0%")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("总章数", total)
+    c2.metric("已完成", published)
+    c3.metric("总字数", f"{sum(c.word_count or 0 for c in chapters):,}")
+    c4.metric("进度", f"{published/total*100:.0f}%" if total else "0%")
 
-    tab1, tab2, tab3 = st.tabs(["📖 整体大纲", "📋 章节大纲", "📄 导入文档"])
+    st.divider()
 
-    # ─────────────────────────────────────────────────
-    # Tab 1: 整体大纲
-    # ─────────────────────────────────────────────────
-    with tab1:
-        # 重新生成大纲
-        if can_edit(novel_id):
-            if st.button("🤖 重新生成大纲", help="会覆盖现有章纲！"):
-                st.session_state["confirm_regen"] = True
+    # Session state 键（按 novel_id 隔离）
+    chat_key   = f"outline_chat_{novel_id}"
+    pending_key = f"outline_pending_{novel_id}"
+    textarea_key = f"outline_textarea_{novel_id}"
 
-            if st.session_state.get("confirm_regen"):
+    if chat_key not in st.session_state:
+        st.session_state[chat_key] = []
+    if pending_key not in st.session_state:
+        st.session_state[pending_key] = None
+    # 初始化文本框内容（首次从 DB 加载）
+    if textarea_key not in st.session_state:
+        st.session_state[textarea_key] = _outline_to_markdown(novel_outline)
+
+    # 有新的 AI 建议时刷新文本框
+    if st.session_state[pending_key] is not None:
+        st.session_state[textarea_key] = st.session_state[pending_key]
+        st.session_state[pending_key] = None
+
+    # Canvas 两栏布局
+    col_chat, col_doc = st.columns([1, 2], gap="medium")
+
+    # ─── 左栏：AI 聊天 ────────────────────────────────────
+    with col_chat:
+        st.markdown("#### 🤖 AI 大纲助手")
+
+        # 聊天历史（固定高度可滚动）
+        with st.container(height=520, border=True):
+            history = st.session_state[chat_key]
+            if not history:
+                st.caption("💡 告诉 AI 你的故事方向，或让它帮你完善某个部分。\n\n"
+                           "AI 提供新版大纲时，会出现「应用到编辑器」按钮。")
+            for idx, msg in enumerate(history):
+                with st.chat_message(msg["role"]):
+                    text = msg["content"]
+                    suggestion = _extract_suggestion(text) if msg["role"] == "assistant" else None
+                    if suggestion:
+                        display = re.sub(r'```(?:markdown|text)?\n.*?```', '', text, flags=re.DOTALL).strip()
+                        if display:
+                            st.markdown(display)
+                        with st.container(border=True):
+                            st.caption("📄 AI 生成了新版大纲")
+                            st.markdown(suggestion[:300] + ("…" if len(suggestion) > 300 else ""))
+                            if st.button("📋 应用到编辑器", key=f"apply_outline_{novel_id}_{idx}",
+                                         use_container_width=True, type="primary"):
+                                st.session_state[pending_key] = suggestion
+                                st.rerun()
+                    else:
+                        st.markdown(text)
+
+        if user_input := st.chat_input("和 AI 讨论大纲…", key="outline_chat_input"):
+            history = st.session_state[chat_key]
+            history.append({"role": "user", "content": user_input})
+            current_doc = st.session_state.get(textarea_key, "")
+            with st.spinner("AI 思考中…"):
+                try:
+                    agent = CanvasAgent(novel_id=novel_id, role="outline")
+                    reply = agent.chat(history, document_content=current_doc)
+                    agent.close()
+                except Exception as e:
+                    history.pop()
+                    st.error(f"AI 出错：{e}")
+                    st.stop()
+            history.append({"role": "assistant", "content": reply})
+            st.session_state[chat_key] = history
+            st.rerun()
+
+        if st.session_state[chat_key]:
+            if st.button("🗑️ 清空对话", use_container_width=True, key="clear_outline_chat"):
+                st.session_state[chat_key] = []
+                st.rerun()
+
+    # ─── 右栏：大纲文档 ──────────────────────────────────
+    with col_doc:
+        tab1, tab2, tab3 = st.tabs(["📖 整体大纲", "📋 章节大纲", "📄 导入文档"])
+
+        # ── Tab1: 整体大纲（Markdown 编辑器）────────────────
+        with tab1:
+            btn_c1, btn_c2, btn_c3 = st.columns([2, 2, 1])
+            with btn_c1:
+                if st.button("💾 保存并解析", type="primary", use_container_width=True,
+                             disabled=not can_edit(novel_id)):
+                    md = st.session_state.get(textarea_key, "").strip()
+                    if md:
+                        with st.spinner("AI 解析并保存中…"):
+                            try:
+                                agent = OutlineAgent(novel_id)
+                                parsed = agent.parse_document(md)
+                                agent.close()
+                                workflow = load_novel(novel_id)
+                                result = workflow.import_document_data(parsed)
+                                workflow.close()
+                                if result.success:
+                                    # 刷新 textarea 内容
+                                    db = get_db()
+                                    new_outline = db.query(NovelOutline).filter(
+                                        NovelOutline.novel_id == novel_id).first()
+                                    db.close()
+                                    st.session_state[textarea_key] = _outline_to_markdown(new_outline)
+                                    st.success(f"✅ {result.message}")
+                                    st.rerun()
+                                else:
+                                    st.error(result.message)
+                            except Exception as e:
+                                st.error(f"保存失败：{e}")
+            with btn_c2:
+                if can_edit(novel_id) and st.button("🤖 重新生成大纲", use_container_width=True):
+                    st.session_state["confirm_regen_outline"] = True
+            with btn_c3:
+                if st.button("↺ 从DB刷新", use_container_width=True, help="丢弃当前编辑，从数据库重新加载"):
+                    db = get_db()
+                    fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+                    db.close()
+                    st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                    st.rerun()
+
+            st.text_area(
+                "整体大纲（Markdown 格式，保存时 AI 会解析各字段）",
+                key=textarea_key,
+                height=480,
+                placeholder="在此编写整体大纲，或通过左侧 AI 聊天生成。\n\n"
+                            "示例格式：\n## 前提设定\n...\n\n## 核心主题\n...",
+            )
+
+            # 重新生成确认
+            if st.session_state.get("confirm_regen_outline"):
                 with st.container(border=True):
                     st.warning("⚠️ 重新生成大纲将覆盖所有现有章纲，是否继续？")
                     new_ch_count = st.number_input("总章节数", min_value=10, max_value=500,
-                                                    value=total or 100, step=10)
-                    c1, c2 = st.columns(2)
-                    if c1.button("确认重新生成", type="primary"):
+                                                    value=total or 100, step=10, key="regen_ch_count")
+                    r1, r2 = st.columns(2)
+                    if r1.button("确认重新生成", type="primary", key="confirm_regen_btn"):
                         progress_ph = st.empty()
                         workflow = load_novel(novel_id)
                         result = workflow.generate_outline(
@@ -67,331 +224,271 @@ def page_outline():
                         )
                         workflow.close()
                         progress_ph.empty()
-                        st.session_state["confirm_regen"] = False
+                        st.session_state["confirm_regen_outline"] = False
                         if result.success:
+                            db = get_db()
+                            fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+                            db.close()
+                            st.session_state[textarea_key] = _outline_to_markdown(fresh)
                             st.success(result.message)
                             st.rerun()
                         else:
                             st.error(result.message)
-                    if c2.button("取消"):
-                        st.session_state["confirm_regen"] = False
+                    if r2.button("取消", key="cancel_regen_btn"):
+                        st.session_state["confirm_regen_outline"] = False
                         st.rerun()
 
-        st.divider()
-
-        # 整体大纲展示与编辑
-        if novel_outline:
-            st.markdown("### 整体大纲")
-            with st.form("total_outline_form"):
-                premise = st.text_area("前提设定", value=novel_outline.premise or "", height=80)
-                theme = st.text_area("核心主题", value=novel_outline.theme or "", height=60)
-                main_conflict = st.text_area("全书主要矛盾", value=novel_outline.main_conflict or "", height=80)
-                protagonist_arc = st.text_area("主角成长弧光", value=novel_outline.protagonist_arc or "", height=80)
-                ending_summary = st.text_area("结局概要", value=novel_outline.ending_summary or "", height=80)
-
-                st.markdown("**三幕结构**")
-                try:
-                    story_struct = json.loads(novel_outline.story_structure) if novel_outline.story_structure else {}
-                except Exception:
-                    story_struct = {}
-                act1 = st.text_area("第一幕", value=story_struct.get("act1", ""), height=60)
-                act2 = st.text_area("第二幕", value=story_struct.get("act2", ""), height=60)
-                act3 = st.text_area("第三幕", value=story_struct.get("act3", ""), height=60)
-
-                if st.form_submit_button("💾 保存整体大纲", disabled=not can_edit(novel_id)):
-                    from core.memory import MemoryManager
-                    mem = MemoryManager(novel_id)
-                    mem.global_mem.save_outline({
-                        "novel_id": novel_id,
-                        "premise": premise.strip(),
-                        "theme": theme.strip(),
-                        "main_conflict": main_conflict.strip(),
-                        "protagonist_arc": protagonist_arc.strip(),
-                        "ending_summary": ending_summary.strip(),
-                        "story_structure": json.dumps(
-                            {"act1": act1.strip(), "act2": act2.strip(), "act3": act3.strip()},
-                            ensure_ascii=False
-                        ),
-                    })
-                    mem.close()
-                    st.success("✅ 整体大纲已保存")
-                    st.rerun()
-        else:
-            st.info("尚未生成整体大纲，点击「重新生成大纲」按钮开始。")
-
-        # 卷大纲
-        if volumes:
-            st.divider()
-            st.markdown("### 卷大纲")
-            for vol in volumes:
-                vol_chapters = [c for c in chapters
-                                if vol.start_chapter and vol.end_chapter
-                                and vol.start_chapter <= c.chapter_number <= vol.end_chapter]
-                with st.expander(
-                    f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
-                    expanded=False
-                ):
-                    if vol.summary:
-                        st.markdown(f"**简介：** {vol.summary}")
-                    if vol.main_conflict:
-                        st.markdown(f"**主要矛盾：** {vol.main_conflict}")
-                    st.caption(f"共 {len(vol_chapters)} 章")
-
-    # ─────────────────────────────────────────────────
-    # Tab 2: 章节大纲
-    # ─────────────────────────────────────────────────
-    with tab2:
-        max_published = max((c.chapter_number for c in chapters if c.status == "published"), default=0)
-        show_foreshadowing_alerts(novel_id, max_published)
-
-        # 过滤控件
-        filter_col1, filter_col2 = st.columns([1, 2])
-        with filter_col1:
-            status_filter = st.selectbox(
-                "状态筛选",
-                ["全部", "未完成", "已完成", "有章纲"],
-                key="outline_filter"
-            )
-        with filter_col2:
-            search_ch = st.text_input("搜索章节", placeholder="章节标题或关键词", key="outline_search")
-
-        filtered_chapters = chapters
-        if status_filter == "未完成":
-            filtered_chapters = [c for c in chapters if c.status != "published"]
-        elif status_filter == "已完成":
-            filtered_chapters = [c for c in chapters if c.status == "published"]
-        elif status_filter == "有章纲":
-            filtered_chapters = [c for c in chapters if c.status != "outline_pending"]
-        if search_ch:
-            filtered_chapters = [c for c in filtered_chapters
-                                  if search_ch in (c.title or "") or search_ch in (c.outline_core_event or "")]
-
-        if not filtered_chapters:
-            st.info("没有匹配的章节")
-        else:
-            for chapter in filtered_chapters:
-                status_badge = format_chapter_status(chapter.status)
-                approval = format_approval_badge(chapter.approval_status) if chapter.status == "published" else ""
-                with st.expander(
-                    f"第{chapter.chapter_number}章《{chapter.title or '未命名'}》 {status_badge} {approval}",
-                    expanded=False
-                ):
-                    tab_view, tab_edit = st.tabs(["查看", "编辑章纲"])
-
-                    with tab_view:
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            if chapter.outline_core_event:
-                                st.markdown(f"**核心事件：** {chapter.outline_core_event}")
-                            if chapter.outline_conflict:
-                                st.markdown(f"**主要冲突：** {chapter.outline_conflict}")
-                            if chapter.outline_scene:
-                                st.markdown(f"**场景：** {chapter.outline_scene}")
-                            if chapter.outline_emotion:
-                                st.markdown(f"**情感基调：** {chapter.outline_emotion}")
-                        with c2:
-                            chars_list = chapter.get_outline_characters()
-                            if chars_list:
-                                st.markdown(f"**出场人物：** {', '.join(chars_list)}")
-                            if chapter.outline_foreshadowing_set:
-                                try:
-                                    fs = json.loads(chapter.outline_foreshadowing_set)
-                                    if fs: st.markdown(f"**埋下伏笔：** {', '.join(fs)}")
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-                            if chapter.outline_foreshadowing_collect:
-                                try:
-                                    fc = json.loads(chapter.outline_foreshadowing_collect)
-                                    if fc: st.markdown(f"**回收伏笔：** {', '.join(fc)}")
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-                            if chapter.outline_ending:
-                                st.markdown(f"**结尾方式：** {chapter.outline_ending}")
-                            if chapter.word_count:
-                                st.markdown(f"**字数：** {chapter.word_count:,}")
-
-                        if chapter.status in ("outlined", "writing", "review_pending"):
-                            if st.button(f"✍️ 写作第{chapter.chapter_number}章",
-                                         key=f"write_from_outline_{chapter.chapter_number}"):
-                                st.session_state.writing_chapter = chapter.chapter_number
-                                st.session_state.page = "写作"
-                                st.rerun()
-
-                    with tab_edit:
-                        if chapter.status == "published":
-                            st.warning("⚠️ 该章节已写完，修改章纲后本章将被标记为「需重审」。")
-
-                        with st.form(f"outline_edit_{chapter.chapter_number}"):
-                            new_title = st.text_input("章节标题", value=chapter.title or "")
-                            new_core = st.text_area("核心事件 ⚡️", value=chapter.outline_core_event or "", height=60,
-                                                    help="变更核心事件会触发后续章节影响分析")
-                            new_conflict = st.text_area("主要冲突", value=chapter.outline_conflict or "", height=60)
-                            new_scene = st.text_area("场景设定", value=chapter.outline_scene or "", height=60)
-                            new_emotion = st.text_input("情感基调", value=chapter.outline_emotion or "")
-                            new_ending = st.text_input("结尾方式 ⚡️", value=chapter.outline_ending or "",
-                                                       help="变更结尾方式会触发后续章节影响分析")
-
-                            def _fs_to_str(json_field_val):
-                                if not json_field_val:
-                                    return ""
-                                try:
-                                    items = json.loads(json_field_val)
-                                    return ", ".join(items) if items else ""
-                                except Exception:
-                                    return json_field_val
-
-                            new_fs_set = st.text_input("埋下的伏笔（逗号分隔）",
-                                                       value=_fs_to_str(chapter.outline_foreshadowing_set))
-                            new_fs_collect = st.text_input("回收的伏笔（逗号分隔）",
-                                                           value=_fs_to_str(chapter.outline_foreshadowing_collect))
-                            edit_reason = st.text_input("修改原因（可选）",
-                                                        placeholder="例如：调整节奏，把高潮提前一章")
-
-                            if st.form_submit_button("💾 保存章纲并分析影响",
-                                                     disabled=not can_edit(novel_id)):
-                                updates = {}
-                                if new_title.strip() != (chapter.title or ""):
-                                    updates["title"] = new_title.strip()
-                                if new_core.strip() != (chapter.outline_core_event or ""):
-                                    updates["outline_core_event"] = new_core.strip()
-                                if new_conflict.strip() != (chapter.outline_conflict or ""):
-                                    updates["outline_conflict"] = new_conflict.strip()
-                                if new_scene.strip() != (chapter.outline_scene or ""):
-                                    updates["outline_scene"] = new_scene.strip()
-                                if new_emotion.strip() != (chapter.outline_emotion or ""):
-                                    updates["outline_emotion"] = new_emotion.strip()
-                                if new_ending.strip() != (chapter.outline_ending or ""):
-                                    updates["outline_ending"] = new_ending.strip()
-                                new_fs_set_list = [s.strip() for s in new_fs_set.split(",") if s.strip()]
-                                old_fs_set_list = json.loads(chapter.outline_foreshadowing_set or "[]")
-                                if new_fs_set_list != old_fs_set_list:
-                                    updates["outline_foreshadowing_set"] = json.dumps(
-                                        new_fs_set_list, ensure_ascii=False)
-                                new_fs_collect_list = [s.strip() for s in new_fs_collect.split(",") if s.strip()]
-                                old_fs_collect_list = json.loads(chapter.outline_foreshadowing_collect or "[]")
-                                if new_fs_collect_list != old_fs_collect_list:
-                                    updates["outline_foreshadowing_collect"] = json.dumps(
-                                        new_fs_collect_list, ensure_ascii=False)
-
-                                if not updates:
-                                    st.info("没有检测到修改")
-                                else:
-                                    with st.spinner("保存章纲并分析影响..."):
-                                        workflow = load_novel(novel_id)
-                                        result = workflow.update_chapter_outline(
-                                            chapter.chapter_number, updates, edit_reason
-                                        )
-                                        workflow.close()
-                                    if result.success:
-                                        st.success(f"✅ {result.message}")
-                                        affected = result.data.get("affected_chapters", [])
-                                        if affected:
-                                            show_outline_impact(chapter.chapter_number, affected)
-                                        st.rerun()
-                                    else:
-                                        st.error(result.message)
-
-    # ─────────────────────────────────────────────────
-    # Tab 3: 导入文档
-    # ─────────────────────────────────────────────────
-    with tab3:
-        st.markdown("### 📄 导入大纲/设定文档")
-        st.caption("粘贴你自己编写的大纲、世界观、人物设定等内容，AI 会识别并分别填入对应字段。已存在的数据不会被覆盖。")
-
-        if not can_edit(novel_id):
-            st.warning("仅主笔可以导入文档")
-        else:
-            # 选择解析模型
-            options, label_map = build_model_options()
-            default_idx = next((i for i, lbl in enumerate(options) if label_map[lbl] == DEFAULT_MODEL_ID), 0)
-            parse_model_label = st.selectbox("解析模型", options, index=default_idx, key="parse_model_select")
-            parse_model_id = label_map.get(parse_model_label, DEFAULT_MODEL_ID)
-
-            doc_text = st.text_area(
-                "粘贴文档内容",
-                height=300,
-                placeholder="可以是任意格式：大纲、世界观设定、人物档案、章节列表……AI 会自动识别。",
-                key="import_doc_text"
-            )
-
-            col_parse, col_clear = st.columns([2, 1])
-            with col_parse:
-                parse_btn = st.button("🔍 AI 解析", type="primary", disabled=not doc_text.strip(),
-                                      use_container_width=True)
-            with col_clear:
-                if st.button("清空", use_container_width=True):
-                    st.session_state["import_doc_text"] = ""
-                    st.session_state["import_parsed_result"] = None
-                    st.rerun()
-
-            if parse_btn and doc_text.strip():
-                with st.spinner("AI 正在解析文档…"):
-                    try:
-                        agent = OutlineAgent(novel_id, parse_model_id)
-                        parsed = agent.parse_document(doc_text.strip())
-                        agent.close()
-                        st.session_state["import_parsed_result"] = parsed
-                    except Exception as e:
-                        st.error(f"解析失败：{e}")
-
-            # 展示解析结果预览
-            parsed_result = st.session_state.get("import_parsed_result")
-            if parsed_result:
+            # 卷大纲
+            if volumes:
                 st.divider()
-                st.markdown("#### 解析结果预览")
+                st.markdown("**卷大纲**")
+                for vol in volumes:
+                    with st.expander(
+                        f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
+                        expanded=False
+                    ):
+                        if vol.summary:
+                            st.markdown(f"**简介：** {vol.summary}")
+                        if vol.main_conflict:
+                            st.markdown(f"**主要矛盾：** {vol.main_conflict}")
 
-                total_outline = parsed_result.get("total_outline", {})
-                world_setting = parsed_result.get("world_setting", {})
-                characters = parsed_result.get("characters", [])
-                chapters_parsed = parsed_result.get("chapters", [])
+        # ── Tab2: 章节大纲 ────────────────────────────────
+        with tab2:
+            max_published = max((c.chapter_number for c in chapters if c.status == "published"), default=0)
+            show_foreshadowing_alerts(novel_id, max_published)
 
-                has_content = False
+            fc1, fc2 = st.columns([1, 2])
+            with fc1:
+                status_filter = st.selectbox(
+                    "状态筛选", ["全部", "未完成", "已完成", "有章纲"], key="outline_filter"
+                )
+            with fc2:
+                search_ch = st.text_input("搜索章节", placeholder="章节标题或关键词", key="outline_search")
 
-                if any(v for v in total_outline.values() if v):
-                    has_content = True
-                    with st.expander(f"📖 整体大纲（{sum(1 for v in total_outline.values() if v)} 个字段）",
-                                     expanded=True):
-                        for k, v in total_outline.items():
-                            if v:
-                                label = {"premise": "前提设定", "theme": "核心主题",
-                                         "main_conflict": "主要矛盾", "protagonist_arc": "主角弧光",
-                                         "ending_summary": "结局概要", "story_structure": "三幕结构"}.get(k, k)
-                                st.markdown(f"**{label}：** {json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v}")
+            filtered = chapters
+            if status_filter == "未完成":
+                filtered = [c for c in chapters if c.status != "published"]
+            elif status_filter == "已完成":
+                filtered = [c for c in chapters if c.status == "published"]
+            elif status_filter == "有章纲":
+                filtered = [c for c in chapters if c.status != "outline_pending"]
+            if search_ch:
+                filtered = [c for c in filtered
+                            if search_ch in (c.title or "") or search_ch in (c.outline_core_event or "")]
 
-                if world_setting:
-                    has_content = True
-                    with st.expander(f"🌍 世界观设定（{len(world_setting)} 条）", expanded=True):
-                        for k, v in world_setting.items():
-                            if v:
-                                st.markdown(f"**{k}：** {v}")
+            if not filtered:
+                st.info("没有匹配的章节")
+            else:
+                for chapter in filtered:
+                    status_badge = format_chapter_status(chapter.status)
+                    approval = format_approval_badge(chapter.approval_status) if chapter.status == "published" else ""
+                    with st.expander(
+                        f"第{chapter.chapter_number}章《{chapter.title or '未命名'}》 {status_badge} {approval}",
+                        expanded=False
+                    ):
+                        tv, te = st.tabs(["查看", "编辑章纲"])
 
-                if characters:
-                    has_content = True
-                    with st.expander(f"👤 人物档案（{len(characters)} 个）", expanded=True):
-                        for ch in characters:
-                            name = ch.get("name", "未命名")
-                            role = ch.get("role", "")
-                            st.markdown(f"- **{name}**（{role}）：{ch.get('personality', '') or ch.get('background', '')[:60] if ch.get('personality') or ch.get('background') else ''}...")
+                        with tv:
+                            vc1, vc2 = st.columns(2)
+                            with vc1:
+                                if chapter.outline_core_event:
+                                    st.markdown(f"**核心事件：** {chapter.outline_core_event}")
+                                if chapter.outline_conflict:
+                                    st.markdown(f"**主要冲突：** {chapter.outline_conflict}")
+                                if chapter.outline_scene:
+                                    st.markdown(f"**场景：** {chapter.outline_scene}")
+                                if chapter.outline_emotion:
+                                    st.markdown(f"**情感基调：** {chapter.outline_emotion}")
+                            with vc2:
+                                chars_list = chapter.get_outline_characters()
+                                if chars_list:
+                                    st.markdown(f"**出场人物：** {', '.join(chars_list)}")
+                                if chapter.outline_foreshadowing_set:
+                                    try:
+                                        fs = json.loads(chapter.outline_foreshadowing_set)
+                                        if fs: st.markdown(f"**埋下伏笔：** {', '.join(fs)}")
+                                    except Exception:
+                                        pass
+                                if chapter.outline_foreshadowing_collect:
+                                    try:
+                                        fc = json.loads(chapter.outline_foreshadowing_collect)
+                                        if fc: st.markdown(f"**回收伏笔：** {', '.join(fc)}")
+                                    except Exception:
+                                        pass
+                                if chapter.outline_ending:
+                                    st.markdown(f"**结尾：** {chapter.outline_ending}")
+                                if chapter.word_count:
+                                    st.markdown(f"**字数：** {chapter.word_count:,}")
 
-                if chapters_parsed:
-                    has_content = True
-                    with st.expander(f"📋 章节大纲（{len(chapters_parsed)} 章）", expanded=False):
-                        for ch in chapters_parsed[:10]:
-                            st.markdown(f"- 第{ch.get('chapter_number')}章《{ch.get('title', '')}》：{ch.get('outline_core_event', '')[:60]}…")
-                        if len(chapters_parsed) > 10:
-                            st.caption(f"…共 {len(chapters_parsed)} 章，仅展示前 10 章")
+                            if chapter.status in ("outlined", "writing", "review_pending"):
+                                if st.button(f"✍️ 写作第{chapter.chapter_number}章",
+                                             key=f"goto_write_{chapter.chapter_number}"):
+                                    st.session_state.writing_chapter = chapter.chapter_number
+                                    st.session_state.page = "写作"
+                                    st.rerun()
 
-                if not has_content:
-                    st.warning("未从文档中识别到有效内容，请检查文档格式或换用其他模型重试。")
-                else:
+                        with te:
+                            if chapter.status == "published":
+                                st.warning("⚠️ 该章节已写完，修改章纲后将标记为「需重审」。")
+
+                            with st.form(f"outline_edit_{chapter.chapter_number}"):
+                                new_title   = st.text_input("章节标题", value=chapter.title or "")
+                                new_core    = st.text_area("核心事件 ⚡️", value=chapter.outline_core_event or "", height=60)
+                                new_conflict = st.text_area("主要冲突", value=chapter.outline_conflict or "", height=60)
+                                new_scene   = st.text_area("场景设定", value=chapter.outline_scene or "", height=60)
+                                new_emotion = st.text_input("情感基调", value=chapter.outline_emotion or "")
+                                new_ending  = st.text_input("结尾方式 ⚡️", value=chapter.outline_ending or "")
+
+                                def _fs_str(v):
+                                    if not v: return ""
+                                    try:
+                                        return ", ".join(json.loads(v))
+                                    except Exception:
+                                        return v or ""
+
+                                new_fs_set     = st.text_input("埋下伏笔（逗号分隔）", value=_fs_str(chapter.outline_foreshadowing_set))
+                                new_fs_collect = st.text_input("回收伏笔（逗号分隔）", value=_fs_str(chapter.outline_foreshadowing_collect))
+                                edit_reason    = st.text_input("修改原因（可选）")
+
+                                if st.form_submit_button("💾 保存章纲并分析影响",
+                                                         disabled=not can_edit(novel_id)):
+                                    updates = {}
+                                    if new_title.strip() != (chapter.title or ""):
+                                        updates["title"] = new_title.strip()
+                                    if new_core.strip() != (chapter.outline_core_event or ""):
+                                        updates["outline_core_event"] = new_core.strip()
+                                    if new_conflict.strip() != (chapter.outline_conflict or ""):
+                                        updates["outline_conflict"] = new_conflict.strip()
+                                    if new_scene.strip() != (chapter.outline_scene or ""):
+                                        updates["outline_scene"] = new_scene.strip()
+                                    if new_emotion.strip() != (chapter.outline_emotion or ""):
+                                        updates["outline_emotion"] = new_emotion.strip()
+                                    if new_ending.strip() != (chapter.outline_ending or ""):
+                                        updates["outline_ending"] = new_ending.strip()
+
+                                    def _to_list(s):
+                                        return [x.strip() for x in s.split(",") if x.strip()]
+
+                                    fss = _to_list(new_fs_set)
+                                    if fss != json.loads(chapter.outline_foreshadowing_set or "[]"):
+                                        updates["outline_foreshadowing_set"] = json.dumps(fss, ensure_ascii=False)
+                                    fsc = _to_list(new_fs_collect)
+                                    if fsc != json.loads(chapter.outline_foreshadowing_collect or "[]"):
+                                        updates["outline_foreshadowing_collect"] = json.dumps(fsc, ensure_ascii=False)
+
+                                    if not updates:
+                                        st.info("没有检测到修改")
+                                    else:
+                                        with st.spinner("保存并分析影响…"):
+                                            workflow = load_novel(novel_id)
+                                            result = workflow.update_chapter_outline(
+                                                chapter.chapter_number, updates, edit_reason
+                                            )
+                                            workflow.close()
+                                        if result.success:
+                                            st.success(f"✅ {result.message}")
+                                            affected = result.data.get("affected_chapters", [])
+                                            if affected:
+                                                show_outline_impact(chapter.chapter_number, affected)
+                                            st.rerun()
+                                        else:
+                                            st.error(result.message)
+
+        # ── Tab3: 导入文档 ────────────────────────────────
+        with tab3:
+            st.markdown("### 📄 导入大纲/设定文档")
+            st.caption("粘贴任意格式的大纲或设定文档，AI 识别内容并填入对应字段，已有数据不会被覆盖。")
+
+            if not can_edit(novel_id):
+                st.warning("仅主笔可以导入文档")
+            else:
+                options, label_map = build_model_options()
+                default_idx = next((i for i, lbl in enumerate(options) if label_map[lbl] == DEFAULT_MODEL_ID), 0)
+                parse_model_label = st.selectbox("解析模型", options, index=default_idx, key="parse_model_select")
+                parse_model_id = label_map.get(parse_model_label, DEFAULT_MODEL_ID)
+
+                doc_text = st.text_area(
+                    "粘贴文档内容",
+                    height=250,
+                    placeholder="可以是任意格式：大纲、世界观、人物档案、章节列表……AI 自动识别。",
+                    key="import_doc_text"
+                )
+
+                pc1, pc2 = st.columns([2, 1])
+                with pc1:
+                    parse_btn = st.button("🔍 AI 解析", type="primary",
+                                          disabled=not doc_text.strip(), use_container_width=True)
+                with pc2:
+                    if st.button("清空", use_container_width=True):
+                        st.session_state["import_doc_text"] = ""
+                        st.session_state["import_parsed_result"] = None
+                        st.rerun()
+
+                if parse_btn and doc_text.strip():
+                    with st.spinner("AI 正在解析…"):
+                        try:
+                            agent = OutlineAgent(novel_id, parse_model_id)
+                            parsed = agent.parse_document(doc_text.strip())
+                            agent.close()
+                            st.session_state["import_parsed_result"] = parsed
+                        except Exception as e:
+                            st.error(f"解析失败：{e}")
+
+                parsed_result = st.session_state.get("import_parsed_result")
+                if parsed_result:
                     st.divider()
-                    if st.button("✅ 确认导入", type="primary", use_container_width=True):
-                        with st.spinner("正在写入数据库…"):
-                            workflow = load_novel(novel_id)
-                            result = workflow.import_document_data(parsed_result)
-                            workflow.close()
-                        if result.success:
-                            st.success(f"✅ 导入完成：{result.message}")
-                            st.session_state["import_parsed_result"] = None
-                        else:
-                            st.error(result.message)
+                    st.markdown("#### 解析结果预览")
+                    total_outline = parsed_result.get("total_outline", {})
+                    world_setting = parsed_result.get("world_setting", {})
+                    characters    = parsed_result.get("characters", [])
+                    ch_parsed     = parsed_result.get("chapters", [])
+                    has_content   = False
+
+                    if any(v for v in total_outline.values() if v):
+                        has_content = True
+                        with st.expander(f"📖 整体大纲（{sum(1 for v in total_outline.values() if v)} 字段）", expanded=True):
+                            labels = {"premise": "前提设定", "theme": "核心主题", "main_conflict": "主要矛盾",
+                                      "protagonist_arc": "主角弧光", "ending_summary": "结局概要", "story_structure": "三幕结构"}
+                            for k, v in total_outline.items():
+                                if v:
+                                    st.markdown(f"**{labels.get(k, k)}：** {json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v}")
+
+                    if world_setting:
+                        has_content = True
+                        with st.expander(f"🌍 世界观设定（{len(world_setting)} 条）", expanded=True):
+                            for k, v in world_setting.items():
+                                if v: st.markdown(f"**{k}：** {v}")
+
+                    if characters:
+                        has_content = True
+                        with st.expander(f"👤 人物档案（{len(characters)} 个）", expanded=True):
+                            for ch in characters:
+                                desc = ch.get("personality") or ch.get("background", "")
+                                st.markdown(f"- **{ch.get('name', '未命名')}**（{ch.get('role', '')}）：{desc[:60] if desc else ''}")
+
+                    if ch_parsed:
+                        has_content = True
+                        with st.expander(f"📋 章节大纲（{len(ch_parsed)} 章）", expanded=False):
+                            for ch in ch_parsed[:10]:
+                                st.markdown(f"- 第{ch.get('chapter_number')}章《{ch.get('title', '')}》：{ch.get('outline_core_event', '')[:60]}")
+                            if len(ch_parsed) > 10:
+                                st.caption(f"…共 {len(ch_parsed)} 章，仅展示前 10")
+
+                    if not has_content:
+                        st.warning("未识别到有效内容，请检查文档或换用其他模型。")
+                    else:
+                        st.divider()
+                        if st.button("✅ 确认导入", type="primary", use_container_width=True):
+                            with st.spinner("写入数据库…"):
+                                workflow = load_novel(novel_id)
+                                result = workflow.import_document_data(parsed_result)
+                                workflow.close()
+                            if result.success:
+                                st.success(f"✅ 导入完成：{result.message}")
+                                st.session_state["import_parsed_result"] = None
+                                db = get_db()
+                                fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+                                db.close()
+                                st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                            else:
+                                st.error(result.message)
