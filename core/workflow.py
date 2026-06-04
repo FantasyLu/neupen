@@ -444,12 +444,28 @@ class NovelWorkflow:
                 chapter.id, new_content, "user_edit", change_summary
             )
 
-            # 更新 SQLite 内容（跳过向量重建，避免 embedding 耗时）
+            # SQLite 写入（立即完成，< 1ms）
             self.memory.chapter_mem.save_chapter_content(chapter_number, new_content, "content")
 
             # 重置审批状态
             chapter.approval_status = "pending"
             self.db.commit()
+
+            # 向量索引异步更新，不阻塞 UI
+            import threading
+            from core.memory import FragmentMemory
+            _novel_id   = self.novel_id
+            _ch_num     = chapter_number
+            _title      = chapter.title or ""
+            _content    = new_content
+
+            def _rebuild_vectors():
+                try:
+                    FragmentMemory(_novel_id).add_chapter(_ch_num, _title, _content)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_rebuild_vectors, daemon=True).start()
 
             return WorkflowResult(success=True, message="修改已保存")
 
