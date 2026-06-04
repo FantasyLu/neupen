@@ -156,10 +156,11 @@ def page_writing():
                     st.stop()
             history.append({"role": "assistant", "content": reply})
             st.session_state[chat_key] = history
-            # 自动写入编辑器（无需点击应用按钮）
+            # 自动写入编辑器并保存（无需点击应用按钮）
             auto_sug = _extract_suggestion(reply)
             if auto_sug:
-                st.session_state[pending_key] = auto_sug
+                _auto_save(novel_id, selected_ch_num, auto_sug, pending_key, text_key, "AI 写作助手自动保存")
+                st.toast("✅ 已自动保存")
             st.rerun()
 
         if st.session_state[chat_key]:
@@ -387,10 +388,11 @@ def page_writing():
                                     agent.close()
                                     history.append({"role": "assistant", "content": reply})
                                     st.session_state[chat_key] = history
-                                    # 自动写入编辑器
+                                    # 自动写入编辑器并保存
                                     sug = _extract_suggestion(reply)
                                     if sug:
-                                        st.session_state[pending_key] = sug
+                                        _auto_save(novel_id, selected_ch_num, sug, pending_key, text_key, "AI 建议自动保存")
+                                        st.toast("✅ 已自动保存")
                                     st.rerun()
                                 except Exception as e:
                                     history.pop()

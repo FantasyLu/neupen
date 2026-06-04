@@ -7,6 +7,7 @@ import re
 import streamlit as st
 
 from core.agents import CanvasAgent
+from core.workflow import load_novel
 
 
 # ──────────────────────────────────────────────────────────────
@@ -134,11 +135,19 @@ def render_global_chat(novel_id: int):
         history.append({"role": "assistant", "content": reply})
         st.session_state[chat_key] = history
 
-        # chapter 块自动写入编辑器，无需用户点击
+        # chapter 块自动写入编辑器并保存，无需用户点击
         for part in _parse_response(reply):
             if part["type"] == "chapter":
                 ch_num = st.session_state.get("writing_chapter") or 1
                 st.session_state[f"writing_pending_{novel_id}_{ch_num}"] = part["content"]
+                # 立即持久化到数据库（向量索引在 update_chapter_content 内异步重建）
+                try:
+                    wf = load_novel(novel_id)
+                    wf.update_chapter_content(ch_num, part["content"], "AI 全局助手自动保存")
+                    wf.close()
+                    st.session_state[f"edit_content_{novel_id}_{ch_num}"] = part["content"]
+                except Exception:
+                    pass  # 保存失败不影响 UI 流程
 
         st.rerun()
 

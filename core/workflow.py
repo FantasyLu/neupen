@@ -355,8 +355,22 @@ class NovelWorkflow:
                     progress_callback(f"✨ 正在润色第{chapter_number}章...")
                 final_content = self.polisher_agent.polish_chapter(current_content)
 
-            # Step 5: 保存最终内容
-            self.memory.save_new_chapter(chapter_number, final_content, "content")
+            # Step 5: 保存最终内容（SQLite 同步，向量索引异步）
+            self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
+            import threading
+            from core.memory import FragmentMemory
+            _novel_id_wc = self.novel_id
+            _ch_num_wc   = chapter_number
+            _title_wc    = chapter.title if chapter else ""
+            _content_wc  = final_content
+
+            def _rebuild_vectors_wc():
+                try:
+                    FragmentMemory(_novel_id_wc).add_chapter(_ch_num_wc, _title_wc, _content_wc)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_rebuild_vectors_wc, daemon=True).start()
 
             # 保存版本历史
             if chapter:
