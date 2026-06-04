@@ -451,16 +451,7 @@ class NovelWorkflow:
             chapter.approval_status = "pending"
             self.db.commit()
 
-            # 触发冲突检测
-            detector = ConflictDetector(self.novel_id, self.model_reviewer)
-            report = detector.detect_chapter_conflicts(chapter_number, new_content)
-            detector.close()
-
-            return WorkflowResult(
-                success=True,
-                message="修改已保存",
-                data={"review_report": report.to_dict()}
-            )
+            return WorkflowResult(success=True, message="修改已保存")
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"保存失败：{e}")
