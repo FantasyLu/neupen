@@ -396,15 +396,141 @@ def page_writing():
 
                     conflicts = manual_review.get("conflicts", [])
                     if conflicts:
-                        for c in conflicts:
+                        full_text = st.session_state.get(text_key, "")
+                        for i, c in enumerate(conflicts):
                             sev  = c.get("severity", 0)
                             icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
+                            loc  = (c.get("location") or "").strip()
+                            sols = c.get("solutions", [])
+
                             with st.container(border=True):
-                                st.markdown(f"{icon} **[{c.get('type', '')}] 严重度 {sev}**")
-                                st.markdown(f"{c.get('description', '')}")
-                                sols = c.get("solutions", [])
-                                if sols:
-                                    st.caption("建议：" + " / ".join(sols[:2]))
+                                # ── 标题 + 描述
+                                st.markdown(f"{icon} **[{c.get('type', '未知')}] 严重度 {sev}**")
+                                st.markdown(c.get("description", ""))
+
+                                # ── 位置定位
+                                if loc:
+                                    pos = full_text.find(loc[:60]) if full_text else -1
+                                    if pos >= 0:
+                                        line_no = full_text[:pos].count('\n') + 1
+                                        st.caption(f"📍 约第 {line_no} 行")
+                                    else:
+                                        st.caption("📍 原文位置：")
+                                    st.code(loc[:250] + ("…" if len(loc) > 250 else ""), language=None)
+
+                                # ── 快捷方案按钮
+                                if sols and can_edit(novel_id):
+                                    st.caption("快捷方案（AI 直接修改）：")
+                                    for j, sol in enumerate(sols[:3]):
+                                        if st.button(
+                                            f"✏️ {sol[:55]}", use_container_width=True,
+                                            key=f"qapply_{novel_id}_{selected_ch_num}_{i}_{j}"
+                                        ):
+                                            cur = st.session_state.get(text_key, "").strip()
+                                            if cur:
+                                                with st.spinner("AI 修改中…"):
+                                                    try:
+                                                        _agent = CanvasAgent(novel_id=novel_id, role="writer")
+                                                        _msg = (
+                                                            f"请修改以下章节正文，针对问题：\n"
+                                                            f"「{c.get('description', '')}」\n"
+                                                            f"位置参考：{loc[:120]}\n"
+                                                            f"按方案「{sol}」修改，"
+                                                            f"直接输出完整修改后正文（代码块包裹）。"
+                                                        )
+                                                        _reply = _agent.chat(
+                                                            [{"role": "user", "content": _msg}],
+                                                            document_content=cur
+                                                        )
+                                                        _agent.close()
+                                                        _sug = _extract_suggestion(_reply)
+                                                        if _sug:
+                                                            st.session_state[pending_key] = _sug
+                                                            st.rerun()
+                                                    except Exception as _e:
+                                                        st.error(f"修改失败：{_e}")
+
+                                # ── 对话式修改
+                                issue_key = f"review_issue_{novel_id}_{selected_ch_num}_{i}"
+                                if issue_key not in st.session_state:
+                                    st.session_state[issue_key] = []
+                                issue_hist = st.session_state[issue_key]
+
+                                with st.expander("💬 与 AI 讨论如何修改",
+                                                  expanded=bool(issue_hist)):
+                                    # 历史消息
+                                    for h_idx, hmsg in enumerate(issue_hist):
+                                        with st.chat_message(hmsg["role"]):
+                                            if hmsg["role"] == "assistant":
+                                                _sug2 = _extract_suggestion(hmsg["content"])
+                                                _disp = re.sub(
+                                                    r'```(?:markdown|text)?\n.*?```', '',
+                                                    hmsg["content"], flags=re.DOTALL
+                                                ).strip()
+                                                if _disp:
+                                                    st.markdown(_disp)
+                                                if _sug2:
+                                                    with st.container(border=True):
+                                                        st.markdown(
+                                                            _sug2[:200] + ("…" if len(_sug2) > 200 else "")
+                                                        )
+                                                        st.caption("✅ 已写入编辑器")
+                                                        if st.button(
+                                                            "↩️ 重新写入",
+                                                            key=f"ri_{novel_id}_{selected_ch_num}_{i}_{h_idx}",
+                                                            use_container_width=True
+                                                        ):
+                                                            st.session_state[pending_key] = _sug2
+                                                            st.rerun()
+                                            else:
+                                                st.markdown(hmsg["content"])
+
+                                    # 输入框
+                                    _input_key = f"ii_{novel_id}_{selected_ch_num}_{i}"
+                                    user_idea = st.text_input(
+                                        "告诉 AI 你的修改思路…",
+                                        key=_input_key,
+                                        placeholder="例如：改得更含蓄，不要直接说明动机"
+                                    )
+                                    if st.button(
+                                        "发送", use_container_width=True,
+                                        key=f"isend_{novel_id}_{selected_ch_num}_{i}"
+                                    ) and user_idea.strip():
+                                        cur2 = st.session_state.get(text_key, "").strip()
+                                        # 首条消息注入问题上下文
+                                        if not issue_hist:
+                                            send_content = (
+                                                f"我在审核章节时发现了一个问题：\n\n"
+                                                f"**类型：** {c.get('type', '')}\n"
+                                                f"**描述：** {c.get('description', '')}\n"
+                                                f"**位置：** {loc[:150] if loc else '见正文'}\n\n"
+                                                f"我希望：{user_idea.strip()}\n\n"
+                                                f"请给出修改后的完整正文（代码块包裹）。"
+                                            )
+                                        else:
+                                            send_content = user_idea.strip()
+
+                                        issue_hist.append({"role": "user", "content": user_idea.strip()})
+                                        send_hist = issue_hist[:-1] + [{"role": "user", "content": send_content}]
+
+                                        with st.spinner("AI 思考中…"):
+                                            try:
+                                                _a = CanvasAgent(novel_id=novel_id, role="writer")
+                                                _r = _a.chat(send_hist, document_content=cur2)
+                                                _a.close()
+                                            except Exception as _e2:
+                                                issue_hist.pop()
+                                                st.session_state[issue_key] = issue_hist
+                                                st.error(f"AI 出错：{_e2}")
+                                                st.stop()
+
+                                        issue_hist.append({"role": "assistant", "content": _r})
+                                        st.session_state[issue_key] = issue_hist
+                                        _sug3 = _extract_suggestion(_r)
+                                        if _sug3:
+                                            st.session_state[pending_key] = _sug3
+                                        st.session_state[_input_key] = ""
+                                        st.rerun()
                     else:
                         st.success("未发现明显问题")
 
