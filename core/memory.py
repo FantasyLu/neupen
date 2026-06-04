@@ -135,7 +135,7 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            char = Character(novel_id=self.novel_id, **data)
+            char = Character(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
             self.db.add(char)
             self.db.commit()
             self.db.refresh(char)
@@ -157,7 +157,7 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            outline = NovelOutline(novel_id=self.novel_id, **data)
+            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
@@ -182,7 +182,7 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            vol = Volume(novel_id=self.novel_id, **data)
+            vol = Volume(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
             self.db.add(vol)
             self.db.commit()
             self.db.refresh(vol)
@@ -211,7 +211,7 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            chap = Chapter(novel_id=self.novel_id, **data)
+            chap = Chapter(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
             self.db.add(chap)
             self.db.commit()
             self.db.refresh(chap)
@@ -232,7 +232,7 @@ class GlobalMemory:
 
     def save_foreshadowing(self, data: dict) -> Foreshadowing:
         """保存伏笔"""
-        f = Foreshadowing(novel_id=self.novel_id, **data)
+        f = Foreshadowing(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
         self.db.add(f)
         self.db.commit()
         self.db.refresh(f)
@@ -312,7 +312,7 @@ class GlobalMemory:
 
     def add_timeline_event(self, data: dict) -> TimelineEvent:
         """添加时间线事件"""
-        event = TimelineEvent(novel_id=self.novel_id, **data)
+        event = TimelineEvent(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
         self.db.add(event)
         self.db.commit()
         self.db.refresh(event)
