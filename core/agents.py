@@ -64,8 +64,11 @@ class OutlineAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
         self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
+        self.llm = NovelLLM(model_id)
 
     @staticmethod
     def _build_foreshadowing_schedule_prompt(active_fs: list) -> str:
@@ -318,8 +321,11 @@ class CharacterAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
         self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
+        self.llm = NovelLLM(model_id)
 
     def generate_characters(self, outline_text: str) -> list[dict]:
         """
@@ -442,8 +448,11 @@ class WriterAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
         self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
+        self.llm = NovelLLM(model_id)
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
@@ -580,9 +589,12 @@ class ReviewerAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
+        self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
         self.model_id = model_id
         self.detector = ConflictDetector(novel_id, model_id)
-        self.memory = MemoryManager(novel_id)
 
     def review_chapter(self, chapter_number: int, content: str) -> ReviewReport:
         """
@@ -677,8 +689,11 @@ class PolisherAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
         self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
+        self.llm = NovelLLM(model_id)
 
     def polish_chapter(self, content: str,
                          style_reference: str = "",
@@ -861,8 +876,11 @@ class ReaderAgent:
 
     def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
         self.memory = MemoryManager(novel_id)
+        if not model_id:
+            _novel = self.memory.global_mem.get_novel()
+            model_id = (_novel.llm_model or None) if _novel else None
+        self.llm = NovelLLM(model_id)
 
     def evaluate_chapter(self, chapter_number: int, content: str,
                           reader_types: list[str] = None) -> dict:
