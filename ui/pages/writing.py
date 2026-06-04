@@ -249,9 +249,8 @@ def page_writing():
                     st.error(f"生成出错：{e}")
 
         # 章节内容区（tabs）
-        if selected_ch and selected_ch.content:
-            # 待应用的 AI 建议
-            pending = st.session_state.get(pending_key)
+        pending = st.session_state.get(pending_key)
+        if selected_ch and (selected_ch.content or pending):
 
             tab_text, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
                 "📝 正文", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
