@@ -444,8 +444,8 @@ class NovelWorkflow:
                 chapter.id, new_content, "user_edit", change_summary
             )
 
-            # 更新内容
-            self.memory.save_new_chapter(chapter_number, new_content, "content")
+            # 更新 SQLite 内容（跳过向量重建，避免 embedding 耗时）
+            self.memory.chapter_mem.save_chapter_content(chapter_number, new_content, "content")
 
             # 重置审批状态
             chapter.approval_status = "pending"
