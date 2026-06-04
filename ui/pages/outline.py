@@ -314,22 +314,22 @@ def page_outline():
                 elif not chapters:
                     st.info("请先生成章节列表（通过整体大纲生成）")
                 else:
-                    all_ch_nums = [c.chapter_number for c in chapters]
-                    ch_min, ch_max = all_ch_nums[0], all_ch_nums[-1]
+                    ch_min = chapters[0].chapter_number if chapters else 1
 
                     rc1, rc2 = st.columns(2)
                     with rc1:
                         range_start = st.number_input(
-                            "起始章节", min_value=ch_min, max_value=ch_max,
-                            value=ch_min, step=1, key="batch_range_start"
+                            "起始章节", min_value=1, value=ch_min,
+                            step=1, key="batch_range_start"
                         )
                     with rc2:
                         range_end = st.number_input(
-                            "结束章节", min_value=range_start, max_value=ch_max,
-                            value=min(range_start + 9, ch_max), step=1, key="batch_range_end"
+                            "结束章节", min_value=range_start,
+                            value=range_start + 9, step=1, key="batch_range_end"
                         )
 
-                    st.caption(f"将为第 {range_start}～{range_end} 章（共 {range_end - range_start + 1} 章）生成章纲")
+                    ch_count_label = range_end - range_start + 1
+                    st.caption(f"将为第 {range_start}～{range_end} 章（共 {ch_count_label} 章）生成章纲。不存在的章节会自动创建。")
 
                     range_desc = st.text_area(
                         "描述这段剧情的内容和进展",

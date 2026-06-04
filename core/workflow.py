@@ -595,34 +595,48 @@ class NovelWorkflow:
         """
         批量保存 AI 生成的章节大纲。
 
-        只写入 title / outline_* 字段，不触碰已写完（published）章节的内容。
-        若章节状态为 outline_pending，写入后自动升级为 outlined。
+        - 章节已存在：更新 title / outline_* 字段，outline_pending 升级为 outlined
+        - 章节不存在：自动创建新章节槽，状态设为 outlined
+        - 已写完（published）的章节：跳过，不覆盖正文
         """
         try:
-            allowed = {
+            outline_fields = {
                 "title", "outline_core_event", "outline_conflict",
                 "outline_scene", "outline_emotion", "outline_ending",
             }
-            updated = skipped = 0
+            updated = created = 0
             for data in outlines:
                 ch_num = data.get("chapter_number")
                 if not ch_num:
                     continue
-                chapter = self.memory.global_mem.get_chapter_outline(int(ch_num))
-                if not chapter:
-                    skipped += 1
-                    continue
-                for field in allowed:
-                    val = data.get(field)
-                    if val:
-                        setattr(chapter, field, val)
-                if chapter.status == "outline_pending":
-                    chapter.status = "outlined"
-                updated += 1
+                ch_num = int(ch_num)
+                chapter = self.memory.global_mem.get_chapter_outline(ch_num)
+                if chapter:
+                    if chapter.status == "published":
+                        continue  # 已写完，不覆盖
+                    for field in outline_fields:
+                        val = data.get(field)
+                        if val:
+                            setattr(chapter, field, val)
+                    if chapter.status == "outline_pending":
+                        chapter.status = "outlined"
+                    updated += 1
+                else:
+                    # 章节不存在，新建章节槽
+                    new_data = {k: v for k, v in data.items() if k in outline_fields and v}
+                    new_data["chapter_number"] = ch_num
+                    new_data["status"] = "outlined"
+                    if "title" not in new_data:
+                        new_data["title"] = f"第{ch_num}章"
+                    self.memory.global_mem.save_chapter_outline(new_data)
+                    created += 1
             self.db.commit()
-            msg = f"已更新 {updated} 章的大纲"
-            if skipped:
-                msg += f"（{skipped} 章章节不存在，已跳过）"
+            parts = []
+            if updated:
+                parts.append(f"更新 {updated} 章")
+            if created:
+                parts.append(f"新建 {created} 章")
+            msg = "已" + "、".join(parts) + "的大纲"
             return WorkflowResult(success=True, message=msg, data={"updated": updated})
         except Exception as e:
             return WorkflowResult(success=False, message=f"批量更新失败：{e}")
