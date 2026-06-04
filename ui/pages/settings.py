@@ -653,7 +653,45 @@ def page_settings():
                 st.info("📝 尚未设置风格档案，润色时使用默认风格")
 
             st.divider()
-            st.markdown("#### 第一步：提供参考文本")
+
+            # 从已完成章节自动学习
+            db2 = get_db()
+            approved_count = (
+                db2.query(Chapter)
+                .filter(
+                    Chapter.novel_id == novel_id,
+                    Chapter.approval_status == "approved",
+                    Chapter.content.isnot(None),
+                    Chapter.content != "",
+                )
+                .count()
+            )
+            db2.close()
+
+            st.markdown("#### 🔄 从已完成章节自动学习风格")
+            if approved_count == 0:
+                st.caption("暂无已审核的章节，完成并审核章节后可使用此功能。")
+                st.button("🔄 从已完成章节学习", disabled=True, use_container_width=True)
+            else:
+                st.caption(f"当前已有 **{approved_count}** 章审核通过的内容，AI 将从中提取写作风格特征。")
+                if st.button("🔄 从已完成章节学习", use_container_width=True, type="primary",
+                             key="auto_learn_style_btn"):
+                    with st.spinner(f"正在从 {min(approved_count, 5)} 章内容中学习风格，约需 20-40 秒…"):
+                        try:
+                            workflow = load_novel(novel_id)
+                            result = workflow.auto_learn_style_from_chapters(sample_chapters=5)
+                            workflow.close()
+                            if result.success:
+                                st.session_state["style_profile_draft"] = result.data.get("profile", {})
+                                st.success(f"✅ {result.message}")
+                                st.rerun()
+                            else:
+                                st.error(result.message)
+                        except Exception as e:
+                            st.error(f"学习失败：{e}")
+
+            st.divider()
+            st.markdown("#### 第一步：提供参考文本（可选）")
             st.caption("建议选取最能代表该作者风格的段落，500-3000 字效果最佳")
 
             input_method = st.radio("输入方式", ["✏️ 粘贴文本", "📄 上传 .txt 文件"],

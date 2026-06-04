@@ -689,6 +689,46 @@ class NovelWorkflow:
         except Exception as e:
             return WorkflowResult(success=False, message=f"风格分析失败：{e}")
 
+    def auto_learn_style_from_chapters(self, sample_chapters: int = 5,
+                                        progress_callback: Callable = None) -> WorkflowResult:
+        """
+        从已完成章节中自动学习写作风格。
+        取最近 sample_chapters 篇已审核章节的正文，合并后调用 analyze_writing_style。
+        """
+        from core.models import Chapter
+        db = get_db()
+        chapters = (
+            db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.approval_status == "approved",
+                Chapter.content.isnot(None),
+                Chapter.content != "",
+            )
+            .order_by(Chapter.chapter_number.desc())
+            .limit(sample_chapters)
+            .all()
+        )
+        db.close()
+
+        if not chapters:
+            return WorkflowResult(success=False, message="暂无已审核的章节，请先完成并审核至少一章。")
+
+        # 按章节顺序拼接
+        chapters_sorted = sorted(chapters, key=lambda c: c.chapter_number)
+        combined = "\n\n".join(
+            f"【第{c.chapter_number}章 {c.title or ''}】\n{c.content}" for c in chapters_sorted
+        )
+        count = len(chapters_sorted)
+
+        if progress_callback:
+            progress_callback(f"📖 已收集 {count} 章内容，正在分析风格特征…")
+
+        result = self.analyze_writing_style(combined, progress_callback=progress_callback)
+        if result.success:
+            result.message = f"已从 {count} 章内容中学习风格，档案已保存。"
+        return result
+
     def update_style_profile(self, profile: dict) -> WorkflowResult:
         """
         手动更新风格档案（用户编辑后保存）

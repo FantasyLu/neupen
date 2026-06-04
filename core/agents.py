@@ -599,9 +599,41 @@ class WriterAgent:
         # 构建完整写作上下文（三层记忆整合）
         writing_context = self.memory.build_writing_context(chapter_number, chapter)
 
+        # 注入风格档案（若已设置）
+        novel = self.memory.global_mem.get_novel()
+        style_block = ""
+        if novel:
+            style_profile = novel.get_style_profile()
+            style_desc = novel.writing_style or ""
+            if style_profile:
+                _label_map = {
+                    "overall_style":        "总体风格定位",
+                    "sentence_patterns":    "句式特征",
+                    "vocabulary":           "词汇风格",
+                    "narrative_voice":      "叙述视角风格",
+                    "dialogue_style":       "对话特点",
+                    "description_style":    "描写特点",
+                    "rhythm_pacing":        "节奏与节拍",
+                    "emotion_expression":   "情感表达方式",
+                    "signature_techniques": "标志性手法",
+                    "polish_instructions":  "写作核心指令",
+                }
+                lines = [
+                    f"- {lbl}：{style_profile[k]}"
+                    for k, lbl in _label_map.items()
+                    if style_profile.get(k)
+                ]
+                if lines:
+                    style_block = (
+                        "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
+                        + "\n".join(lines)
+                    )
+            elif style_desc:
+                style_block = f"\n【写作风格要求】\n{style_desc}"
+
         user_prompt = f"""请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}
+{writing_context}{style_block}
 
 【写作要求】
 - 目标字数：约{word_target}字
