@@ -213,6 +213,7 @@ def page_writing():
                                         st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
                                     sync_count = (
                                         len(sync_checks.get("new_characters", [])) +
+                                        len(sync_checks.get("character_updates", [])) +
                                         len(sync_checks.get("outline_updates", [])) +
                                         len(sync_checks.get("world_setting_updates", []))
                                     ) if sync_checks else 0
@@ -276,10 +277,11 @@ def page_writing():
                             sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
                             st.session_state[sync_key] = sync_checks
                             total = (len(sync_checks.get("new_characters", [])) +
+                                     len(sync_checks.get("character_updates", [])) +
                                      len(sync_checks.get("outline_updates", [])) +
                                      len(sync_checks.get("world_setting_updates", [])))
                             if total:
-                                st.info(f"🔄 发现 {total} 条大纲/设定同步建议，已在「审核」标签页等待确认")
+                                st.info(f"🔄 发现 {total} 条同步建议（含人物状态），已在「审核」标签页等待确认")
 
                         # 清除编辑区缓存，确保显示新生成的内容
                         st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
@@ -605,9 +607,10 @@ def page_writing():
 
                 if sync_result:
                     new_chars    = list(sync_result.get("new_characters", []))
+                    char_upds    = list(sync_result.get("character_updates", []))
                     outline_upds = list(sync_result.get("outline_updates", []))
                     ws_upds      = list(sync_result.get("world_setting_updates", []))
-                    total = len(new_chars) + len(outline_upds) + len(ws_upds)
+                    total = len(new_chars) + len(char_upds) + len(outline_upds) + len(ws_upds)
 
                     if total == 0:
                         st.success("✅ 大纲和设定与本章内容一致，无需更新")
@@ -653,6 +656,47 @@ def page_writing():
                                                  use_container_width=True):
                                         new_chars.pop(i)
                                         sync_result["new_characters"] = new_chars
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 人物状态更新 ——
+                        _field_labels = {
+                            "current_state": "当前状态",
+                            "growth_arc":    "成长弧光",
+                            "abilities":     "能力设定",
+                            "relationships": "人际关系",
+                        }
+                        for i, cu in enumerate(char_upds):
+                            with st.container(border=True):
+                                field_name = _field_labels.get(cu.get("field", ""), cu.get("field", ""))
+                                st.markdown(f"🧑 **人物更新：{cu.get('name')} — {field_name}**")
+                                st.caption(f"新内容：{cu.get('new_value', '')[:200]}")
+                                st.caption(f"原因：{cu.get('reason', '')}")
+                                cu1, cu2 = st.columns(2)
+                                with cu1:
+                                    if st.button("✅ 更新人物档案",
+                                                 key=f"sync_cu_add_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            wf.memory.global_mem.save_character({
+                                                "name":       cu.get("name", ""),
+                                                cu.get("field", "current_state"): cu.get("new_value", ""),
+                                            })
+                                            wf.close()
+                                            char_upds.pop(i)
+                                            sync_result["character_updates"] = char_upds
+                                            st.session_state[sync_key] = sync_result
+                                            st.success(f"已更新 {cu.get('name')} 的{field_name}")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"更新失败：{e}")
+                                with cu2:
+                                    if st.button("❌ 跳过",
+                                                 key=f"sync_cu_skip_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True):
+                                        char_upds.pop(i)
+                                        sync_result["character_updates"] = char_upds
                                         st.session_state[sync_key] = sync_result
                                         st.rerun()
 

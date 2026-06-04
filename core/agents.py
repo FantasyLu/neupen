@@ -352,14 +352,29 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         Returns:
             {
               "new_characters": [{"name", "role", "personality", "background", "reason"}],
+              "character_updates": [{"name", "field", "new_value", "reason"}],
               "outline_updates": [{"field", "current_value", "suggestion", "reason"}],
               "world_setting_updates": [{"key", "value", "reason"}]
             }
         """
         global_ctx = self.memory.global_mem.build_global_context()
-        existing_chars = [c.name for c in self.memory.global_mem.get_all_characters()]
+        all_chars = self.memory.global_mem.get_all_characters()
+        existing_chars = [c.name for c in all_chars]
 
-        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲和设定对照，找出需要新增或更新的内容。
+        # 构建现有人物状态摘要，供 AI 对比
+        char_state_lines = []
+        for c in all_chars:
+            parts = [f"【{c.name}】"]
+            if c.current_state:
+                parts.append(f"当前状态：{c.current_state[:120]}")
+            if c.growth_arc:
+                parts.append(f"成长弧光：{c.growth_arc[:80]}")
+            if c.abilities:
+                parts.append(f"能力：{c.abilities[:80]}")
+            char_state_lines.append("  ".join(parts))
+        char_state_summary = "\n".join(char_state_lines) or "（无）"
+
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要新增或更新的内容。
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
@@ -367,10 +382,10 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 【现有大纲和设定摘要】
 {global_ctx}
 
-【已有人物列表】
-{", ".join(existing_chars) or "（无）"}
+【已有人物及当前状态】
+{char_state_summary}
 
-请按以下 JSON 格式输出检测结果，只列出章节中实际出现且需要记录的内容，不要虚构：
+请按以下 JSON 格式输出检测结果，只列出章节中实际发生且需要记录的变化，不要虚构：
 
 {{
   "new_characters": [
@@ -380,6 +395,14 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
       "personality": "性格特点",
       "background": "背景信息（从章节推断）",
       "reason": "为什么需要新增"
+    }}
+  ],
+  "character_updates": [
+    {{
+      "name": "已有人物的姓名（必须在已有人物列表中）",
+      "field": "current_state 或 growth_arc 或 abilities 或 relationships 之一",
+      "new_value": "更新后的完整内容",
+      "reason": "本章中发生了什么导致此变化"
     }}
   ],
   "outline_updates": [
@@ -405,8 +428,18 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return _safe_json_loads(response[json_start:json_end])
-        return {"new_characters": [], "outline_updates": [], "world_setting_updates": []}
+            result = _safe_json_loads(response[json_start:json_end])
+            # 过滤掉 character_updates 中不在已有人物列表里的条目（防止 AI 乱填）
+            if isinstance(result, dict) and "character_updates" in result:
+                result["character_updates"] = [
+                    u for u in result.get("character_updates", [])
+                    if u.get("name") in existing_chars
+                ]
+            return result
+        return {
+            "new_characters": [], "character_updates": [],
+            "outline_updates": [], "world_setting_updates": []
+        }
 
     def close(self):
         self.memory.close()
