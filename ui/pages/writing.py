@@ -22,6 +22,21 @@ def _extract_suggestion(text: str) -> str | None:
     return matches[-1].strip() if matches else None
 
 
+def _auto_save(novel_id: int, ch_num: int, content: str, pending_key: str, text_key: str,
+               label: str = "AI 审核建议自动保存") -> bool:
+    """保存章节内容并清除 pending 状态，返回是否成功。"""
+    try:
+        wf = load_novel(novel_id)
+        wf.update_chapter_content(ch_num, content, label)
+        wf.close()
+        st.session_state[pending_key] = None
+        st.session_state[text_key] = content
+        return True
+    except Exception as e:
+        st.warning(f"自动保存失败：{e}")
+        return False
+
+
 def page_writing():
     novel_id = st.session_state.novel_id
 
@@ -460,9 +475,11 @@ def page_writing():
                                                             _agent.close()
                                                             _sug = _extract_suggestion(_reply)
                                                             if _sug:
-                                                                st.session_state[pending_key] = _sug
+                                                                _auto_save(novel_id, selected_ch_num, _sug,
+                                                                           pending_key, text_key, "AI 快捷方案自动保存")
                                                                 done_set.add(j)
                                                                 st.session_state[done_key] = done_set
+                                                                st.toast("✅ 已自动保存")
                                                                 st.rerun()
                                                         except Exception as _e:
                                                             st.error(f"修改失败：{_e}")
@@ -493,7 +510,9 @@ def page_writing():
                                                             key=f"ri_{novel_id}_{selected_ch_num}_{i}_{h_idx}",
                                                             use_container_width=True
                                                         ):
-                                                            st.session_state[pending_key] = _sug2
+                                                            _auto_save(novel_id, selected_ch_num, _sug2,
+                                                                       pending_key, text_key, "AI 对话建议自动保存")
+                                                            st.toast("✅ 已自动保存")
                                                             st.rerun()
                                             else:
                                                 st.markdown(hmsg["content"])
@@ -542,7 +561,9 @@ def page_writing():
                                         st.session_state[issue_key] = issue_hist
                                         _sug3 = _extract_suggestion(_r)
                                         if _sug3:
-                                            st.session_state[pending_key] = _sug3
+                                            _auto_save(novel_id, selected_ch_num, _sug3,
+                                                       pending_key, text_key, "AI 对话建议自动保存")
+                                            st.toast("✅ 已自动保存")
                                         # 递增计数器 → 下次渲染创建新 key 的空输入框
                                         st.session_state[_clr_key] = _clr_cnt + 1
                                         st.rerun()
