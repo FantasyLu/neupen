@@ -789,6 +789,40 @@ class ReviewerAgent:
 
         return llm.generate(system_prompt, user_prompt, max_tokens=12000)
 
+    def fix_all_issues(self, content: str,
+                        report: "ReviewReport",
+                        novel_id: int) -> str:
+        """
+        根据完整审核报告修复所有问题（不限严重程度）。
+        用于审核-修改自动循环中的每次改写。
+        """
+        if not report.conflicts:
+            return content
+
+        llm = NovelLLM(self.model_id)
+        conflicts_desc = "\n".join([
+            f"- [{c.severity}级] {c.conflict_type}"
+            f"（位置：{c.location[:80]}）：{c.description}"
+            + (f"。建议：{c.solutions[0]}" if c.solutions else "")
+            for c in report.conflicts
+        ])
+
+        system_prompt = (
+            "你是一位资深小说编辑，负责根据审核意见修改章节正文。\n"
+            "修改原则：\n"
+            "1. 严格按审核意见逐条修复问题\n"
+            "2. 保持故事情节、人物关系、场景氛围不变\n"
+            "3. 只改有问题的部分，其余内容保持原样\n"
+            "4. 直接输出完整修改后正文，不加任何说明或标注"
+        )
+        user_prompt = (
+            f"章节正文：\n{content}\n\n"
+            f"本次审核评分：{report.overall_score:.1f}/10\n"
+            f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
+            "请修复以上所有问题，直接输出完整修改后正文："
+        )
+        return llm.generate(system_prompt, user_prompt, max_tokens=12000)
+
     def close(self):
         self.memory.close()
         self.detector.close()

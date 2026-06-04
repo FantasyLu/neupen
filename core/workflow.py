@@ -18,7 +18,7 @@ from core.models import get_db, Novel, NovelOutline
 from core.memory import MemoryManager
 from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent, PolisherAgent
 from core.detector import ConflictDetector, ReviewReport
-from core.config import AUTO_APPROVE_THRESHOLD
+from core.config import AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS, REVIEW_SCORE_THRESHOLD
 
 
 # ======================================
@@ -302,38 +302,58 @@ class NovelWorkflow:
             # 保存草稿
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
-            # Step 2: 审核检测
-            if progress_callback:
-                progress_callback(f"🔍 正在审核第{chapter_number}章...")
-
-            report = self.reviewer_agent.review_chapter(chapter_number, draft_content)
-
-            # 保存审核报告
+            # Step 2-3: 审核 → 修改循环，直到评分 ≥ REVIEW_SCORE_THRESHOLD
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
-            if chapter:
-                import json as json_module
-                chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                chapter.review_score = report.overall_score
-                chapter.status = "review_pending" if not report.passed else "reviewed"
-                self.db.commit()
+            import json as json_module
 
-            # Step 3: 自动修复轻微问题
-            content_to_polish = draft_content
-            if report.conflicts:
-                minor_conflicts = [c for c in report.conflicts if c.severity < AUTO_APPROVE_THRESHOLD]
-                if minor_conflicts:
+            current_content = draft_content
+            report = None
+            for iteration in range(MAX_REVIEW_ITERATIONS):
+                if progress_callback:
+                    round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
+                    progress_callback(f"🔍 AI 审核{round_label}...")
+
+                report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+
+                # 保存本轮审核报告
+                if chapter:
+                    chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
+                    chapter.review_score = report.overall_score
+                    chapter.status = "review_pending" if not report.passed else "reviewed"
+                    self.db.commit()
+
+                # 判断是否达标
+                has_major = any(c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts)
+                if report.overall_score >= REVIEW_SCORE_THRESHOLD and not has_major:
                     if progress_callback:
-                        progress_callback(f"🔧 自动修复 {len(minor_conflicts)} 个轻微问题...")
-                    content_to_polish = self.reviewer_agent.auto_fix_minor_issues(
-                        draft_content, report, self.novel_id
+                        progress_callback(
+                            f"✅ 审核通过（第{iteration + 1}轮）"
+                            f"，评分：{report.overall_score:.1f}/10"
+                        )
+                    break
+
+                # 未达标且还有迭代次数 → 修复所有问题
+                if iteration < MAX_REVIEW_ITERATIONS - 1:
+                    if progress_callback:
+                        progress_callback(
+                            f"🔧 修改中（当前评分 {report.overall_score:.1f}/10，"
+                            f"第{iteration + 1}/{MAX_REVIEW_ITERATIONS}轮）..."
+                        )
+                    current_content = self.reviewer_agent.fix_all_issues(
+                        current_content, report, self.novel_id
                     )
+                else:
+                    if progress_callback:
+                        progress_callback(
+                            f"⚠️ 已达最大修改次数，最终评分：{report.overall_score:.1f}/10"
+                        )
 
             # Step 4: 润色
-            final_content = content_to_polish
+            final_content = current_content
             if auto_polish:
                 if progress_callback:
                     progress_callback(f"✨ 正在润色第{chapter_number}章...")
-                final_content = self.polisher_agent.polish_chapter(content_to_polish)
+                final_content = self.polisher_agent.polish_chapter(current_content)
 
             # Step 5: 保存最终内容
             self.memory.save_new_chapter(chapter_number, final_content, "content")
@@ -367,6 +387,17 @@ class NovelWorkflow:
             except Exception:
                 pass  # 摘要生成失败不影响主流程
 
+            # Step 6: 自动大纲 / 设定同步检测
+            sync_checks = {}
+            if progress_callback:
+                progress_callback(f"🔄 检测大纲/设定同步...")
+            try:
+                sync_checks = self.outline_agent.analyze_chapter_consistency(
+                    chapter_number, final_content
+                )
+            except Exception:
+                pass  # 同步检测失败不影响主流程
+
             if progress_callback:
                 progress_callback(f"✅ 第{chapter_number}章完成！字数：{len(final_content)}")
 
@@ -376,9 +407,10 @@ class NovelWorkflow:
                 data={
                     "content": final_content,
                     "word_count": len(final_content),
-                    "review_report": report.to_dict(),
-                    "review_passed": report.passed,
-                    "overall_score": report.overall_score
+                    "review_report": report.to_dict() if report else {},
+                    "review_passed": report.passed if report else True,
+                    "overall_score": report.overall_score if report else 0.0,
+                    "sync_checks": sync_checks,
                 }
             )
 

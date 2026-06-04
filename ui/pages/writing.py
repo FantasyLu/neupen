@@ -191,7 +191,16 @@ def page_writing():
                                 )
                                 ph.empty()
                                 if result.success:
-                                    st.write(f"✅ 第{ch_num}章完成 · {result.data.get('word_count',0):,}字 · 评分 {result.data.get('overall_score',0):.1f}/10")
+                                    sync_checks = result.data.get("sync_checks", {})
+                                    if sync_checks:
+                                        st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
+                                    sync_count = (
+                                        len(sync_checks.get("new_characters", [])) +
+                                        len(sync_checks.get("outline_updates", [])) +
+                                        len(sync_checks.get("world_setting_updates", []))
+                                    ) if sync_checks else 0
+                                    sync_hint = f" · 🔄{sync_count}条同步建议" if sync_count else ""
+                                    st.write(f"✅ 第{ch_num}章完成 · {result.data.get('word_count',0):,}字 · 评分 {result.data.get('overall_score',0):.1f}/10{sync_hint}")
                                 else:
                                     st.write(f"❌ 第{ch_num}章失败：{result.message}")
                             batch_status.update(label="批量写作完成！", state="complete")
@@ -243,6 +252,18 @@ def page_writing():
                                     icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
                                     st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
                                     st.markdown(f"- {c.get('description', '')}")
+
+                        # 自动同步检测结果写入 session state → 用户无需手动触发
+                        sync_checks = result.data.get("sync_checks", {})
+                        if sync_checks:
+                            sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
+                            st.session_state[sync_key] = sync_checks
+                            total = (len(sync_checks.get("new_characters", [])) +
+                                     len(sync_checks.get("outline_updates", [])) +
+                                     len(sync_checks.get("world_setting_updates", [])))
+                            if total:
+                                st.info(f"🔄 发现 {total} 条大纲/设定同步建议，已在「审核」标签页等待确认")
+
                         # 清除编辑区缓存，确保显示新生成的内容
                         st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
                         st.rerun()
