@@ -428,17 +428,17 @@ def page_writing():
                                         st.caption(f"📍 约第 {line_no} 行")
                                     else:
                                         st.caption("📍 原文位置：")
-                                    st.code(loc[:250] + ("…" if len(loc) > 250 else ""), language=None)
+                                    st.code(loc, language=None)
 
                                 # ── 快捷方案按钮（已应用的显示标签）
                                 if sols and can_edit(novel_id):
                                     st.caption("快捷方案（AI 直接修改）：")
                                     for j, sol in enumerate(sols[:3]):
                                         if j in done_set:
-                                            st.success(f"✅ {sol[:55]}（已应用）")
+                                            st.success(f"✅ {sol}（已应用）")
                                         else:
                                             if st.button(
-                                                f"✏️ {sol[:55]}", use_container_width=True,
+                                                f"✏️ {sol}", use_container_width=True,
                                                 key=f"qapply_{novel_id}_{selected_ch_num}_{i}_{j}"
                                             ):
                                                 cur = st.session_state.get(text_key, "").strip()
@@ -485,10 +485,9 @@ def page_writing():
                                                     st.markdown(_disp)
                                                 if _sug2:
                                                     with st.container(border=True):
-                                                        st.markdown(
-                                                            _sug2[:200] + ("…" if len(_sug2) > 200 else "")
-                                                        )
                                                         st.caption("✅ 已写入编辑器")
+                                                        with st.expander("查看修改内容", expanded=False):
+                                                            st.text(_sug2[:800] + ("…" if len(_sug2) > 800 else ""))
                                                         if st.button(
                                                             "↩️ 重新写入",
                                                             key=f"ri_{novel_id}_{selected_ch_num}_{i}_{h_idx}",
@@ -731,10 +730,12 @@ def page_writing():
                             icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
                             with st.container(border=True):
                                 st.markdown(f"{icon} **[{c.get('type', '')}] 严重度 {sev}**")
-                                st.markdown(f"- 位置：`{c.get('location', '')[:100]}`")
                                 st.markdown(f"- 描述：{c.get('description', '')}")
+                                if c.get("location"):
+                                    st.code(c["location"], language=None)
                                 if c.get("solutions"):
-                                    st.markdown("- 建议：" + " / ".join(c["solutions"][:2]))
+                                    for _s in c["solutions"]:
+                                        st.markdown(f"  - {_s}")
                     else:
                         st.success("没有发现明显冲突")
                 else:
