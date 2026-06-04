@@ -345,6 +345,69 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                 return result
         raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
 
+    def analyze_chapter_consistency(self, chapter_number: int, content: str) -> dict:
+        """
+        分析章节内容，检测是否需要同步更新大纲或设定。
+
+        Returns:
+            {
+              "new_characters": [{"name", "role", "personality", "background", "reason"}],
+              "outline_updates": [{"field", "current_value", "suggestion", "reason"}],
+              "world_setting_updates": [{"key", "value", "reason"}]
+            }
+        """
+        global_ctx = self.memory.global_mem.build_global_context()
+        existing_chars = [c.name for c in self.memory.global_mem.get_all_characters()]
+
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲和设定对照，找出需要新增或更新的内容。
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+【现有大纲和设定摘要】
+{global_ctx}
+
+【已有人物列表】
+{", ".join(existing_chars) or "（无）"}
+
+请按以下 JSON 格式输出检测结果，只列出章节中实际出现且需要记录的内容，不要虚构：
+
+{{
+  "new_characters": [
+    {{
+      "name": "角色名",
+      "role": "主角/配角/反派等",
+      "personality": "性格特点",
+      "background": "背景信息（从章节推断）",
+      "reason": "为什么需要新增"
+    }}
+  ],
+  "outline_updates": [
+    {{
+      "field": "main_conflict 或 protagonist_arc 或 ending_summary 等字段名",
+      "current_value": "当前字段值简述",
+      "suggestion": "建议添加或修改的内容",
+      "reason": "为什么需要更新"
+    }}
+  ],
+  "world_setting_updates": [
+    {{
+      "key": "设定条目名称",
+      "value": "具体设定内容",
+      "reason": "章节中揭示了这个新设定"
+    }}
+  ]
+}}
+
+只返回 JSON，不包含其他文字。某类没有需要更新时对应数组留空 []。"""
+
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        json_start = response.find("{")
+        json_end = response.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            return _safe_json_loads(response[json_start:json_end])
+        return {"new_characters": [], "outline_updates": [], "world_setting_updates": []}
+
     def close(self):
         self.memory.close()
 
@@ -1120,6 +1183,29 @@ class CanvasAgent:
     """
 
     _ROLE_PROMPTS = {
+        "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观设定、章节写作的一切问题。
+
+【输出规范】
+普通讨论、分析和建议直接用正常文字，不加代码块。
+当你要给出可直接写入文档的内容时，使用以下专属代码块格式（不要用普通 markdown 代码块代替）：
+
+若要更新整体大纲（包含 ## 前提设定 / 核心主题 / 主要矛盾等节）：
+```outline
+（完整大纲 Markdown，保留现有内容并补充修改）
+```
+
+若要更新世界观/背景/系统设定文档：
+```settings
+（完整设定 Markdown 文档）
+```
+
+若要给出当前章节的正文或修改版本：
+```chapter
+（完整章节正文）
+```
+
+用户可以一键将代码块内容应用到对应位置。""",
+
         "outline": """你是一位专业的小说大纲编辑助手。
 
 职责：

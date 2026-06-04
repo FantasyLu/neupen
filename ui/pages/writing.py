@@ -8,10 +8,10 @@ import re
 
 import streamlit as st
 
-from core.models import get_db, Chapter, ContentVersion
+from core.models import get_db, Chapter, ContentVersion, Novel
 from core.workflow import load_novel
 from core.permissions import can_edit, can_approve
-from core.agents import CanvasAgent, ReviewerAgent
+from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent
 from ui.helpers import format_chapter_status, format_approval_badge
 from ui.components.collaboration import render_chapter_comments, render_approval_status
 
@@ -382,6 +382,162 @@ def page_writing():
                     if st.button("清除审核结果", key="clear_manual_review", use_container_width=True):
                         st.session_state[review_key] = None
                         st.rerun()
+
+                # ── 大纲/设定同步检测 ─────────────────────────────
+                sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
+                sync_result = st.session_state.get(sync_key)
+                current_text_for_sync = st.session_state.get(text_key, "").strip()
+
+                if current_text_for_sync and can_edit(novel_id):
+                    st.divider()
+                    if st.button("🔄 大纲 / 设定同步检测",
+                                 use_container_width=True,
+                                 help="分析本章内容，检测是否有新角色或情节变化需要同步到大纲 / 设定"):
+                        with st.spinner("AI 分析章节内容…"):
+                            try:
+                                agent = OutlineAgent(novel_id)
+                                result = agent.analyze_chapter_consistency(
+                                    selected_ch_num, current_text_for_sync
+                                )
+                                agent.close()
+                                st.session_state[sync_key] = result
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"检测失败：{e}")
+
+                if sync_result:
+                    new_chars    = list(sync_result.get("new_characters", []))
+                    outline_upds = list(sync_result.get("outline_updates", []))
+                    ws_upds      = list(sync_result.get("world_setting_updates", []))
+                    total = len(new_chars) + len(outline_upds) + len(ws_upds)
+
+                    if total == 0:
+                        st.success("✅ 大纲和设定与本章内容一致，无需更新")
+                        if st.button("清除", key="clear_sync_empty"):
+                            st.session_state[sync_key] = None
+                            st.rerun()
+                    else:
+                        st.markdown(f"##### 🔄 发现 {total} 条更新建议，请逐一确认")
+
+                        # —— 新增人物 ——
+                        for i, char in enumerate(new_chars):
+                            with st.container(border=True):
+                                st.markdown(f"👤 **新增人物：{char.get('name')}**（{char.get('role', '')}）")
+                                if char.get("personality"):
+                                    st.caption(f"性格：{char['personality']}")
+                                if char.get("background"):
+                                    st.caption(f"背景：{char['background']}")
+                                st.caption(f"原因：{char.get('reason', '')}")
+                                ca1, ca2 = st.columns(2)
+                                with ca1:
+                                    if st.button("✅ 添加到人物档案",
+                                                 key=f"sync_char_add_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            wf.memory.global_mem.save_character({
+                                                "name": char.get("name", ""),
+                                                "role": char.get("role", ""),
+                                                "personality": char.get("personality", ""),
+                                                "background": char.get("background", ""),
+                                            })
+                                            wf.close()
+                                            new_chars.pop(i)
+                                            sync_result["new_characters"] = new_chars
+                                            st.session_state[sync_key] = sync_result
+                                            st.success(f"已添加 {char.get('name')}")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"添加失败：{e}")
+                                with ca2:
+                                    if st.button("❌ 跳过",
+                                                 key=f"sync_char_skip_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True):
+                                        new_chars.pop(i)
+                                        sync_result["new_characters"] = new_chars
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 大纲字段更新 ——
+                        for i, upd in enumerate(outline_upds):
+                            with st.container(border=True):
+                                field_label = {
+                                    "premise": "前提设定", "theme": "核心主题",
+                                    "main_conflict": "主要矛盾", "protagonist_arc": "主角弧光",
+                                    "ending_summary": "结局概要", "story_structure": "三幕结构",
+                                }.get(upd.get("field", ""), upd.get("field", ""))
+                                st.markdown(f"📖 **大纲更新：{field_label}**")
+                                st.caption(f"建议内容：{upd.get('suggestion', '')[:120]}")
+                                st.caption(f"原因：{upd.get('reason', '')}")
+                                ob1, ob2 = st.columns(2)
+                                with ob1:
+                                    if st.button("✅ 追加到大纲",
+                                                 key=f"sync_outline_add_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            field = upd.get("field", "")
+                                            outline = wf.memory.global_mem.get_outline()
+                                            current = (getattr(outline, field, "") or "") if outline else ""
+                                            new_val = (current + "\n\n" + upd.get("suggestion", "")).strip()
+                                            wf.memory.global_mem.save_outline({field: new_val})
+                                            wf.close()
+                                            outline_upds.pop(i)
+                                            sync_result["outline_updates"] = outline_upds
+                                            st.session_state[sync_key] = sync_result
+                                            st.success("已追加到大纲")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"更新失败：{e}")
+                                with ob2:
+                                    if st.button("❌ 跳过",
+                                                 key=f"sync_outline_skip_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True):
+                                        outline_upds.pop(i)
+                                        sync_result["outline_updates"] = outline_upds
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 世界观设定更新 ——
+                        for i, ws in enumerate(ws_upds):
+                            with st.container(border=True):
+                                st.markdown(f"🌍 **设定新增：{ws.get('key', '')}**")
+                                st.caption(f"内容：{ws.get('value', '')[:120]}")
+                                st.caption(f"原因：{ws.get('reason', '')}")
+                                wb1, wb2 = st.columns(2)
+                                with wb1:
+                                    if st.button("✅ 写入世界观设定",
+                                                 key=f"sync_ws_add_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            db = get_db()
+                                            novel_obj = db.query(Novel).filter(
+                                                Novel.id == novel_id
+                                            ).first()
+                                            world = novel_obj.get_world_setting()
+                                            world[ws.get("key", "")] = ws.get("value", "")
+                                            novel_obj.set_world_setting(world)
+                                            db.commit()
+                                            db.close()
+                                            ws_upds.pop(i)
+                                            sync_result["world_setting_updates"] = ws_upds
+                                            st.session_state[sync_key] = sync_result
+                                            st.success("已写入世界观设定")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"更新失败：{e}")
+                                with wb2:
+                                    if st.button("❌ 跳过",
+                                                 key=f"sync_ws_skip_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True):
+                                        ws_upds.pop(i)
+                                        sync_result["world_setting_updates"] = ws_upds
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        if st.button("清除全部检测结果", key="clear_sync_result", use_container_width=True):
+                            st.session_state[sync_key] = None
+                            st.rerun()
 
                 st.divider()
                 render_approval_status(novel_id, selected_ch)

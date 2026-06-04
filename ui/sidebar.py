@@ -8,6 +8,7 @@ from core.models import get_db, Novel
 from core.permissions import get_current_identity, get_online_collaborators
 from core.workflow import load_novel
 from ui.helpers import format_status
+from ui.components.global_chat import render_global_chat
 
 
 def render_sidebar():
@@ -77,6 +78,10 @@ def render_sidebar():
             if st.button(f"{icon} {page}", use_container_width=True, type=btn_type):
                 st.session_state.page = page
                 st.rerun()
+
+        if st.session_state.novel_id:
+            st.divider()
+            render_global_chat(st.session_state.novel_id)
 
         st.divider()
         st.caption("Powered by Claude & Anthropic")
