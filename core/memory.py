@@ -465,22 +465,30 @@ class ChapterMemory:
         from core.models import ContentVersion
         from core.config import MAX_VERSIONS
 
-        # 获取当前最大版本号
-        max_version = self.db.query(ContentVersion).filter(
+        from sqlalchemy import func
+
+        # 获取当前版本数量（用于判断是否需要淘汰旧版本）
+        version_count = self.db.query(ContentVersion).filter(
             ContentVersion.chapter_id == chapter_id
         ).count()
 
         # 如果超出最大版本数，删除最旧的版本
-        if max_version >= MAX_VERSIONS:
+        if version_count >= MAX_VERSIONS:
             oldest = self.db.query(ContentVersion).filter(
                 ContentVersion.chapter_id == chapter_id
             ).order_by(ContentVersion.version_number).first()
             if oldest:
                 self.db.delete(oldest)
+                self.db.flush()
+
+        # 用 MAX+1 而非 COUNT+1，避免删除旧版本后版本号与已有记录重复
+        max_num = self.db.query(func.max(ContentVersion.version_number)).filter(
+            ContentVersion.chapter_id == chapter_id
+        ).scalar() or 0
 
         version = ContentVersion(
             chapter_id=chapter_id,
-            version_number=max_version + 1,
+            version_number=max_num + 1,
             content=content,
             version_type=version_type,
             change_summary=change_summary
