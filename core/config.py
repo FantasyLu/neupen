@@ -65,11 +65,12 @@ AUTO_APPROVE_THRESHOLD = 3
 # AI 审核-修改自动循环的最大迭代次数（防止无限循环）
 MAX_REVIEW_ITERATIONS = int(os.getenv("MAX_REVIEW_ITERATIONS", "5"))
 
-# 审核通过所需的最低评分（满分 10）
-REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "8.0"))
+# 审核通过所需的最低评分（满分 10）——达到此分数才退出修改循环
+REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "7.0"))
 
 # 低于此分数时触发完整重写（带审核反馈喂给写手），设为 0 禁用
-LOW_SCORE_REWRITE_THRESHOLD = float(os.getenv("LOW_SCORE_REWRITE_THRESHOLD", "6.0"))
+# 设为与 REVIEW_SCORE_THRESHOLD 相同，保证只要没通过审核就必然触发重写
+LOW_SCORE_REWRITE_THRESHOLD = float(os.getenv("LOW_SCORE_REWRITE_THRESHOLD", "7.0"))
 
 # ======================================
 # 版本控制配置
