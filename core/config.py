@@ -60,7 +60,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 DEFAULT_CHAPTER_WORDS = 3000
 
 # 审核通过的最高冲突等级（0-10，超过此值需要人工确认）
-AUTO_APPROVE_THRESHOLD = 3
+AUTO_APPROVE_THRESHOLD = 6
 
 # AI 审核-修改自动循环的最大迭代次数（单轮 fix-review 上限）
 MAX_REVIEW_ITERATIONS = int(os.getenv("MAX_REVIEW_ITERATIONS", "5"))

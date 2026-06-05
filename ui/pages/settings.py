@@ -131,8 +131,8 @@ def page_settings():
 
     # ─── 右栏：设定文档 + 管理 ───────────────────────────
     with col_doc:
-        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_api = st.tabs([
-            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "🔑 API Key"
+        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_quality, tab_api = st.tabs([
+            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "⚡ 写作质量", "🔑 API Key"
         ])
 
         # ──────────────────────────────────────────────────
@@ -795,6 +795,105 @@ def page_settings():
                     with st.expander("📄 查看已保存的参考文本节选"):
                         st.text(novel_fresh.style_reference_text[:1000]
                                 + ("…" if len(novel_fresh.style_reference_text) > 1000 else ""))
+
+        # ──────────────────────────────────────────────────
+        # Tab: 写作质量参数
+        # ──────────────────────────────────────────────────
+        with tab_quality:
+            st.markdown("### ⚡ 写作质量参数")
+            st.caption("配置每章写作的审核与重写策略，覆盖全局默认值。留空时使用全局默认。")
+
+            from core.config import (
+                AUTO_APPROVE_THRESHOLD as _DEF_APPROVE,
+                REVIEW_SCORE_THRESHOLD as _DEF_REVIEW,
+                LOW_SCORE_REWRITE_THRESHOLD as _DEF_REWRITE,
+                MAX_REVIEW_ITERATIONS as _DEF_ITER,
+                MAX_TOTAL_ATTEMPTS as _DEF_TOTAL,
+            )
+
+            db = get_db()
+            novel_q = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+            q_cfg = novel_q.get_quality_config() if novel_q else {}
+
+            with st.form("quality_config_form"):
+                st.markdown("#### 冲突检测")
+                auto_approve = st.number_input(
+                    f"严重冲突 severity 阈值（默认 {_DEF_APPROVE}）",
+                    min_value=1, max_value=10,
+                    value=int(q_cfg.get("auto_approve_threshold", _DEF_APPROVE)),
+                    step=1,
+                    help="severity ≥ 此值的冲突被认为是「严重冲突」，"
+                         "章节含严重冲突时不会通过审核，会继续修改或重写。"
+                )
+
+                st.markdown("#### 审核评分")
+                review_score = st.number_input(
+                    f"审核通过评分（默认 {_DEF_REVIEW}）",
+                    min_value=0.0, max_value=10.0,
+                    value=float(q_cfg.get("review_score_threshold", _DEF_REVIEW)),
+                    step=0.5,
+                    help="评分 ≥ 此值且无严重冲突时退出修改循环，章节视为通过审核。"
+                )
+                rewrite_score = st.number_input(
+                    f"触发重写评分（默认 {_DEF_REWRITE}）",
+                    min_value=0.0, max_value=10.0,
+                    value=float(q_cfg.get("low_score_rewrite_threshold", _DEF_REWRITE)),
+                    step=0.5,
+                    help="修改循环结束后若评分仍低于此值或含严重冲突，触发整章重写。设为 0 禁用重写。"
+                )
+
+                st.markdown("#### 迭代次数")
+                max_iter = st.number_input(
+                    f"最大修改轮次（默认 {_DEF_ITER}）",
+                    min_value=1, max_value=20,
+                    value=int(q_cfg.get("max_review_iterations", _DEF_ITER)),
+                    step=1,
+                    help="每轮包含一次审核 + 一次修复。达到上限后进入重写阶段（如果评分未达标）。"
+                )
+                max_total = st.number_input(
+                    f"全局审核次数上限（默认 {_DEF_TOTAL}）",
+                    min_value=1, max_value=50,
+                    value=int(q_cfg.get("max_total_attempts", _DEF_TOTAL)),
+                    step=1,
+                    help="跨修改轮次和重写轮次的审核总次数上限。达到后自动选历史最高分版本作为终稿。"
+                )
+
+                saved = st.form_submit_button("💾 保存质量参数", use_container_width=True,
+                                              type="primary", disabled=not can_edit(novel_id))
+
+            if saved:
+                new_cfg = {
+                    "auto_approve_threshold":    auto_approve,
+                    "review_score_threshold":    review_score,
+                    "low_score_rewrite_threshold": rewrite_score,
+                    "max_review_iterations":     max_iter,
+                    "max_total_attempts":        max_total,
+                }
+                db = get_db()
+                obj = db.query(Novel).filter(Novel.id == novel_id).first()
+                obj.set_quality_config(new_cfg)
+                db.commit()
+                db.close()
+                st.success("✅ 写作质量参数已保存")
+                st.rerun()
+
+            st.divider()
+            st.markdown("#### 当前有效参数")
+            db = get_db()
+            novel_q2 = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+            q2 = novel_q2.get_quality_config() if novel_q2 else {}
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("严重冲突阈值", int(q2.get("auto_approve_threshold", _DEF_APPROVE)))
+                st.metric("审核通过评分", f"{float(q2.get('review_score_threshold', _DEF_REVIEW)):.1f}")
+                st.metric("触发重写评分", f"{float(q2.get('low_score_rewrite_threshold', _DEF_REWRITE)):.1f}")
+            with col_b:
+                st.metric("最大修改轮次", int(q2.get("max_review_iterations", _DEF_ITER)))
+                st.metric("全局审核次数上限", int(q2.get("max_total_attempts", _DEF_TOTAL)))
+            if not q2:
+                st.info("当前使用全局默认值，保存后生效。")
 
         # ──────────────────────────────────────────────────
         # Tab: API Key

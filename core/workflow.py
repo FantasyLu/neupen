@@ -295,6 +295,15 @@ class NovelWorkflow:
             WorkflowResult，包含最终内容和审核报告
         """
         try:
+            # 加载每本小说的质量配置（覆盖全局默认）
+            _novel = self.memory.global_mem.get_novel()
+            _q = _novel.get_quality_config() if _novel else {}
+            _auto_approve     = int(_q.get("auto_approve_threshold",    AUTO_APPROVE_THRESHOLD))
+            _review_score     = float(_q.get("review_score_threshold",  REVIEW_SCORE_THRESHOLD))
+            _rewrite_thr      = float(_q.get("low_score_rewrite_threshold", LOW_SCORE_REWRITE_THRESHOLD))
+            _max_iter         = int(_q.get("max_review_iterations",     MAX_REVIEW_ITERATIONS))
+            _max_total        = int(_q.get("max_total_attempts",        MAX_TOTAL_ATTEMPTS))
+
             # Step 1: 生成章节草稿
             if progress_callback:
                 progress_callback(f"✍️ 正在写作第{chapter_number}章...")
@@ -319,8 +328,8 @@ class NovelWorkflow:
             total_reviews   = 0               # 已消耗的审核次数
 
             # Phase 1: fix-review 循环
-            for iteration in range(MAX_REVIEW_ITERATIONS):
-                if total_reviews >= MAX_TOTAL_ATTEMPTS:
+            for iteration in range(_max_iter):
+                if total_reviews >= _max_total:
                     break
                 round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
                 if progress_callback:
@@ -342,8 +351,8 @@ class NovelWorkflow:
                     self.db.commit()
 
                 # 判断是否达标
-                has_major = any(c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts)
-                if report.overall_score >= REVIEW_SCORE_THRESHOLD and not has_major:
+                has_major = any(c.severity >= _auto_approve for c in report.conflicts)
+                if report.overall_score >= _review_score and not has_major:
                     if progress_callback:
                         progress_callback(
                             f"✅ 审核通过（第{iteration + 1}轮）"
@@ -352,11 +361,11 @@ class NovelWorkflow:
                     break
 
                 # 还有修改次数且未达全局上限 → 修复
-                if iteration < MAX_REVIEW_ITERATIONS - 1 and total_reviews < MAX_TOTAL_ATTEMPTS:
+                if iteration < _max_iter - 1 and total_reviews < _max_total:
                     if progress_callback:
                         progress_callback(
                             f"🔧 修改中（当前评分 {report.overall_score:.1f}/10，"
-                            f"第{iteration + 1}/{MAX_REVIEW_ITERATIONS}轮）..."
+                            f"第{iteration + 1}/{_max_iter}轮）..."
                         )
                     current_content = self.reviewer_agent.fix_all_issues(
                         current_content, report, self.novel_id, chapter_number
@@ -370,23 +379,23 @@ class NovelWorkflow:
             # Phase 2: 低分/有严重冲突重写循环（与 Phase 1 退出条件对齐）
             # 退出条件：score >= 7 且无 severity≥3 冲突，或全局审核次数耗尽
             has_major_last = (
-                any(c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts)
+                any(c.severity >= _auto_approve for c in report.conflicts)
                 if report else False
             )
             rewrite_count = 0
-            while (report and LOW_SCORE_REWRITE_THRESHOLD > 0
-                   and (report.overall_score < LOW_SCORE_REWRITE_THRESHOLD or has_major_last)
-                   and total_reviews < MAX_TOTAL_ATTEMPTS):
+            while (report and _rewrite_thr > 0
+                   and (report.overall_score < _rewrite_thr or has_major_last)
+                   and total_reviews < _max_total):
                 rewrite_count += 1
                 reason = []
-                if report.overall_score < LOW_SCORE_REWRITE_THRESHOLD:
+                if report.overall_score < _rewrite_thr:
                     reason.append(f"评分 {report.overall_score:.1f}")
                 if has_major_last:
                     reason.append("含严重冲突")
                 if progress_callback:
                     progress_callback(
                         f"🔄 第{rewrite_count}次重写（{'、'.join(reason)}，"
-                        f"已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核）..."
+                        f"已用 {total_reviews}/{_max_total} 次审核）..."
                     )
                 feedback_lines = [
                     f"- [{c.severity}级] {c.conflict_type}：{c.description}"
@@ -408,7 +417,7 @@ class NovelWorkflow:
                     report = self.reviewer_agent.review_chapter(chapter_number, current_content)
                     total_reviews += 1
                     has_major_last = any(
-                        c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts
+                        c.severity >= _auto_approve for c in report.conflicts
                     )
 
                     if report.overall_score > best_score:
@@ -420,19 +429,19 @@ class NovelWorkflow:
                         chapter.review_score  = report.overall_score
                         self.db.commit()
                     if progress_callback:
-                        status = "✅ 通过" if (report.overall_score >= LOW_SCORE_REWRITE_THRESHOLD and not has_major_last) else "继续迭代"
+                        status = "✅ 通过" if (report.overall_score >= _rewrite_thr and not has_major_last) else "继续迭代"
                         progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10（{status}）")
                 except Exception:
                     break  # 重写失败退出，用已有最佳版本
 
-            # Phase 3: 选稿 — 预算耗尽仍未通过（score < 7 或有严重冲突），选历史最高分版本
+            # Phase 3: 选稿 — 预算耗尽仍未通过（score < 阈值 或有严重冲突），选历史最高分版本
             not_passed = report and (
-                report.overall_score < LOW_SCORE_REWRITE_THRESHOLD or has_major_last
+                report.overall_score < _rewrite_thr or has_major_last
             )
             if not_passed:
                 if progress_callback:
                     progress_callback(
-                        f"⚠️ 已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核，"
+                        f"⚠️ 已用 {total_reviews}/{_max_total} 次审核，"
                         f"选用历史最高分版本（{best_score:.1f}/10）作为终稿"
                     )
                 current_content = best_content
