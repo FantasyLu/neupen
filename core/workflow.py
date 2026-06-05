@@ -367,15 +367,25 @@ class NovelWorkflow:
                             f"修改轮次结束，当前评分：{report.overall_score:.1f}/10"
                         )
 
-            # Phase 2: 低分重写循环（score < 阈值 且 全局预算未耗尽）
+            # Phase 2: 低分/有严重冲突重写循环（与 Phase 1 退出条件对齐）
+            # 退出条件：score >= 7 且无 severity≥3 冲突，或全局审核次数耗尽
+            has_major_last = (
+                any(c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts)
+                if report else False
+            )
             rewrite_count = 0
             while (report and LOW_SCORE_REWRITE_THRESHOLD > 0
-                   and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD
+                   and (report.overall_score < LOW_SCORE_REWRITE_THRESHOLD or has_major_last)
                    and total_reviews < MAX_TOTAL_ATTEMPTS):
                 rewrite_count += 1
+                reason = []
+                if report.overall_score < LOW_SCORE_REWRITE_THRESHOLD:
+                    reason.append(f"评分 {report.overall_score:.1f}")
+                if has_major_last:
+                    reason.append("含严重冲突")
                 if progress_callback:
                     progress_callback(
-                        f"🔄 第{rewrite_count}次重写（评分 {report.overall_score:.1f}，"
+                        f"🔄 第{rewrite_count}次重写（{'、'.join(reason)}，"
                         f"已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核）..."
                     )
                 feedback_lines = [
@@ -397,6 +407,9 @@ class NovelWorkflow:
                         progress_callback("🔍 重写后审核...")
                     report = self.reviewer_agent.review_chapter(chapter_number, current_content)
                     total_reviews += 1
+                    has_major_last = any(
+                        c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts
+                    )
 
                     if report.overall_score > best_score:
                         best_score   = report.overall_score
@@ -407,12 +420,16 @@ class NovelWorkflow:
                         chapter.review_score  = report.overall_score
                         self.db.commit()
                     if progress_callback:
-                        progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10")
+                        status = "✅ 通过" if (report.overall_score >= LOW_SCORE_REWRITE_THRESHOLD and not has_major_last) else "继续迭代"
+                        progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10（{status}）")
                 except Exception:
                     break  # 重写失败退出，用已有最佳版本
 
-            # Phase 3: 选稿 — 若耗尽预算仍未达标，选历史最高分版本
-            if report and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD:
+            # Phase 3: 选稿 — 预算耗尽仍未通过（score < 7 或有严重冲突），选历史最高分版本
+            not_passed = report and (
+                report.overall_score < LOW_SCORE_REWRITE_THRESHOLD or has_major_last
+            )
+            if not_passed:
                 if progress_callback:
                     progress_callback(
                         f"⚠️ 已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核，"
