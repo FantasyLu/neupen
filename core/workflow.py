@@ -50,7 +50,6 @@ class NovelWorkflow:
     def __init__(self, novel_id: int):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
-        self.db = get_db()
 
         # 读取项目级别的模型选择（覆盖全局默认）
         novel = self.memory.global_mem.get_novel()
@@ -75,6 +74,11 @@ class NovelWorkflow:
         self._reviewer_agent = None
         self._polisher_agent = None
         self._reader_agent = None
+
+    @property
+    def db(self):
+        """所有 ORM 对象均由 global_mem 的 session 托管，统一通过它提交"""
+        return self.memory.global_mem.db
 
     @property
     def outline_agent(self) -> OutlineAgent:
@@ -1106,7 +1110,6 @@ class NovelWorkflow:
     def close(self):
         """清理所有资源"""
         self.memory.close()
-        self.db.close()
         if self._outline_agent:
             self._outline_agent.close()
         if self._character_agent:
