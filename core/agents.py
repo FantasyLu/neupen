@@ -627,7 +627,8 @@ class WriterAgent:
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
-                       stream_callback=None) -> str:
+                       stream_callback=None,
+                       review_feedback: str = "") -> str:
         """
         生成指定章节的正文
 
@@ -679,10 +680,13 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
+        feedback_block = ""
+        if review_feedback:
+            feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
+
         user_prompt = f"""请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}
-
+{writing_context}{style_block}{feedback_block}
 【写作要求】
 - 目标字数：约{word_target}字
 - 必须完整呈现章纲中的核心事件
@@ -839,7 +843,8 @@ class ReviewerAgent:
 
     def fix_all_issues(self, content: str,
                         report: "ReviewReport",
-                        novel_id: int) -> str:
+                        novel_id: int,
+                        chapter_number: int = 0) -> str:
         """
         根据完整审核报告修复所有问题（不限严重程度）。
         用于审核-修改自动循环中的每次改写。
@@ -855,19 +860,42 @@ class ReviewerAgent:
             for c in report.conflicts
         ])
 
+        # 获取章纲目标，让编辑明确本章应当实现什么
+        chapter_goal_block = ""
+        if chapter_number:
+            ch = self.memory.global_mem.get_chapter_outline(chapter_number)
+            if ch:
+                goal_lines = []
+                if ch.outline_core_event:
+                    goal_lines.append(f"核心事件：{ch.outline_core_event}")
+                if ch.outline_conflict:
+                    goal_lines.append(f"主要冲突：{ch.outline_conflict}")
+                if ch.outline_scene:
+                    goal_lines.append(f"场景设定：{ch.outline_scene}")
+                if ch.outline_emotion:
+                    goal_lines.append(f"情感基调：{ch.outline_emotion}")
+                if ch.outline_ending:
+                    goal_lines.append(f"结尾方式：{ch.outline_ending}")
+                if goal_lines:
+                    chapter_goal_block = (
+                        "\n【本章章纲目标（修改后的内容必须完整实现这些目标）】\n"
+                        + "\n".join(goal_lines) + "\n"
+                    )
+
         system_prompt = (
             "你是一位资深小说编辑，负责根据审核意见修改章节正文。\n"
             "修改原则：\n"
             "1. 严格按审核意见逐条修复问题\n"
-            "2. 保持故事情节、人物关系、场景氛围不变\n"
-            "3. 只改有问题的部分，其余内容保持原样\n"
+            "2. 确保修改后的内容完整实现本章章纲目标\n"
+            "3. 保持人物关系、场景氛围的一致性\n"
             "4. 直接输出完整修改后正文，不加任何说明或标注"
         )
         user_prompt = (
             f"章节正文：\n{content}\n\n"
             f"本次审核评分：{report.overall_score:.1f}/10\n"
+            f"{chapter_goal_block}"
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
-            "请修复以上所有问题，直接输出完整修改后正文："
+            "请修复以上所有问题并确保章纲目标得以实现，直接输出完整修改后正文："
         )
         return llm.generate(system_prompt, user_prompt, max_tokens=12000)
 

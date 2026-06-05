@@ -18,7 +18,8 @@ from core.models import get_db, Novel, NovelOutline
 from core.memory import MemoryManager
 from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent, PolisherAgent
 from core.detector import ConflictDetector, ReviewReport
-from core.config import AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS, REVIEW_SCORE_THRESHOLD
+from core.config import (AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS,
+                         REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD)
 
 
 # ======================================
@@ -344,13 +345,49 @@ class NovelWorkflow:
                             f"第{iteration + 1}/{MAX_REVIEW_ITERATIONS}轮）..."
                         )
                     current_content = self.reviewer_agent.fix_all_issues(
-                        current_content, report, self.novel_id
+                        current_content, report, self.novel_id, chapter_number
                     )
                 else:
                     if progress_callback:
                         progress_callback(
                             f"⚠️ 已达最大修改次数，最终评分：{report.overall_score:.1f}/10"
                         )
+
+            # 低分重写：多轮修改后评分仍低于阈值，带审核反馈重新写作
+            if (report and LOW_SCORE_REWRITE_THRESHOLD > 0
+                    and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD):
+                if progress_callback:
+                    progress_callback(
+                        f"🔄 评分 {report.overall_score:.1f} 低于 {LOW_SCORE_REWRITE_THRESHOLD:.0f} 分，"
+                        f"基于审核反馈重新写作..."
+                    )
+                feedback_lines = [
+                    f"- [{c.severity}级] {c.conflict_type}：{c.description}"
+                    + (f"。建议：{c.solutions[0]}" if c.solutions else "")
+                    for c in report.conflicts
+                ]
+                review_feedback = (
+                    f"上一稿评分 {report.overall_score:.1f}/10，主要问题：\n"
+                    + "\n".join(feedback_lines)
+                )
+                try:
+                    current_content = self.writer_agent.write_chapter(
+                        chapter_number=chapter_number,
+                        word_target=word_target,
+                        review_feedback=review_feedback,
+                    )
+                    # 重写后再做一次审核，更新报告
+                    if progress_callback:
+                        progress_callback("🔍 重写后审核...")
+                    report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+                    if chapter:
+                        chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
+                        chapter.review_score = report.overall_score
+                        self.db.commit()
+                    if progress_callback:
+                        progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10")
+                except Exception:
+                    pass  # 重写失败不影响主流程，继续用之前的内容
 
             # Step 4: 润色
             final_content = current_content
