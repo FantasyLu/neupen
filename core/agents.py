@@ -334,15 +334,30 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=min(3000 + ch_count * 400, 16000)
+            max_tokens=min(4000 + ch_count * 600, 32000)
         )
 
         arr_start = response.find("[")
+        if arr_start < 0:
+            raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
+
         arr_end = response.rfind("]") + 1
-        if arr_start >= 0 and arr_end > arr_start:
+        if arr_end > arr_start:
+            # 正常情况：有完整的 JSON 数组
             result = _safe_json_loads(response[arr_start:arr_end])
-            if isinstance(result, list):
+            if isinstance(result, list) and result:
                 return result
+
+        # 截断兜底：尝试用 json_repair 修复不完整的 JSON
+        try:
+            from json_repair import repair_json
+            partial = response[arr_start:]
+            result = json.loads(repair_json(partial))
+            if isinstance(result, list) and result:
+                return result
+        except Exception:
+            pass
+
         raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
 
     def analyze_chapter_consistency(self, chapter_number: int, content: str) -> dict:
