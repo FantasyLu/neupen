@@ -37,6 +37,60 @@ def _auto_save(novel_id: int, ch_num: int, content: str, pending_key: str, text_
         return False
 
 
+def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
+    """自动执行所有同步操作（无需用户逐条确认），返回成功执行的条目数。"""
+    count = 0
+    try:
+        wf = load_novel(novel_id)
+        for char in sync_checks.get("new_characters", []):
+            try:
+                wf.memory.global_mem.save_character({
+                    "name":        char.get("name", ""),
+                    "role":        char.get("role", ""),
+                    "personality": char.get("personality", ""),
+                    "background":  char.get("background", ""),
+                })
+                count += 1
+            except Exception:
+                pass
+        for cu in sync_checks.get("character_updates", []):
+            try:
+                wf.memory.global_mem.save_character({
+                    "name": cu.get("name", ""),
+                    cu.get("field", "current_state"): cu.get("new_value", ""),
+                })
+                count += 1
+            except Exception:
+                pass
+        for upd in sync_checks.get("outline_updates", []):
+            try:
+                field = upd.get("field", "")
+                if field:
+                    outline = wf.memory.global_mem.get_outline()
+                    current = (getattr(outline, field, "") or "") if outline else ""
+                    new_val = (current + "\n\n" + upd.get("suggestion", "")).strip()
+                    wf.memory.global_mem.save_outline({field: new_val})
+                    count += 1
+            except Exception:
+                pass
+        wf.close()
+    except Exception:
+        pass
+    for ws in sync_checks.get("world_setting_updates", []):
+        try:
+            db = get_db()
+            novel_obj = db.query(Novel).filter(Novel.id == novel_id).first()
+            world = novel_obj.get_world_setting()
+            world[ws.get("key", "")] = ws.get("value", "")
+            novel_obj.set_world_setting(world)
+            db.commit()
+            db.close()
+            count += 1
+        except Exception:
+            pass
+    return count
+
+
 def page_writing():
     novel_id = st.session_state.novel_id
 
@@ -188,11 +242,14 @@ def page_writing():
                 selected_range = [c.chapter_number for c in writable if batch_start <= c.chapter_number <= batch_end]
                 if selected_range:
                     st.caption(f"将写作 **{len(selected_range)}** 章（第{selected_range[0]}~{selected_range[-1]}章）")
-                    bp1, bp2 = st.columns(2)
+                    bp1, bp2, bp3 = st.columns(3)
                     with bp1:
                         batch_words  = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
                     with bp2:
                         batch_polish = st.toggle("自动润色", value=True, key="batch_polish")
+                    with bp3:
+                        batch_auto_sync = st.toggle("自动同步大纲/人物", value=False, key="batch_auto_sync",
+                                                    help="写完每章后自动将 AI 检测到的人物状态变化、大纲更新等同步入库，无需手动逐条确认")
                     if st.button("🚀 开始批量写作", use_container_width=True, type="primary",
                                  disabled=(st.session_state.is_writing or st.session_state.batch_writing or not can_edit(novel_id))):
                         st.session_state.batch_writing = True
@@ -209,15 +266,22 @@ def page_writing():
                                 ph.empty()
                                 if result.success:
                                     sync_checks = result.data.get("sync_checks", {})
-                                    if sync_checks:
-                                        st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
                                     sync_count = (
                                         len(sync_checks.get("new_characters", [])) +
                                         len(sync_checks.get("character_updates", [])) +
                                         len(sync_checks.get("outline_updates", [])) +
                                         len(sync_checks.get("world_setting_updates", []))
                                     ) if sync_checks else 0
-                                    sync_hint = f" · 🔄{sync_count}条同步建议" if sync_count else ""
+                                    if sync_checks and sync_count:
+                                        if batch_auto_sync:
+                                            done = _auto_execute_sync(novel_id, sync_checks)
+                                            st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = {"_done": True}
+                                            sync_hint = f" · ✅已自动同步{done}条"
+                                        else:
+                                            st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
+                                            sync_hint = f" · 🔄{sync_count}条同步建议待确认"
+                                    else:
+                                        sync_hint = ""
                                     st.write(f"✅ 第{ch_num}章完成 · {result.data.get('word_count',0):,}字 · 评分 {result.data.get('overall_score',0):.1f}/10{sync_hint}")
                                 else:
                                     st.write(f"❌ 第{ch_num}章失败：{result.message}")
