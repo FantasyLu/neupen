@@ -62,7 +62,7 @@ def _get_chunk_schema():
 
     class ChapterChunk(LanceModel):
         text: str = model.SourceField()
-        vector: Vector(model.ndims()) = model.VectorField()
+        vector: Vector(model.ndims()) = model.VectorField()  # type: ignore[valid-type]
         novel_id: int
         chapter_number: int
         title: str
