@@ -310,10 +310,9 @@ def page_outline():
             with st.expander("🤖 AI 批量生成章纲", expanded=False):
                 if not can_edit(novel_id):
                     st.warning("仅主笔可以生成章纲")
-                elif not chapters:
-                    st.info("请先生成章节列表（通过整体大纲生成）")
                 else:
                     ch_min = chapters[0].chapter_number if chapters else 1
+                    total_ch = novel_outline.total_chapters if novel_outline and novel_outline.total_chapters else 0
 
                     rc1, rc2 = st.columns(2)
                     with rc1:
@@ -322,9 +321,10 @@ def page_outline():
                             step=1, key="batch_range_start"
                         )
                     with rc2:
+                        default_end = min(ch_min + 9, total_ch) if total_ch else ch_min + 9
                         range_end = st.number_input(
                             "结束章节", min_value=range_start,
-                            value=range_start + 9, step=1, key="batch_range_end"
+                            value=max(range_start, default_end), step=1, key="batch_range_end"
                         )
 
                     ch_count_label = range_end - range_start + 1
