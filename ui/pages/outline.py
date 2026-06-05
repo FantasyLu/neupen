@@ -236,8 +236,7 @@ def page_outline():
                         try:
                             fields = _markdown_to_outline_fields(md)
                             _save_outline_direct(novel_id, fields)
-                            st.success("✅ 大纲已保存")
-                            st.rerun()
+                            st.toast("✅ 大纲已保存", icon="💾")
                         except Exception as e:
                             st.error(f"保存失败：{e}")
             with btn_c2:

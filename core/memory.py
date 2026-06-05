@@ -149,15 +149,20 @@ class GlobalMemory:
 
     def save_outline(self, data: dict) -> NovelOutline:
         """保存总大纲"""
+        # 将 dict/list 字段序列化为 JSON 字符串，避免 SQLite 类型错误
+        serialized = {
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+            for k, v in data.items()
+        }
         existing = self.get_outline()
         if existing:
-            for k, v in data.items():
+            for k, v in serialized.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
             self.db.commit()
             return existing
         else:
-            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in serialized.items() if k != "novel_id"})
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
