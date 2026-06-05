@@ -62,8 +62,11 @@ DEFAULT_CHAPTER_WORDS = 3000
 # 审核通过的最高冲突等级（0-10，超过此值需要人工确认）
 AUTO_APPROVE_THRESHOLD = 3
 
-# AI 审核-修改自动循环的最大迭代次数（防止无限循环）
+# AI 审核-修改自动循环的最大迭代次数（单轮 fix-review 上限）
 MAX_REVIEW_ITERATIONS = int(os.getenv("MAX_REVIEW_ITERATIONS", "5"))
+
+# 全局审核总次数上限（fix 轮 + 重写轮合计），超过后选历史最高分版本作为终稿
+MAX_TOTAL_ATTEMPTS = int(os.getenv("MAX_TOTAL_ATTEMPTS", "10"))
 
 # 审核通过所需的最低评分（满分 10）——达到此分数才退出修改循环
 REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "7.0"))

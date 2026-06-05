@@ -19,7 +19,8 @@ from core.memory import MemoryManager
 from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent, PolisherAgent
 from core.detector import ConflictDetector, ReviewReport
 from core.config import (AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS,
-                         REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD)
+                         REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD,
+                         MAX_TOTAL_ATTEMPTS)
 
 
 # ======================================
@@ -307,23 +308,36 @@ class NovelWorkflow:
             # 保存草稿
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
-            # Step 2-3: 审核 → 修改循环，直到评分 ≥ REVIEW_SCORE_THRESHOLD
+            # Step 2-3: 审核 → 修改 → 重写循环（全局上限 MAX_TOTAL_ATTEMPTS 次审核）
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
             import json as json_module
 
             current_content = draft_content
-            report = None
+            best_content    = draft_content   # 历史最高分对应内容
+            best_score      = 0.0
+            report          = None
+            total_reviews   = 0               # 已消耗的审核次数
+
+            # Phase 1: fix-review 循环
             for iteration in range(MAX_REVIEW_ITERATIONS):
+                if total_reviews >= MAX_TOTAL_ATTEMPTS:
+                    break
+                round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
                 if progress_callback:
-                    round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
                     progress_callback(f"🔍 AI 审核{round_label}...")
 
                 report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+                total_reviews += 1
+
+                # 追踪历史最高分
+                if report.overall_score > best_score:
+                    best_score   = report.overall_score
+                    best_content = current_content
 
                 # 保存本轮审核报告
                 if chapter:
                     chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                    chapter.review_score = report.overall_score
+                    chapter.review_score  = report.overall_score
                     chapter.status = "review_pending" if not report.passed else "reviewed"
                     self.db.commit()
 
@@ -337,8 +351,8 @@ class NovelWorkflow:
                         )
                     break
 
-                # 未达标且还有迭代次数 → 修复所有问题
-                if iteration < MAX_REVIEW_ITERATIONS - 1:
+                # 还有修改次数且未达全局上限 → 修复
+                if iteration < MAX_REVIEW_ITERATIONS - 1 and total_reviews < MAX_TOTAL_ATTEMPTS:
                     if progress_callback:
                         progress_callback(
                             f"🔧 修改中（当前评分 {report.overall_score:.1f}/10，"
@@ -350,16 +364,19 @@ class NovelWorkflow:
                 else:
                     if progress_callback:
                         progress_callback(
-                            f"⚠️ 已达最大修改次数，最终评分：{report.overall_score:.1f}/10"
+                            f"修改轮次结束，当前评分：{report.overall_score:.1f}/10"
                         )
 
-            # 低分重写：多轮修改后评分仍低于阈值，带审核反馈重新写作
-            if (report and LOW_SCORE_REWRITE_THRESHOLD > 0
-                    and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD):
+            # Phase 2: 低分重写循环（score < 阈值 且 全局预算未耗尽）
+            rewrite_count = 0
+            while (report and LOW_SCORE_REWRITE_THRESHOLD > 0
+                   and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD
+                   and total_reviews < MAX_TOTAL_ATTEMPTS):
+                rewrite_count += 1
                 if progress_callback:
                     progress_callback(
-                        f"🔄 评分 {report.overall_score:.1f} 低于 {LOW_SCORE_REWRITE_THRESHOLD:.0f} 分，"
-                        f"基于审核反馈重新写作..."
+                        f"🔄 第{rewrite_count}次重写（评分 {report.overall_score:.1f}，"
+                        f"已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核）..."
                     )
                 feedback_lines = [
                     f"- [{c.severity}级] {c.conflict_type}：{c.description}"
@@ -376,18 +393,35 @@ class NovelWorkflow:
                         word_target=word_target,
                         review_feedback=review_feedback,
                     )
-                    # 重写后再做一次审核，更新报告
                     if progress_callback:
                         progress_callback("🔍 重写后审核...")
                     report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+                    total_reviews += 1
+
+                    if report.overall_score > best_score:
+                        best_score   = report.overall_score
+                        best_content = current_content
+
                     if chapter:
                         chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                        chapter.review_score = report.overall_score
+                        chapter.review_score  = report.overall_score
                         self.db.commit()
                     if progress_callback:
                         progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10")
                 except Exception:
-                    pass  # 重写失败不影响主流程，继续用之前的内容
+                    break  # 重写失败退出，用已有最佳版本
+
+            # Phase 3: 选稿 — 若耗尽预算仍未达标，选历史最高分版本
+            if report and report.overall_score < LOW_SCORE_REWRITE_THRESHOLD:
+                if progress_callback:
+                    progress_callback(
+                        f"⚠️ 已用 {total_reviews}/{MAX_TOTAL_ATTEMPTS} 次审核，"
+                        f"选用历史最高分版本（{best_score:.1f}/10）作为终稿"
+                    )
+                current_content = best_content
+                if chapter and chapter.review_score != best_score:
+                    chapter.review_score = best_score
+                    self.db.commit()
 
             # Step 4: 润色
             final_content = current_content
