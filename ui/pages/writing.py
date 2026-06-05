@@ -334,6 +334,10 @@ def page_writing():
                     with btn2:
                         review_clicked = st.button("🔍 AI 审核", use_container_width=True,
                                                    help="对当前编辑区内容发起审核，无需先保存")
+                        _rv_score = (st.session_state.get(review_key) or {}).get("overall_score") \
+                                    or selected_ch.review_score
+                        if _rv_score:
+                            st.caption(f"✅ 已审核 {_rv_score:.1f}/10")
                     with btn3:
                         suggest_clicked = st.button("✨ AI 建议", use_container_width=True,
                                                     help="让 AI 提出改进建议，结果将显示在左侧聊天中")
@@ -588,6 +592,8 @@ def page_writing():
                 sync_result = st.session_state.get(sync_key)
                 current_text_for_sync = st.session_state.get(text_key, "").strip()
 
+                _sync_is_done = isinstance(sync_result, dict) and sync_result.get("_done")
+
                 if current_text_for_sync and can_edit(novel_id):
                     st.divider()
                     if st.button("🔄 大纲 / 设定同步检测",
@@ -604,8 +610,10 @@ def page_writing():
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"检测失败：{e}")
+                    if _sync_is_done:
+                        st.caption("✅ 上次同步检测：无需更新  · 可随时重新检测")
 
-                if sync_result:
+                if sync_result and not _sync_is_done:
                     new_chars    = list(sync_result.get("new_characters", []))
                     char_upds    = list(sync_result.get("character_updates", []))
                     outline_upds = list(sync_result.get("outline_updates", []))
@@ -614,8 +622,8 @@ def page_writing():
 
                     if total == 0:
                         st.success("✅ 大纲和设定与本章内容一致，无需更新")
-                        if st.button("清除", key="clear_sync_empty"):
-                            st.session_state[sync_key] = None
+                        if st.button("完成", key="clear_sync_empty"):
+                            st.session_state[sync_key] = {"_done": True}
                             st.rerun()
                     else:
                         st.markdown(f"##### 🔄 发现 {total} 条更新建议，请逐一确认")
@@ -778,7 +786,7 @@ def page_writing():
                                         st.rerun()
 
                         if st.button("清除全部检测结果", key="clear_sync_result", use_container_width=True):
-                            st.session_state[sync_key] = None
+                            st.session_state[sync_key] = {"_done": True}
                             st.rerun()
 
                 st.divider()
