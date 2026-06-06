@@ -20,7 +20,7 @@ from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent
 from core.detector import ConflictDetector, ReviewReport
 from core.config import (AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS,
                          REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD,
-                         MAX_TOTAL_ATTEMPTS)
+                         MAX_TOTAL_ATTEMPTS, WORD_COUNT_TOLERANCE)
 
 
 # ======================================
@@ -276,6 +276,7 @@ class NovelWorkflow:
         self,
         chapter_number: int,
         word_target: int = 3000,
+        word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
         stream_callback: Callable = None
@@ -303,6 +304,9 @@ class NovelWorkflow:
             _rewrite_thr      = float(_q.get("low_score_rewrite_threshold", LOW_SCORE_REWRITE_THRESHOLD))
             _max_iter         = int(_q.get("max_review_iterations",     MAX_REVIEW_ITERATIONS))
             _max_total        = int(_q.get("max_total_attempts",        MAX_TOTAL_ATTEMPTS))
+            # 字数容差：UI 传入 > quality_config > 全局默认
+            _tolerance        = word_count_tolerance if word_count_tolerance is not None \
+                                else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
 
             # Step 1: 生成章节草稿
             if progress_callback:
@@ -311,6 +315,7 @@ class NovelWorkflow:
             draft_content = self.writer_agent.write_chapter(
                 chapter_number=chapter_number,
                 word_target=word_target,
+                word_count_tolerance=_tolerance,
                 stream_callback=stream_callback
             )
 
@@ -410,6 +415,7 @@ class NovelWorkflow:
                     current_content = self.writer_agent.write_chapter(
                         chapter_number=chapter_number,
                         word_target=word_target,
+                        word_count_tolerance=_tolerance,
                         review_feedback=review_feedback,
                     )
                     if progress_callback:

@@ -627,6 +627,7 @@ class WriterAgent:
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
+                       word_count_tolerance: float = 0.30,
                        stream_callback=None,
                        review_feedback: str = "") -> str:
         """
@@ -688,7 +689,7 @@ class WriterAgent:
 
 {writing_context}{style_block}{feedback_block}
 【写作要求】
-- 目标字数：约{word_target}字
+- 字数严格控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字，容差 ±{int(word_count_tolerance * 100)}%），切勿大幅超出上限
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
 - 注意与前几章的连贯性

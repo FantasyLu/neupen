@@ -148,6 +148,8 @@ def page_writing():
         st.divider()
         st.markdown("#### 写作参数")
         word_target = st.slider("目标字数", 1000, 6000, 3000, step=500)
+        word_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
+                                   help="允许实际字数偏离目标字数的比例。设为30%时，目标3000字则允许2100~3900字。") / 100
         auto_polish = st.toggle("自动润色", value=True)
 
         wc1, wc2 = st.columns(2)
@@ -242,12 +244,17 @@ def page_writing():
                 selected_range = [c.chapter_number for c in writable if batch_start <= c.chapter_number <= batch_end]
                 if selected_range:
                     st.caption(f"将写作 **{len(selected_range)}** 章（第{selected_range[0]}~{selected_range[-1]}章）")
-                    bp1, bp2, bp3 = st.columns(3)
+                    bp1, bp2 = st.columns(2)
                     with bp1:
-                        batch_words  = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
+                        batch_words     = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
                     with bp2:
-                        batch_polish = st.toggle("自动润色", value=True, key="batch_polish")
+                        batch_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
+                                                    key="batch_tolerance",
+                                                    help="允许实际字数偏离目标字数的比例。") / 100
+                    bp3, bp4 = st.columns(2)
                     with bp3:
+                        batch_polish = st.toggle("自动润色", value=True, key="batch_polish")
+                    with bp4:
                         batch_auto_sync = st.toggle("自动同步大纲/人物", value=False, key="batch_auto_sync",
                                                     help="写完每章后自动将 AI 检测到的人物状态变化、大纲更新等同步入库，无需手动逐条确认")
                     if st.button("🚀 开始批量写作", use_container_width=True, type="primary",
@@ -261,6 +268,7 @@ def page_writing():
                                 ph = st.empty()
                                 result = workflow.write_and_review_chapter(
                                     chapter_number=ch_num, word_target=batch_words,
+                                    word_count_tolerance=batch_tolerance,
                                     auto_polish=batch_polish, progress_callback=lambda m, _p=ph: _p.caption(m)
                                 )
                                 ph.empty()
@@ -310,6 +318,7 @@ def page_writing():
                     result = workflow.write_and_review_chapter(
                         chapter_number=selected_ch_num,
                         word_target=word_target,
+                        word_count_tolerance=word_tolerance,
                         auto_polish=auto_polish,
                         progress_callback=progress_cb,
                     )
