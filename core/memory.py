@@ -216,7 +216,9 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            chap = Chapter(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            clean = {k: v for k, v in data.items()
+                     if k != "novel_id" and hasattr(Chapter, k)}
+            chap = Chapter(novel_id=self.novel_id, **clean)
             self.db.add(chap)
             self.db.commit()
             self.db.refresh(chap)
