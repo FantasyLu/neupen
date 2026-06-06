@@ -16,6 +16,7 @@ from ui.pages.outline import page_outline
 from ui.pages.writing import page_writing
 from ui.pages.visualization import page_visualization
 from ui.pages.export import page_export
+from ui.pages.platform_styles import page_platform_styles
 
 
 def init_session_state():
@@ -89,5 +90,7 @@ def main():
             page_export()
         else:
             st.warning("请先选择或创建一个小说项目")
+    elif page == "平台风格":
+        page_platform_styles()
 
     render_status_report()

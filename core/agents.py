@@ -16,6 +16,7 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
+from core.platform_styles import get_style_description
 
 
 def _safe_json_loads(text: str) -> dict | list:
@@ -681,13 +682,22 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
+        # 平台/标签风格块
+        platform_block = ""
+        if novel:
+            _pt = novel.target_platform or ""
+            _tg = novel.get_target_tags()
+            _ps = get_style_description(_pt, _tg)
+            if _ps:
+                platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
+
         feedback_block = ""
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
         user_prompt = f"""请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}{feedback_block}
+{writing_context}{style_block}{platform_block}{feedback_block}
 【写作要求】
 - 字数严格控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字，容差 ±{int(word_count_tolerance * 100)}%），切勿大幅超出上限
 - 必须完整呈现章纲中的核心事件
@@ -977,9 +987,17 @@ class PolisherAgent:
         style_profile = novel.get_style_profile() if novel else {}
         style_profile_text = self._format_style_profile(style_profile) if style_profile else ""
 
+        # 平台/标签风格
+        platform_style_text = ""
+        if novel:
+            _pt = novel.target_platform or ""
+            _tg = novel.get_target_tags()
+            platform_style_text = get_style_description(_pt, _tg)
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
+{f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference}" if style_reference else ""}
 

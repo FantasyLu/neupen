@@ -13,6 +13,7 @@ from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
 from core.agents import CanvasAgent
+from core.platform_styles import load_platform_styles
 from ui.components.model_selector import (
     build_model_options, render_model_card, render_all_models_panel,
     FOLLOW_LABEL, build_agent_model_options,
@@ -131,8 +132,8 @@ def page_settings():
 
     # ─── 右栏：设定文档 + 管理 ───────────────────────────
     with col_doc:
-        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_quality, tab_api = st.tabs([
-            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "⚡ 写作质量", "🔑 API Key"
+        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_platform, tab_quality, tab_api = st.tabs([
+            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "📺 平台", "⚡ 写作质量", "🔑 API Key"
         ])
 
         # ──────────────────────────────────────────────────
@@ -795,6 +796,74 @@ def page_settings():
                     with st.expander("📄 查看已保存的参考文本节选"):
                         st.text(novel_fresh.style_reference_text[:1000]
                                 + ("…" if len(novel_fresh.style_reference_text) > 1000 else ""))
+
+        # ──────────────────────────────────────────────────
+        # Tab: 平台/标签风格（per-novel 选择）
+        # ──────────────────────────────────────────────────
+        with tab_platform:
+            st.markdown("### 📺 目标平台 & 标签")
+            st.caption(
+                "选择本小说的目标发布平台和创作标签，系统会自动将对应风格描述注入写作和润色的提示词中。\n\n"
+                "平台与标签的风格描述可在侧边栏「📺 平台风格配置」中全局管理。"
+            )
+
+            styles = load_platform_styles()
+            platform_list = list(styles.keys())
+
+            db = get_db()
+            novel_p = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+
+            current_platform = novel_p.target_platform or ""
+            current_tags = novel_p.get_target_tags() if novel_p else []
+
+            with st.form("platform_tag_form"):
+                # 平台选择（带"不指定"选项）
+                platform_options = ["（不指定）"] + platform_list
+                current_plat_idx = (
+                    platform_options.index(current_platform)
+                    if current_platform in platform_options else 0
+                )
+                selected_platform = st.selectbox(
+                    "目标平台", platform_options, index=current_plat_idx
+                )
+
+                # 标签多选（根据平台动态切换）
+                available_tags = list(styles.get(selected_platform, {}).keys()) \
+                    if selected_platform != "（不指定）" else []
+
+                selected_tags = st.multiselect(
+                    "创作标签（可多选）",
+                    options=available_tags,
+                    default=[t for t in current_tags if t in available_tags],
+                    help="选中的标签风格描述都会注入提示词，建议选 1~2 个最贴近的标签"
+                )
+
+                saved = st.form_submit_button(
+                    "💾 保存平台设定", use_container_width=True,
+                    type="primary", disabled=not can_edit(novel_id)
+                )
+
+            if saved:
+                db = get_db()
+                obj = db.query(Novel).filter(Novel.id == novel_id).first()
+                obj.target_platform = selected_platform if selected_platform != "（不指定）" else None
+                obj.set_target_tags(selected_tags)
+                db.commit()
+                db.close()
+                st.success("✅ 平台设定已保存，写作和润色时将自动应用对应风格")
+                st.rerun()
+
+            # 当前生效的风格描述预览
+            if current_platform and current_tags:
+                from core.platform_styles import get_style_description
+                preview = get_style_description(current_platform, current_tags)
+                if preview:
+                    st.divider()
+                    st.markdown("#### 当前注入的风格描述预览")
+                    st.info(preview)
+            elif not platform_list:
+                st.warning("尚未配置任何平台风格，请先在侧边栏「📺 平台风格配置」中添加")
 
         # ──────────────────────────────────────────────────
         # Tab: 写作质量参数

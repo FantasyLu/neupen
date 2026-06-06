@@ -63,6 +63,8 @@ class Novel(Base):
     style_profile = Column(Text, nullable=True, comment="风格档案（JSON格式，10个维度）")
     style_reference_text = Column(Text, nullable=True, comment="上传的参考文本节选（前3000字）")
     quality_config = Column(Text, nullable=True, comment="写作质量参数（JSON格式）")
+    target_platform = Column(String(100), nullable=True, comment="目标发布平台（如：起点中文网）")
+    target_tags = Column(Text, nullable=True, comment="目标标签（JSON数组，如：[\"玄幻\",\"都市\"]）")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -107,6 +109,17 @@ class Novel(Base):
     def set_quality_config(self, data: dict):
         """设置写作质量参数（序列化）"""
         self.quality_config = json.dumps(data, ensure_ascii=False)
+
+    def get_target_tags(self) -> list[str]:
+        """获取目标标签列表（反序列化）"""
+        try:
+            return json.loads(self.target_tags) if self.target_tags else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_target_tags(self, tags: list[str]):
+        """设置目标标签列表（序列化）"""
+        self.target_tags = json.dumps(tags, ensure_ascii=False)
 
     def get_agent_model(self, agent_key: str) -> Optional[str]:
         """
@@ -484,6 +497,8 @@ def _migrate_add_columns():
         ("novels",         "invite_code",          "VARCHAR(20)"),
         ("chapters",       "approval_status",      "VARCHAR(20) DEFAULT 'pending'"),
         ("novels",         "quality_config",       "TEXT"),
+        ("novels",         "target_platform",      "VARCHAR(100)"),
+        ("novels",         "target_tags",          "TEXT"),
     ]
 
     with engine.connect() as conn:
