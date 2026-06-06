@@ -263,7 +263,7 @@ def page_outline():
                 with st.container(border=True):
                     st.warning("⚠️ 重新生成大纲将覆盖所有现有章纲，是否继续？")
                     new_ch_count = st.number_input("总章节数", min_value=10, max_value=500,
-                                                    value=total or 100, step=10, key="regen_ch_count")
+                                                    value=max(total or 100, 10), step=10, key="regen_ch_count")
                     r1, r2 = st.columns(2)
                     if r1.button("确认重新生成", type="primary", key="confirm_regen_btn"):
                         progress_ph = st.empty()
