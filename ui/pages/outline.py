@@ -276,10 +276,7 @@ def page_outline():
                         progress_ph.empty()
                         st.session_state["confirm_regen_outline"] = False
                         if result.success:
-                            db = get_db()
-                            fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
-                            db.close()
-                            st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                            st.session_state.pop(textarea_key, None)
                             st.success(result.message)
                             st.rerun()
                         else:
@@ -616,9 +613,7 @@ def page_outline():
                             if result.success:
                                 st.success(f"✅ 导入完成：{result.message}")
                                 st.session_state["import_parsed_result"] = None
-                                db = get_db()
-                                fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
-                                db.close()
-                                st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                                st.session_state.pop(textarea_key, None)
+                                st.rerun()
                             else:
                                 st.error(result.message)
