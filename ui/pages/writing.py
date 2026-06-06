@@ -169,6 +169,7 @@ def page_writing():
         st.markdown("#### 🤖 AI 写作助手")
         chat_key    = f"writing_chat_{novel_id}_{selected_ch_num}"
         pending_key = f"writing_pending_{novel_id}_{selected_ch_num}"
+        text_key    = f"edit_content_{novel_id}_{selected_ch_num}"
         if chat_key not in st.session_state:
             st.session_state[chat_key] = []
         if pending_key not in st.session_state:
@@ -375,7 +376,6 @@ def page_writing():
             ])
 
             with tab_text:
-                text_key   = f"edit_content_{novel_id}_{selected_ch_num}"
                 review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
 
                 if pending:
