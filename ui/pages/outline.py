@@ -236,8 +236,7 @@ def page_outline():
                         try:
                             fields = _markdown_to_outline_fields(md)
                             _save_outline_direct(novel_id, fields)
-                            st.success("✅ 大纲已保存")
-                            st.rerun()
+                            st.toast("✅ 大纲已保存", icon="💾")
                         except Exception as e:
                             st.error(f"保存失败：{e}")
             with btn_c2:
@@ -264,7 +263,7 @@ def page_outline():
                 with st.container(border=True):
                     st.warning("⚠️ 重新生成大纲将覆盖所有现有章纲，是否继续？")
                     new_ch_count = st.number_input("总章节数", min_value=10, max_value=500,
-                                                    value=total or 100, step=10, key="regen_ch_count")
+                                                    value=max(total or 100, 10), step=10, key="regen_ch_count")
                     r1, r2 = st.columns(2)
                     if r1.button("确认重新生成", type="primary", key="confirm_regen_btn"):
                         progress_ph = st.empty()
@@ -277,10 +276,7 @@ def page_outline():
                         progress_ph.empty()
                         st.session_state["confirm_regen_outline"] = False
                         if result.success:
-                            db = get_db()
-                            fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
-                            db.close()
-                            st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                            st.session_state.pop(textarea_key, None)
                             st.success(result.message)
                             st.rerun()
                         else:
@@ -290,18 +286,107 @@ def page_outline():
                         st.rerun()
 
             # 卷大纲
+            st.divider()
+            vol_hdr1, vol_hdr2 = st.columns([3, 1])
+            with vol_hdr1:
+                st.markdown(f"**卷大纲（共 {len(volumes)} 卷）**")
+            with vol_hdr2:
+                if st.button("➕ 新建卷", use_container_width=True, disabled=not can_edit(novel_id)):
+                    next_num = max((v.volume_number for v in volumes), default=0) + 1
+                    last_end = max((v.end_chapter or 0 for v in volumes), default=0)
+                    workflow = load_novel(novel_id)
+                    workflow.memory.global_mem.save_volume({
+                        "volume_number": next_num,
+                        "title": f"第{next_num}卷",
+                        "start_chapter": last_end + 1,
+                        "end_chapter": last_end + 10,
+                    })
+                    workflow.close()
+                    st.success(f"✅ 已新建第{next_num}卷")
+                    st.rerun()
+
             if volumes:
-                st.divider()
-                st.markdown("**卷大纲**")
-                for vol in volumes:
-                    with st.expander(
-                        f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
-                        expanded=False
-                    ):
-                        if vol.summary:
-                            st.markdown(f"**简介：** {vol.summary}")
-                        if vol.main_conflict:
-                            st.markdown(f"**主要矛盾：** {vol.main_conflict}")
+                for idx, vol in enumerate(volumes):
+                    vol_col_main, vol_col_up, vol_col_down = st.columns([10, 1, 1])
+                    with vol_col_up:
+                        if st.button("⬆", key=f"vol_up_{vol.id}",
+                                     disabled=(idx == 0 or not can_edit(novel_id)),
+                                     use_container_width=True):
+                            prev_vol = volumes[idx - 1]
+                            db = get_db()
+                            a = db.query(Volume).filter_by(id=vol.id).first()
+                            b = db.query(Volume).filter_by(id=prev_vol.id).first()
+                            num_a, num_b = a.volume_number, b.volume_number
+                            a.volume_number = -99999
+                            db.flush()
+                            b.volume_number = num_a
+                            db.flush()
+                            a.volume_number = num_b
+                            db.commit()
+                            db.close()
+                            st.rerun()
+                    with vol_col_down:
+                        if st.button("⬇", key=f"vol_down_{vol.id}",
+                                     disabled=(idx == len(volumes) - 1 or not can_edit(novel_id)),
+                                     use_container_width=True):
+                            next_vol = volumes[idx + 1]
+                            db = get_db()
+                            a = db.query(Volume).filter_by(id=vol.id).first()
+                            b = db.query(Volume).filter_by(id=next_vol.id).first()
+                            num_a, num_b = a.volume_number, b.volume_number
+                            a.volume_number = -99999
+                            db.flush()
+                            b.volume_number = num_a
+                            db.flush()
+                            a.volume_number = num_b
+                            db.commit()
+                            db.close()
+                            st.rerun()
+                    with vol_col_main:
+                        with st.expander(
+                            f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
+                            expanded=False
+                        ):
+                            with st.form(f"vol_edit_{vol.id}"):
+                                ve_title = st.text_input("卷标题", value=vol.title or "")
+                                ve_summary = st.text_area("简介", value=vol.summary or "", height=80)
+                                ve_conflict = st.text_area("主要矛盾", value=vol.main_conflict or "", height=60)
+                                ve_goal = st.text_area("本卷目标/主题", value=vol.arc_goal or "", height=60)
+                                ve_c1, ve_c2 = st.columns(2)
+                                with ve_c1:
+                                    ve_start = st.number_input("起始章节", min_value=1,
+                                                                value=vol.start_chapter or 1, key=f"ve_start_{vol.id}")
+                                with ve_c2:
+                                    ve_end = st.number_input("结束章节", min_value=1,
+                                                              value=vol.end_chapter or 1, key=f"ve_end_{vol.id}")
+                                ve_btn1, ve_btn2 = st.columns([3, 1])
+                                with ve_btn1:
+                                    _save_vol = st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id))
+                                with ve_btn2:
+                                    _del_vol = st.form_submit_button("🗑️ 删除此卷", disabled=not can_edit(novel_id))
+                                if _save_vol:
+                                    workflow = load_novel(novel_id)
+                                    workflow.memory.global_mem.save_volume({
+                                        "volume_number": vol.volume_number,
+                                        "title": ve_title.strip() or vol.title,
+                                        "summary": ve_summary.strip(),
+                                        "main_conflict": ve_conflict.strip(),
+                                        "arc_goal": ve_goal.strip(),
+                                        "start_chapter": ve_start,
+                                        "end_chapter": ve_end,
+                                    })
+                                    workflow.close()
+                                    st.success("✅ 卷大纲已保存")
+                                    st.rerun()
+                                if _del_vol:
+                                    db = get_db()
+                                    db.query(Volume).filter_by(id=vol.id).delete()
+                                    db.commit()
+                                    db.close()
+                                    st.success(f"✅ 第{vol.volume_number}卷已删除")
+                                    st.rerun()
+            else:
+                st.info("暂无卷大纲，点击「新建卷」手动创建，或通过 AI 生成大纲时自动创建")
 
         # ── Tab2: 章节大纲 ────────────────────────────────
         with tab2:
@@ -311,21 +396,48 @@ def page_outline():
             with st.expander("🤖 AI 批量生成章纲", expanded=False):
                 if not can_edit(novel_id):
                     st.warning("仅主笔可以生成章纲")
-                elif not chapters:
-                    st.info("请先生成章节列表（通过整体大纲生成）")
                 else:
                     ch_min = chapters[0].chapter_number if chapters else 1
+                    total_ch = novel_outline.total_chapters if novel_outline and novel_outline.total_chapters else 0
+
+                    # ── 从卷纲填充 ──
+                    if volumes:
+                        vol_labels = ["不选择（手动填写）"] + [
+                            f"第{v.volume_number}卷《{v.title}》  第{v.start_chapter}~{v.end_chapter}章"
+                            for v in volumes
+                        ]
+                        vol_sel = st.selectbox("📖 从卷纲填充", vol_labels, key="batch_vol_sel")
+
+                        # 检测选择变化，主动写入 session_state
+                        _prev_vol_key = f"_batch_prev_vol_sel_{novel_id}"
+                        if vol_sel != st.session_state.get(_prev_vol_key):
+                            st.session_state[_prev_vol_key] = vol_sel
+                            if vol_sel != "不选择（手动填写）":
+                                sel_vol = volumes[vol_labels.index(vol_sel) - 1]
+                                st.session_state["batch_range_start"] = sel_vol.start_chapter or ch_min
+                                st.session_state["batch_range_end"] = sel_vol.end_chapter or (st.session_state["batch_range_start"] + 9)
+                                _desc_parts = []
+                                if sel_vol.summary:
+                                    _desc_parts.append(sel_vol.summary)
+                                if sel_vol.main_conflict:
+                                    _desc_parts.append(f"核心矛盾：{sel_vol.main_conflict}")
+                                if sel_vol.arc_goal:
+                                    _desc_parts.append(f"本卷目标：{sel_vol.arc_goal}")
+                                st.session_state["batch_range_desc"] = "\n".join(_desc_parts)
+                                st.rerun()
 
                     rc1, rc2 = st.columns(2)
                     with rc1:
                         range_start = st.number_input(
-                            "起始章节", min_value=1, value=ch_min,
+                            "起始章节", min_value=1,
+                            value=ch_min,
                             step=1, key="batch_range_start"
                         )
                     with rc2:
+                        _default_end = min(ch_min + 9, total_ch) if total_ch else ch_min + 9
                         range_end = st.number_input(
-                            "结束章节", min_value=range_start,
-                            value=range_start + 9, step=1, key="batch_range_end"
+                            "结束章节", min_value=1,
+                            value=max(1, _default_end), step=1, key="batch_range_end"
                         )
 
                     ch_count_label = range_end - range_start + 1
@@ -617,9 +729,7 @@ def page_outline():
                             if result.success:
                                 st.success(f"✅ 导入完成：{result.message}")
                                 st.session_state["import_parsed_result"] = None
-                                db = get_db()
-                                fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
-                                db.close()
-                                st.session_state[textarea_key] = _outline_to_markdown(fresh)
+                                st.session_state.pop(textarea_key, None)
+                                st.rerun()
                             else:
                                 st.error(result.message)

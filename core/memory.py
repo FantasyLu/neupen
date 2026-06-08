@@ -62,7 +62,7 @@ def _get_chunk_schema():
 
     class ChapterChunk(LanceModel):
         text: str = model.SourceField()
-        vector: Vector(model.ndims()) = model.VectorField()
+        vector: Vector(model.ndims()) = model.VectorField()  # type: ignore[valid-type]
         novel_id: int
         chapter_number: int
         title: str
@@ -149,15 +149,20 @@ class GlobalMemory:
 
     def save_outline(self, data: dict) -> NovelOutline:
         """保存总大纲"""
+        # 将 dict/list 字段序列化为 JSON 字符串，避免 SQLite 类型错误
+        serialized = {
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+            for k, v in data.items()
+        }
         existing = self.get_outline()
         if existing:
-            for k, v in data.items():
+            for k, v in serialized.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
             self.db.commit()
             return existing
         else:
-            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in serialized.items() if k != "novel_id"})
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
@@ -211,7 +216,9 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            chap = Chapter(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            clean = {k: v for k, v in data.items()
+                     if k != "novel_id" and hasattr(Chapter, k)}
+            chap = Chapter(novel_id=self.novel_id, **clean)
             self.db.add(chap)
             self.db.commit()
             self.db.refresh(chap)
@@ -465,22 +472,30 @@ class ChapterMemory:
         from core.models import ContentVersion
         from core.config import MAX_VERSIONS
 
-        # 获取当前最大版本号
-        max_version = self.db.query(ContentVersion).filter(
+        from sqlalchemy import func
+
+        # 获取当前版本数量（用于判断是否需要淘汰旧版本）
+        version_count = self.db.query(ContentVersion).filter(
             ContentVersion.chapter_id == chapter_id
         ).count()
 
         # 如果超出最大版本数，删除最旧的版本
-        if max_version >= MAX_VERSIONS:
+        if version_count >= MAX_VERSIONS:
             oldest = self.db.query(ContentVersion).filter(
                 ContentVersion.chapter_id == chapter_id
             ).order_by(ContentVersion.version_number).first()
             if oldest:
                 self.db.delete(oldest)
+                self.db.flush()
+
+        # 用 MAX+1 而非 COUNT+1，避免删除旧版本后版本号与已有记录重复
+        max_num = self.db.query(func.max(ContentVersion.version_number)).filter(
+            ContentVersion.chapter_id == chapter_id
+        ).scalar() or 0
 
         version = ContentVersion(
             chapter_id=chapter_id,
-            version_number=max_version + 1,
+            version_number=max_num + 1,
             content=content,
             version_type=version_type,
             change_summary=change_summary

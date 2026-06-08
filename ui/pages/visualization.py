@@ -8,6 +8,8 @@ import json
 import streamlit as st
 
 from core.models import get_db, Character, Chapter, Foreshadowing
+from core.workflow import load_novel
+from core.permissions import can_edit
 
 
 def render_character_network(novel_id: int):
@@ -22,8 +24,48 @@ def render_character_network(novel_id: int):
         st.info("暂无人物档案，请前往「设定管理 → 人物档案」添加人物后查看关系网络")
         return
 
-    # 筛选控件
-    only_main = st.checkbox("只显示主要人物", value=False)
+    # 筛选控件 & 同步按钮
+    ctrl1, ctrl2 = st.columns([3, 1])
+    with ctrl1:
+        only_main = st.checkbox("只显示主要人物", value=False)
+    with ctrl2:
+        sync_btn = st.button("🔄 AI 同步人物关系", use_container_width=True,
+                             disabled=not can_edit(novel_id),
+                             help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用")
+
+    if sync_btn:
+        workflow = load_novel(novel_id)
+        db = get_db()
+        published = db.query(Chapter).filter(
+            Chapter.novel_id == novel_id,
+            Chapter.status.in_(["review_pending", "reviewed", "polished", "published"]),
+        ).order_by(Chapter.chapter_number).all()
+        db.close()
+
+        if not published:
+            st.warning("暂无已写内容，无法同步")
+        else:
+            total_synced = 0
+            progress_bar = st.progress(0, text="准备同步…")
+            for idx, ch in enumerate(published):
+                progress_bar.progress(
+                    (idx + 1) / len(published),
+                    text=f"正在分析第 {ch.chapter_number} 章（{idx + 1}/{len(published)}）"
+                )
+                try:
+                    sync_result = workflow.analyze_and_sync_chapter(ch.chapter_number)
+                    if sync_result and sync_result.success:
+                        total_synced += sync_result.data.get("synced_count", 0)
+                except Exception:
+                    pass
+            progress_bar.empty()
+            workflow.close()
+            if total_synced > 0:
+                st.success(f"✅ 同步完成，更新了 {total_synced} 条人物关系")
+            else:
+                st.info("所有人物关系已是最新，无需更新")
+            st.rerun()
+
     if only_main:
         chars = [c for c in chars if c.is_main]
 

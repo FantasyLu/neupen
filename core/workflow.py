@@ -18,7 +18,9 @@ from core.models import get_db, Novel, NovelOutline
 from core.memory import MemoryManager
 from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent, PolisherAgent
 from core.detector import ConflictDetector, ReviewReport
-from core.config import AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS, REVIEW_SCORE_THRESHOLD
+from core.config import (AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS,
+                         REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD,
+                         MAX_TOTAL_ATTEMPTS, WORD_COUNT_TOLERANCE)
 
 
 # ======================================
@@ -50,7 +52,6 @@ class NovelWorkflow:
     def __init__(self, novel_id: int):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
-        self.db = get_db()
 
         # 读取项目级别的模型选择（覆盖全局默认）
         novel = self.memory.global_mem.get_novel()
@@ -75,6 +76,11 @@ class NovelWorkflow:
         self._reviewer_agent = None
         self._polisher_agent = None
         self._reader_agent = None
+
+    @property
+    def db(self):
+        """所有 ORM 对象均由 global_mem 的 session 托管，统一通过它提交"""
+        return self.memory.global_mem.db
 
     @property
     def outline_agent(self) -> OutlineAgent:
@@ -270,6 +276,7 @@ class NovelWorkflow:
         self,
         chapter_number: int,
         word_target: int = 3000,
+        word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
         stream_callback: Callable = None
@@ -289,6 +296,18 @@ class NovelWorkflow:
             WorkflowResult，包含最终内容和审核报告
         """
         try:
+            # 加载每本小说的质量配置（覆盖全局默认）
+            _novel = self.memory.global_mem.get_novel()
+            _q = _novel.get_quality_config() if _novel else {}
+            _auto_approve     = int(_q.get("auto_approve_threshold",    AUTO_APPROVE_THRESHOLD))
+            _review_score     = float(_q.get("review_score_threshold",  REVIEW_SCORE_THRESHOLD))
+            _rewrite_thr      = float(_q.get("low_score_rewrite_threshold", LOW_SCORE_REWRITE_THRESHOLD))
+            _max_iter         = int(_q.get("max_review_iterations",     MAX_REVIEW_ITERATIONS))
+            _max_total        = int(_q.get("max_total_attempts",        MAX_TOTAL_ATTEMPTS))
+            # 字数容差：UI 传入 > quality_config > 全局默认
+            _tolerance        = word_count_tolerance if word_count_tolerance is not None \
+                                else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
+
             # Step 1: 生成章节草稿
             if progress_callback:
                 progress_callback(f"✍️ 正在写作第{chapter_number}章...")
@@ -296,35 +315,49 @@ class NovelWorkflow:
             draft_content = self.writer_agent.write_chapter(
                 chapter_number=chapter_number,
                 word_target=word_target,
+                word_count_tolerance=_tolerance,
                 stream_callback=stream_callback
             )
 
             # 保存草稿
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
-            # Step 2-3: 审核 → 修改循环，直到评分 ≥ REVIEW_SCORE_THRESHOLD
+            # Step 2-3: 审核 → 修改 → 重写循环（全局上限 MAX_TOTAL_ATTEMPTS 次审核）
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
             import json as json_module
 
             current_content = draft_content
-            report = None
-            for iteration in range(MAX_REVIEW_ITERATIONS):
+            best_content    = draft_content   # 历史最高分对应内容
+            best_score      = 0.0
+            report          = None
+            total_reviews   = 0               # 已消耗的审核次数
+
+            # Phase 1: fix-review 循环
+            for iteration in range(_max_iter):
+                if total_reviews >= _max_total:
+                    break
+                round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
                 if progress_callback:
-                    round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
                     progress_callback(f"🔍 AI 审核{round_label}...")
 
                 report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+                total_reviews += 1
+
+                # 追踪历史最高分
+                if report.overall_score > best_score:
+                    best_score   = report.overall_score
+                    best_content = current_content
 
                 # 保存本轮审核报告
                 if chapter:
                     chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                    chapter.review_score = report.overall_score
+                    chapter.review_score  = report.overall_score
                     chapter.status = "review_pending" if not report.passed else "reviewed"
                     self.db.commit()
 
                 # 判断是否达标
-                has_major = any(c.severity >= AUTO_APPROVE_THRESHOLD for c in report.conflicts)
-                if report.overall_score >= REVIEW_SCORE_THRESHOLD and not has_major:
+                has_major = any(c.severity >= _auto_approve for c in report.conflicts)
+                if report.overall_score >= _review_score and not has_major:
                     if progress_callback:
                         progress_callback(
                             f"✅ 审核通过（第{iteration + 1}轮）"
@@ -332,21 +365,95 @@ class NovelWorkflow:
                         )
                     break
 
-                # 未达标且还有迭代次数 → 修复所有问题
-                if iteration < MAX_REVIEW_ITERATIONS - 1:
+                # 还有修改次数且未达全局上限 → 修复
+                if iteration < _max_iter - 1 and total_reviews < _max_total:
                     if progress_callback:
                         progress_callback(
                             f"🔧 修改中（当前评分 {report.overall_score:.1f}/10，"
-                            f"第{iteration + 1}/{MAX_REVIEW_ITERATIONS}轮）..."
+                            f"第{iteration + 1}/{_max_iter}轮）..."
                         )
                     current_content = self.reviewer_agent.fix_all_issues(
-                        current_content, report, self.novel_id
+                        current_content, report, self.novel_id, chapter_number
                     )
                 else:
                     if progress_callback:
                         progress_callback(
-                            f"⚠️ 已达最大修改次数，最终评分：{report.overall_score:.1f}/10"
+                            f"修改轮次结束，当前评分：{report.overall_score:.1f}/10"
                         )
+
+            # Phase 2: 低分/有严重冲突重写循环（与 Phase 1 退出条件对齐）
+            # 退出条件：score >= 7 且无 severity≥3 冲突，或全局审核次数耗尽
+            has_major_last = (
+                any(c.severity >= _auto_approve for c in report.conflicts)
+                if report else False
+            )
+            rewrite_count = 0
+            while (report and _rewrite_thr > 0
+                   and (report.overall_score < _rewrite_thr or has_major_last)
+                   and total_reviews < _max_total):
+                rewrite_count += 1
+                reason = []
+                if report.overall_score < _rewrite_thr:
+                    reason.append(f"评分 {report.overall_score:.1f}")
+                if has_major_last:
+                    reason.append("含严重冲突")
+                if progress_callback:
+                    progress_callback(
+                        f"🔄 第{rewrite_count}次重写（{'、'.join(reason)}，"
+                        f"已用 {total_reviews}/{_max_total} 次审核）..."
+                    )
+                feedback_lines = [
+                    f"- [{c.severity}级] {c.conflict_type}：{c.description}"
+                    + (f"。建议：{c.solutions[0]}" if c.solutions else "")
+                    for c in report.conflicts
+                ]
+                review_feedback = (
+                    f"上一稿评分 {report.overall_score:.1f}/10，主要问题：\n"
+                    + "\n".join(feedback_lines)
+                )
+                try:
+                    current_content = self.writer_agent.write_chapter(
+                        chapter_number=chapter_number,
+                        word_target=word_target,
+                        word_count_tolerance=_tolerance,
+                        review_feedback=review_feedback,
+                    )
+                    if progress_callback:
+                        progress_callback("🔍 重写后审核...")
+                    report = self.reviewer_agent.review_chapter(chapter_number, current_content)
+                    total_reviews += 1
+                    has_major_last = any(
+                        c.severity >= _auto_approve for c in report.conflicts
+                    )
+
+                    if report.overall_score > best_score:
+                        best_score   = report.overall_score
+                        best_content = current_content
+
+                    if chapter:
+                        chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
+                        chapter.review_score  = report.overall_score
+                        self.db.commit()
+                    if progress_callback:
+                        status = "✅ 通过" if (report.overall_score >= _rewrite_thr and not has_major_last) else "继续迭代"
+                        progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10（{status}）")
+                except Exception:
+                    break  # 重写失败退出，用已有最佳版本
+
+            # Phase 3: 选稿 — 预算耗尽仍未通过（score < 阈值 或有严重冲突），选历史最高分版本
+            not_passed = report and (
+                report.overall_score < _rewrite_thr or has_major_last
+            )
+            if not_passed:
+                if progress_callback:
+                    progress_callback(
+                        f"⚠️ 已用 {total_reviews}/{_max_total} 次审核，"
+                        f"选用历史最高分版本（{best_score:.1f}/10）作为终稿"
+                    )
+                current_content = best_content
+                if chapter and chapter.review_score != best_score:
+                    chapter.review_score = best_score
+                    self.db.commit()
 
             # Step 4: 润色
             final_content = current_content
@@ -355,8 +462,22 @@ class NovelWorkflow:
                     progress_callback(f"✨ 正在润色第{chapter_number}章...")
                 final_content = self.polisher_agent.polish_chapter(current_content)
 
-            # Step 5: 保存最终内容
-            self.memory.save_new_chapter(chapter_number, final_content, "content")
+            # Step 5: 保存最终内容（SQLite 同步，向量索引异步）
+            self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
+            import threading
+            from core.memory import FragmentMemory
+            _novel_id_wc = self.novel_id
+            _ch_num_wc   = chapter_number
+            _title_wc    = chapter.title if chapter else ""
+            _content_wc  = final_content
+
+            def _rebuild_vectors_wc():
+                try:
+                    FragmentMemory(_novel_id_wc).add_chapter(_ch_num_wc, _title_wc, _content_wc)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_rebuild_vectors_wc, daemon=True).start()
 
             # 保存版本历史
             if chapter:
@@ -471,6 +592,45 @@ class NovelWorkflow:
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"保存失败：{e}")
+
+    def analyze_and_sync_chapter(self, chapter_number: int) -> WorkflowResult:
+        """
+        分析指定章节内容，仅同步人物关系到数据库。
+        使用专用的 extract_relationships 方法，提取率远高于通用分析。
+        """
+        try:
+            chapter = self.memory.chapter_mem.get_chapter(chapter_number)
+            if not chapter or not chapter.content:
+                return WorkflowResult(success=True, message="无内容", data={"synced_count": 0})
+
+            rel_list = self.outline_agent.extract_relationships(
+                chapter_number, chapter.content
+            )
+            count = 0
+
+            for item in rel_list:
+                char_name = item.get("character", "")
+                new_rels = item.get("relationships", {})
+                if not char_name or not new_rels:
+                    continue
+                try:
+                    char = self.memory.global_mem.get_character(char_name)
+                    if not char:
+                        continue
+                    # 合并到现有关系（新关系覆盖旧描述）
+                    existing_rels = char.get_relationships()
+                    existing_rels.update(new_rels)
+                    self.memory.global_mem.save_character({
+                        "name": char_name,
+                        "relationships": json.dumps(existing_rels, ensure_ascii=False),
+                    })
+                    count += 1
+                except Exception:
+                    pass
+
+            return WorkflowResult(success=True, message=f"同步{count}条", data={"synced_count": count})
+        except Exception as e:
+            return WorkflowResult(success=False, message=f"同步失败：{e}", data={"synced_count": 0})
 
     def update_character(self, character_name: str,
                            updates: dict) -> WorkflowResult:
@@ -1092,7 +1252,6 @@ class NovelWorkflow:
     def close(self):
         """清理所有资源"""
         self.memory.close()
-        self.db.close()
         if self._outline_agent:
             self._outline_agent.close()
         if self._character_agent:

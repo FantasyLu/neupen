@@ -37,6 +37,68 @@ def _auto_save(novel_id: int, ch_num: int, content: str, pending_key: str, text_
         return False
 
 
+def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
+    """自动执行所有同步操作（无需用户逐条确认），返回成功执行的条目数。"""
+    count = 0
+    try:
+        wf = load_novel(novel_id)
+        for char in sync_checks.get("new_characters", []):
+            try:
+                char_data = {
+                    "name":        char.get("name", ""),
+                    "role":        char.get("role", ""),
+                    "personality": char.get("personality", ""),
+                    "background":  char.get("background", ""),
+                }
+                if char.get("relationships"):
+                    rels = char["relationships"]
+                    char_data["relationships"] = json.dumps(rels, ensure_ascii=False) if not isinstance(rels, str) else rels
+                wf.memory.global_mem.save_character(char_data)
+                count += 1
+            except Exception:
+                pass
+        for cu in sync_checks.get("character_updates", []):
+            try:
+                field = cu.get("field", "current_state")
+                value = cu.get("new_value", "")
+                if field in ("relationships", "abilities") and value and not isinstance(value, str):
+                    value = json.dumps(value, ensure_ascii=False)
+                wf.memory.global_mem.save_character({
+                    "name": cu.get("name", ""),
+                    field: value,
+                })
+                count += 1
+            except Exception:
+                pass
+        for upd in sync_checks.get("outline_updates", []):
+            try:
+                field = upd.get("field", "")
+                if field:
+                    outline = wf.memory.global_mem.get_outline()
+                    current = (getattr(outline, field, "") or "") if outline else ""
+                    new_val = (current + "\n\n" + upd.get("suggestion", "")).strip()
+                    wf.memory.global_mem.save_outline({field: new_val})
+                    count += 1
+            except Exception:
+                pass
+        wf.close()
+    except Exception:
+        pass
+    for ws in sync_checks.get("world_setting_updates", []):
+        try:
+            db = get_db()
+            novel_obj = db.query(Novel).filter(Novel.id == novel_id).first()
+            world = novel_obj.get_world_setting()
+            world[ws.get("key", "")] = ws.get("value", "")
+            novel_obj.set_world_setting(world)
+            db.commit()
+            db.close()
+            count += 1
+        except Exception:
+            pass
+    return count
+
+
 def page_writing():
     novel_id = st.session_state.novel_id
 
@@ -94,6 +156,8 @@ def page_writing():
         st.divider()
         st.markdown("#### 写作参数")
         word_target = st.slider("目标字数", 1000, 6000, 3000, step=500)
+        word_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
+                                   help="允许实际字数偏离目标字数的比例。设为30%时，目标3000字则允许2100~3900字。") / 100
         auto_polish = st.toggle("自动润色", value=True)
 
         wc1, wc2 = st.columns(2)
@@ -113,6 +177,7 @@ def page_writing():
         st.markdown("#### 🤖 AI 写作助手")
         chat_key    = f"writing_chat_{novel_id}_{selected_ch_num}"
         pending_key = f"writing_pending_{novel_id}_{selected_ch_num}"
+        text_key    = f"edit_content_{novel_id}_{selected_ch_num}"
         if chat_key not in st.session_state:
             st.session_state[chat_key] = []
         if pending_key not in st.session_state:
@@ -156,10 +221,11 @@ def page_writing():
                     st.stop()
             history.append({"role": "assistant", "content": reply})
             st.session_state[chat_key] = history
-            # 自动写入编辑器（无需点击应用按钮）
+            # 自动写入编辑器并保存（无需点击应用按钮）
             auto_sug = _extract_suggestion(reply)
             if auto_sug:
-                st.session_state[pending_key] = auto_sug
+                _auto_save(novel_id, selected_ch_num, auto_sug, pending_key, text_key, "AI 写作助手自动保存")
+                st.toast("✅ 已自动保存")
             st.rerun()
 
         if st.session_state[chat_key]:
@@ -189,9 +255,17 @@ def page_writing():
                     st.caption(f"将写作 **{len(selected_range)}** 章（第{selected_range[0]}~{selected_range[-1]}章）")
                     bp1, bp2 = st.columns(2)
                     with bp1:
-                        batch_words  = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
+                        batch_words     = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
                     with bp2:
+                        batch_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
+                                                    key="batch_tolerance",
+                                                    help="允许实际字数偏离目标字数的比例。") / 100
+                    bp3, bp4 = st.columns(2)
+                    with bp3:
                         batch_polish = st.toggle("自动润色", value=True, key="batch_polish")
+                    with bp4:
+                        batch_auto_sync = st.toggle("自动同步大纲/人物", value=False, key="batch_auto_sync",
+                                                    help="写完每章后自动将 AI 检测到的人物状态变化、大纲更新等同步入库，无需手动逐条确认")
                     if st.button("🚀 开始批量写作", use_container_width=True, type="primary",
                                  disabled=(st.session_state.is_writing or st.session_state.batch_writing or not can_edit(novel_id))):
                         st.session_state.batch_writing = True
@@ -203,19 +277,28 @@ def page_writing():
                                 ph = st.empty()
                                 result = workflow.write_and_review_chapter(
                                     chapter_number=ch_num, word_target=batch_words,
+                                    word_count_tolerance=batch_tolerance,
                                     auto_polish=batch_polish, progress_callback=lambda m, _p=ph: _p.caption(m)
                                 )
                                 ph.empty()
                                 if result.success:
                                     sync_checks = result.data.get("sync_checks", {})
-                                    if sync_checks:
-                                        st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
                                     sync_count = (
                                         len(sync_checks.get("new_characters", [])) +
+                                        len(sync_checks.get("character_updates", [])) +
                                         len(sync_checks.get("outline_updates", [])) +
                                         len(sync_checks.get("world_setting_updates", []))
                                     ) if sync_checks else 0
-                                    sync_hint = f" · 🔄{sync_count}条同步建议" if sync_count else ""
+                                    if sync_checks and sync_count:
+                                        if batch_auto_sync:
+                                            done = _auto_execute_sync(novel_id, sync_checks)
+                                            st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = {"_done": True}
+                                            sync_hint = f" · ✅已自动同步{done}条"
+                                        else:
+                                            st.session_state[f"writing_sync_{novel_id}_{ch_num}"] = sync_checks
+                                            sync_hint = f" · 🔄{sync_count}条同步建议待确认"
+                                    else:
+                                        sync_hint = ""
                                     st.write(f"✅ 第{ch_num}章完成 · {result.data.get('word_count',0):,}字 · 评分 {result.data.get('overall_score',0):.1f}/10{sync_hint}")
                                 else:
                                     st.write(f"❌ 第{ch_num}章失败：{result.message}")
@@ -223,6 +306,44 @@ def page_writing():
                         workflow.close()
                         st.session_state.batch_writing = False
                         st.rerun()
+
+        with st.expander("🔙 批量回退状态", expanded=False):
+            published_chs = [c for c in chapters if c.status == "published"]
+            if not published_chs:
+                st.info("没有已完成的章节")
+            else:
+                st.caption(f"共 {len(published_chs)} 个已完成章节")
+                rv1, rv2 = st.columns(2)
+                with rv1:
+                    rv_start = st.selectbox("起始章节", [c.chapter_number for c in published_chs],
+                                            format_func=lambda n: f"第{n}章", key="revert_start")
+                with rv2:
+                    rv_end_opts = [c.chapter_number for c in published_chs if c.chapter_number >= rv_start]
+                    rv_end = st.selectbox("结束章节", rv_end_opts,
+                                          index=len(rv_end_opts) - 1,
+                                          format_func=lambda n: f"第{n}章", key="revert_end")
+                rv_status_options = {
+                    "outlined": "已有章纲（可重新生成）",
+                    "writing": "写作中",
+                    "review_pending": "待审核",
+                    "reviewed": "已审核（可重新润色）",
+                }
+                rv_target = st.selectbox("回退到", list(rv_status_options.keys()),
+                                          format_func=lambda x: rv_status_options[x],
+                                          key="batch_revert_target")
+                rv_range = [c for c in published_chs if rv_start <= c.chapter_number <= rv_end]
+                st.caption(f"将回退 **{len(rv_range)}** 章（第{rv_start}~{rv_end}章）→ {rv_status_options[rv_target]}")
+                if st.button(f"确认批量回退（{len(rv_range)}章）", use_container_width=True,
+                             disabled=not can_edit(novel_id)):
+                    db = get_db()
+                    for c in rv_range:
+                        ch_obj = db.query(Chapter).filter_by(id=c.id).first()
+                        if ch_obj:
+                            ch_obj.status = rv_target
+                    db.commit()
+                    db.close()
+                    st.success(f"✅ 已回退 {len(rv_range)} 章")
+                    st.rerun()
 
     # ─── 右栏：章节内容 ──────────────────────────────────
     with col_content:
@@ -244,6 +365,7 @@ def page_writing():
                     result = workflow.write_and_review_chapter(
                         chapter_number=selected_ch_num,
                         word_target=word_target,
+                        word_count_tolerance=word_tolerance,
                         auto_polish=auto_polish,
                         progress_callback=progress_cb,
                     )
@@ -275,10 +397,11 @@ def page_writing():
                             sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
                             st.session_state[sync_key] = sync_checks
                             total = (len(sync_checks.get("new_characters", [])) +
+                                     len(sync_checks.get("character_updates", [])) +
                                      len(sync_checks.get("outline_updates", [])) +
                                      len(sync_checks.get("world_setting_updates", [])))
                             if total:
-                                st.info(f"🔄 发现 {total} 条大纲/设定同步建议，已在「审核」标签页等待确认")
+                                st.info(f"🔄 发现 {total} 条同步建议（含人物状态），已在「审核」标签页等待确认")
 
                         # 清除编辑区缓存，确保显示新生成的内容
                         st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
@@ -294,12 +417,11 @@ def page_writing():
         pending = st.session_state.get(pending_key)
         if selected_ch:
 
-            tab_text, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
-                "📝 正文", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
+            tab_text, tab_summary, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
+                "📝 正文", "📄 摘要", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
             ])
 
             with tab_text:
-                text_key   = f"edit_content_{novel_id}_{selected_ch_num}"
                 review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
 
                 if pending:
@@ -331,9 +453,36 @@ def page_writing():
                     with btn2:
                         review_clicked = st.button("🔍 AI 审核", use_container_width=True,
                                                    help="对当前编辑区内容发起审核，无需先保存")
+                        _rv_score = (st.session_state.get(review_key) or {}).get("overall_score") \
+                                    or selected_ch.review_score
+                        if _rv_score:
+                            st.caption(f"✅ 已审核 {_rv_score:.1f}/10")
                     with btn3:
                         suggest_clicked = st.button("✨ AI 建议", use_container_width=True,
                                                     help="让 AI 提出改进建议，结果将显示在左侧聊天中")
+
+                    # 章节状态回退
+                    if selected_ch.status == "published":
+                        with st.expander("🔙 回退章节状态", expanded=False):
+                            _status_options = {
+                                "outlined": "已有章纲（可重新生成）",
+                                "writing": "写作中",
+                                "review_pending": "待审核",
+                                "reviewed": "已审核（可重新润色）",
+                            }
+                            _target_status = st.selectbox(
+                                "回退到", list(_status_options.keys()),
+                                format_func=lambda x: _status_options[x],
+                                key=f"revert_status_{selected_ch.id}"
+                            )
+                            if st.button("确认回退", key=f"revert_btn_{selected_ch.id}"):
+                                db = get_db()
+                                ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                                ch_obj.status = _target_status
+                                db.commit()
+                                db.close()
+                                st.success(f"✅ 章节状态已回退为「{_status_options[_target_status]}」")
+                                st.rerun()
 
                     if save_clicked:
                         with st.spinner("保存中…"):
@@ -387,10 +536,11 @@ def page_writing():
                                     agent.close()
                                     history.append({"role": "assistant", "content": reply})
                                     st.session_state[chat_key] = history
-                                    # 自动写入编辑器
+                                    # 自动写入编辑器并保存
                                     sug = _extract_suggestion(reply)
                                     if sug:
-                                        st.session_state[pending_key] = sug
+                                        _auto_save(novel_id, selected_ch_num, sug, pending_key, text_key, "AI 建议自动保存")
+                                        st.toast("✅ 已自动保存")
                                     st.rerun()
                                 except Exception as e:
                                     history.pop()
@@ -584,6 +734,8 @@ def page_writing():
                 sync_result = st.session_state.get(sync_key)
                 current_text_for_sync = st.session_state.get(text_key, "").strip()
 
+                _sync_is_done = isinstance(sync_result, dict) and sync_result.get("_done")
+
                 if current_text_for_sync and can_edit(novel_id):
                     st.divider()
                     if st.button("🔄 大纲 / 设定同步检测",
@@ -600,17 +752,20 @@ def page_writing():
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"检测失败：{e}")
+                    if _sync_is_done:
+                        st.caption("✅ 上次同步检测：无需更新  · 可随时重新检测")
 
-                if sync_result:
+                if sync_result and not _sync_is_done:
                     new_chars    = list(sync_result.get("new_characters", []))
+                    char_upds    = list(sync_result.get("character_updates", []))
                     outline_upds = list(sync_result.get("outline_updates", []))
                     ws_upds      = list(sync_result.get("world_setting_updates", []))
-                    total = len(new_chars) + len(outline_upds) + len(ws_upds)
+                    total = len(new_chars) + len(char_upds) + len(outline_upds) + len(ws_upds)
 
                     if total == 0:
                         st.success("✅ 大纲和设定与本章内容一致，无需更新")
-                        if st.button("清除", key="clear_sync_empty"):
-                            st.session_state[sync_key] = None
+                        if st.button("完成", key="clear_sync_empty"):
+                            st.session_state[sync_key] = {"_done": True}
                             st.rerun()
                     else:
                         st.markdown(f"##### 🔄 发现 {total} 条更新建议，请逐一确认")
@@ -631,12 +786,16 @@ def page_writing():
                                                  use_container_width=True, type="primary"):
                                         try:
                                             wf = load_novel(novel_id)
-                                            wf.memory.global_mem.save_character({
+                                            _nc_data = {
                                                 "name": char.get("name", ""),
                                                 "role": char.get("role", ""),
                                                 "personality": char.get("personality", ""),
                                                 "background": char.get("background", ""),
-                                            })
+                                            }
+                                            if char.get("relationships"):
+                                                _nc_rels = char["relationships"]
+                                                _nc_data["relationships"] = json.dumps(_nc_rels, ensure_ascii=False) if not isinstance(_nc_rels, str) else _nc_rels
+                                            wf.memory.global_mem.save_character(_nc_data)
                                             wf.close()
                                             new_chars.pop(i)
                                             sync_result["new_characters"] = new_chars
@@ -651,6 +810,51 @@ def page_writing():
                                                  use_container_width=True):
                                         new_chars.pop(i)
                                         sync_result["new_characters"] = new_chars
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 人物状态更新 ——
+                        _field_labels = {
+                            "current_state": "当前状态",
+                            "growth_arc":    "成长弧光",
+                            "abilities":     "能力设定",
+                            "relationships": "人际关系",
+                        }
+                        for i, cu in enumerate(char_upds):
+                            with st.container(border=True):
+                                field_name = _field_labels.get(cu.get("field", ""), cu.get("field", ""))
+                                st.markdown(f"🧑 **人物更新：{cu.get('name')} — {field_name}**")
+                                st.caption(f"新内容：{cu.get('new_value', '')[:200]}")
+                                st.caption(f"原因：{cu.get('reason', '')}")
+                                cu1, cu2 = st.columns(2)
+                                with cu1:
+                                    if st.button("✅ 更新人物档案",
+                                                 key=f"sync_cu_add_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True, type="primary"):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            _sync_field = cu.get("field", "current_state")
+                                            _sync_value = cu.get("new_value", "")
+                                            if _sync_field in ("relationships", "abilities") and _sync_value and not isinstance(_sync_value, str):
+                                                _sync_value = json.dumps(_sync_value, ensure_ascii=False)
+                                            wf.memory.global_mem.save_character({
+                                                "name":       cu.get("name", ""),
+                                                _sync_field: _sync_value,
+                                            })
+                                            wf.close()
+                                            char_upds.pop(i)
+                                            sync_result["character_updates"] = char_upds
+                                            st.session_state[sync_key] = sync_result
+                                            st.success(f"已更新 {cu.get('name')} 的{field_name}")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"更新失败：{e}")
+                                with cu2:
+                                    if st.button("❌ 跳过",
+                                                 key=f"sync_cu_skip_{novel_id}_{selected_ch_num}_{i}",
+                                                 use_container_width=True):
+                                        char_upds.pop(i)
+                                        sync_result["character_updates"] = char_upds
                                         st.session_state[sync_key] = sync_result
                                         st.rerun()
 
@@ -732,11 +936,34 @@ def page_writing():
                                         st.rerun()
 
                         if st.button("清除全部检测结果", key="clear_sync_result", use_container_width=True):
-                            st.session_state[sync_key] = None
+                            st.session_state[sync_key] = {"_done": True}
                             st.rerun()
 
                 st.divider()
                 render_approval_status(novel_id, selected_ch)
+
+            with tab_summary:
+                st.markdown("### 📄 章节摘要")
+                st.caption("摘要和关键事件会作为后续章节的上下文，影响 AI 续写的连贯性")
+                _sum_key = f"ch_summary_{novel_id}_{selected_ch_num}"
+                _evt_key = f"ch_events_{novel_id}_{selected_ch_num}"
+                try:
+                    _existing_events = json.loads(selected_ch.key_events) if selected_ch.key_events else []
+                except (json.JSONDecodeError, TypeError):
+                    _existing_events = []
+                with st.form(f"edit_summary_{selected_ch.id}"):
+                    sum_text = st.text_area("章节摘要", value=selected_ch.summary or "",
+                                            height=150, placeholder="概括本章主要内容…")
+                    events_text = st.text_area("关键事件（每行一个）",
+                                               value="\n".join(_existing_events),
+                                               height=100, placeholder="事件1\n事件2\n…")
+                    if st.form_submit_button("💾 保存摘要", disabled=not can_edit(novel_id)):
+                        new_events = [e.strip() for e in events_text.strip().split("\n") if e.strip()]
+                        workflow = load_novel(novel_id)
+                        workflow.memory.chapter_mem.save_chapter_summary(selected_ch_num, sum_text.strip(), new_events)
+                        workflow.close()
+                        st.success("✅ 章节摘要已保存")
+                        st.rerun()
 
             with tab_review:
                 report = selected_ch.get_review_report() if selected_ch.review_report else {}
@@ -761,6 +988,27 @@ def page_writing():
                         st.success("没有发现明显冲突")
                 else:
                     st.info("暂无审核报告，生成章节后自动审核")
+
+                st.divider()
+                with st.expander("✏️ 手动编辑审核评分", expanded=False):
+                    with st.form(f"edit_review_{selected_ch.id}"):
+                        _rv_summary = report.get("summary", "") if report else ""
+                        rv_score_edit = st.number_input("审核评分", min_value=0.0, max_value=10.0,
+                                                         value=float(score), step=0.5)
+                        rv_summary_edit = st.text_area("审核摘要", value=_rv_summary, height=80)
+                        if st.form_submit_button("💾 保存评分", disabled=not can_edit(novel_id)):
+                            db = get_db()
+                            ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                            ch_obj.review_score = rv_score_edit
+                            if report:
+                                report["summary"] = rv_summary_edit.strip()
+                                ch_obj.review_report = json.dumps(report, ensure_ascii=False)
+                            elif rv_summary_edit.strip():
+                                ch_obj.review_report = json.dumps({"summary": rv_summary_edit.strip(), "conflicts": []}, ensure_ascii=False)
+                            db.commit()
+                            db.close()
+                            st.success("✅ 审核评分已更新")
+                            st.rerun()
 
             with tab_reader:
                 st.markdown("### 📖 读者模拟测试")
@@ -816,6 +1064,20 @@ def page_writing():
                                 if suggestions:
                                     st.markdown("**改进建议：**")
                                     for s in suggestions: st.markdown(f"- {s}")
+
+                st.divider()
+                with st.expander("✏️ 手动编辑读者评分", expanded=False):
+                    with st.form(f"edit_reader_{selected_ch.id}"):
+                        rd_score_edit = st.number_input("综合评分", min_value=0.0, max_value=10.0,
+                                                         value=float(selected_ch.reader_score or 0), step=0.5)
+                        if st.form_submit_button("💾 保存评分", disabled=not can_edit(novel_id)):
+                            db = get_db()
+                            ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                            ch_obj.reader_score = rd_score_edit
+                            db.commit()
+                            db.close()
+                            st.success("✅ 读者评分已更新")
+                            st.rerun()
 
             with tab_history:
                 db = get_db()

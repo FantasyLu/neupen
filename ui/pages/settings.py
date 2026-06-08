@@ -13,6 +13,7 @@ from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
 from core.agents import CanvasAgent
+from core.platform_styles import load_platform_styles
 from ui.components.model_selector import (
     build_model_options, render_model_card, render_all_models_panel,
     FOLLOW_LABEL, build_agent_model_options,
@@ -131,8 +132,8 @@ def page_settings():
 
     # ─── 右栏：设定文档 + 管理 ───────────────────────────
     with col_doc:
-        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_api = st.tabs([
-            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "🔑 API Key"
+        tab_doc, tab_world, tab_chars, tab_fs, tab_model, tab_style, tab_platform, tab_quality, tab_api = st.tabs([
+            "📄 文档设定", "🌍 世界观", "👤 人物档案", "📌 伏笔", "🤖 模型", "✍️ 风格", "📺 平台", "⚡ 写作质量", "🔑 API Key"
         ])
 
         # ──────────────────────────────────────────────────
@@ -360,8 +361,42 @@ def page_settings():
                         else:
                             st.error(result.message)
 
+            # ── 手动新建人物 ──
+            with st.expander("➕ 手动新建人物", expanded=False):
+                with st.form("create_character_form"):
+                    nc_c1, nc_c2 = st.columns(2)
+                    with nc_c1:
+                        nc_name = st.text_input("姓名 *")
+                        nc_role = st.selectbox("角色定位", ["主角", "配角", "反派", "导师", "其他"], index=1)
+                        nc_age = st.text_input("年龄", placeholder="如：18岁、20-30岁")
+                        nc_gender = st.text_input("性别", placeholder="如：男、女")
+                    with nc_c2:
+                        nc_personality = st.text_area("性格特征", height=68)
+                        nc_motivations = st.text_input("动机/目标")
+                        nc_is_main = st.checkbox("主要人物")
+                    nc_appearance = st.text_area("外貌描述", height=60)
+                    nc_background = st.text_area("背景故事", height=60)
+                    nc_growth = st.text_area("成长弧光", height=60)
+                    if st.form_submit_button("✅ 创建人物", disabled=not can_edit(novel_id)):
+                        if not nc_name.strip():
+                            st.error("姓名为必填项")
+                        else:
+                            char_data = {"name": nc_name.strip(), "role": nc_role, "is_main": nc_is_main}
+                            if nc_age.strip(): char_data["age"] = nc_age.strip()
+                            if nc_gender.strip(): char_data["gender"] = nc_gender.strip()
+                            if nc_personality.strip(): char_data["personality"] = nc_personality.strip()
+                            if nc_motivations.strip(): char_data["motivations"] = nc_motivations.strip()
+                            if nc_appearance.strip(): char_data["appearance"] = nc_appearance.strip()
+                            if nc_background.strip(): char_data["background"] = nc_background.strip()
+                            if nc_growth.strip(): char_data["growth_arc"] = nc_growth.strip()
+                            workflow = load_novel(novel_id)
+                            workflow.memory.global_mem.save_character(char_data)
+                            workflow.close()
+                            st.success(f"✅ 人物「{nc_name.strip()}」已创建")
+                            st.rerun()
+
             if not chars:
-                st.info("暂无人物档案，点击「AI生成人物」根据大纲自动生成")
+                st.info("暂无人物档案，点击「AI生成人物」根据大纲自动生成，或手动新建")
             else:
                 search = st.text_input("🔍 搜索人物", placeholder="姓名或角色")
                 filtered = [c for c in chars if not search or search in c.name or search in (c.role or "")]
@@ -385,17 +420,53 @@ def page_settings():
                             st.markdown(f"**成长弧光：** {char.growth_arc}")
 
                         with st.form(f"char_edit_{char.id}"):
-                            st.markdown("**快速编辑**")
-                            new_state       = st.text_input("当前状态", value=char.current_state or "")
-                            new_secrets     = st.text_area("隐藏秘密", value=char.secrets or "", height=60)
-                            new_personality = st.text_area("性格", value=char.personality or "", height=60)
-                            new_motivations = st.text_input("动机", value=char.motivations or "")
+                            st.markdown("**编辑人物档案**")
+                            ec1, ec2 = st.columns(2)
+                            with ec1:
+                                e_name       = st.text_input("姓名", value=char.name or "")
+                                e_role       = st.text_input("角色定位", value=char.role or "")
+                                e_age        = st.text_input("年龄", value=char.age or "")
+                                e_gender     = st.text_input("性别", value=char.gender or "")
+                                e_is_main    = st.checkbox("主要人物", value=bool(char.is_main))
+                            with ec2:
+                                e_personality  = st.text_area("性格", value=char.personality or "", height=60)
+                                e_motivations  = st.text_input("动机/目标", value=char.motivations or "")
+                                e_state        = st.text_input("当前状态", value=char.current_state or "")
+                                e_secrets      = st.text_area("隐藏秘密", value=char.secrets or "", height=60)
+                            e_appearance   = st.text_area("外貌描述", value=char.appearance or "", height=60)
+                            e_background   = st.text_area("背景故事", value=char.background or "", height=60)
+                            e_growth       = st.text_area("成长弧光", value=char.growth_arc or "", height=60)
+                            e_speech       = st.text_area("说话风格/口头禅", value=char.speech_patterns or "", height=60)
+                            e_behavior     = st.text_area("行为习惯", value=char.behavioral_patterns or "", height=60)
+                            try:
+                                _aliases_list = json.loads(char.aliases) if char.aliases else []
+                            except (json.JSONDecodeError, TypeError):
+                                _aliases_list = []
+                            e_aliases      = st.text_input("别名/绰号（逗号分隔）", value=", ".join(_aliases_list) if _aliases_list else "")
+                            e_abilities    = st.text_area("能力/技能（每行一个）", value="\n".join(char.get_abilities()) if char.get_abilities() else "", height=60)
+                            e_relations    = st.text_area("人际关系（JSON 或自由文本）", value=char.relationships or "", height=60)
                             if st.form_submit_button("💾 保存并检测影响", disabled=not can_edit(novel_id)):
+                                # 构建字段映射
+                                field_map = {
+                                    "name": e_name.strip(), "role": e_role.strip(),
+                                    "age": e_age.strip(), "gender": e_gender.strip(),
+                                    "is_main": e_is_main,
+                                    "personality": e_personality.strip(), "motivations": e_motivations.strip(),
+                                    "current_state": e_state.strip(), "secrets": e_secrets.strip(),
+                                    "appearance": e_appearance.strip(), "background": e_background.strip(),
+                                    "growth_arc": e_growth.strip(),
+                                    "speech_patterns": e_speech.strip(), "behavioral_patterns": e_behavior.strip(),
+                                    "aliases": json.dumps([a.strip() for a in e_aliases.split(",") if a.strip()], ensure_ascii=False) if e_aliases.strip() else "",
+                                    "abilities": json.dumps([a.strip() for a in e_abilities.strip().split("\n") if a.strip()], ensure_ascii=False) if e_abilities.strip() else "",
+                                    "relationships": e_relations.strip(),
+                                }
                                 updates = {}
-                                if new_state       != (char.current_state or ""): updates["current_state"]  = new_state
-                                if new_secrets     != (char.secrets or ""):       updates["secrets"]         = new_secrets
-                                if new_personality != (char.personality or ""):   updates["personality"]     = new_personality
-                                if new_motivations != (char.motivations or ""):   updates["motivations"]     = new_motivations
+                                for k, v in field_map.items():
+                                    old_val = getattr(char, k, None)
+                                    if k == "is_main":
+                                        if v != bool(old_val): updates[k] = v
+                                    else:
+                                        if v != (old_val or ""): updates[k] = v
                                 if not updates:
                                     st.info("没有检测到修改")
                                 else:
@@ -486,7 +557,7 @@ def page_settings():
                             deadline_badge = f"  📅 第{fs.collect_by_chapter}章前"
 
                     with st.container(border=True):
-                        fc1, fc2, fc3 = st.columns([3, 1, 1])
+                        fc1, fc2, fc3, fc4 = st.columns([3, 1, 1, 1])
                         with fc1:
                             st.markdown(f"{imp_color} **{fs.name}**（第{fs.set_chapter}章）{deadline_badge}")
                             if fs.description: st.caption(fs.description)
@@ -503,6 +574,44 @@ def page_settings():
                                 db.commit()
                                 db.close()
                                 st.rerun()
+                        with fc4:
+                            _edit_key = f"fs_editing_{fs.id}"
+                            if st.button("✏️ 编辑", key=f"btn_edit_fs_{fs.id}", disabled=not can_edit(novel_id)):
+                                st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+                                st.rerun()
+                        if st.session_state.get(f"fs_editing_{fs.id}", False):
+                            with st.form(f"fs_edit_form_{fs.id}"):
+                                fe_name = st.text_input("伏笔名称", value=fs.name or "")
+                                fe_desc = st.text_area("详细描述", value=fs.description or "", height=60)
+                                fe_c1, fe_c2 = st.columns(2)
+                                with fe_c1:
+                                    fe_set_ch = st.number_input("埋下章节", min_value=1, value=fs.set_chapter or 1, key=f"fe_set_{fs.id}")
+                                    fe_imp = st.selectbox("重要程度", ["high", "medium", "low"],
+                                                          index=["high", "medium", "low"].index(fs.importance or "medium"),
+                                                          format_func=lambda x: {"high": "高", "medium": "中", "low": "低"}[x],
+                                                          key=f"fe_imp_{fs.id}")
+                                with fe_c2:
+                                    fe_deadline = st.number_input("最晚回收章节（0=不限）", min_value=0,
+                                                                   value=fs.collect_by_chapter or 0, key=f"fe_dl_{fs.id}")
+                                    fe_notes = st.text_input("备注", value=fs.notes or "", key=f"fe_notes_{fs.id}")
+                                fe_set_content = st.text_area("埋下时的内容", value=fs.set_content or "", height=60, key=f"fe_sc_{fs.id}")
+                                fe_collect_content = st.text_area("回收时的内容", value=fs.collect_content or "", height=60, key=f"fe_cc_{fs.id}")
+                                if st.form_submit_button("💾 保存修改"):
+                                    db = get_db()
+                                    obj = db.query(Foreshadowing).filter_by(id=fs.id).first()
+                                    obj.name = fe_name.strip() or obj.name
+                                    obj.description = fe_desc.strip()
+                                    obj.set_chapter = fe_set_ch
+                                    obj.importance = fe_imp
+                                    obj.collect_by_chapter = fe_deadline if fe_deadline > 0 else None
+                                    obj.notes = fe_notes.strip() or None
+                                    obj.set_content = fe_set_content.strip() or None
+                                    obj.collect_content = fe_collect_content.strip() or None
+                                    db.commit()
+                                    db.close()
+                                    st.session_state[f"fs_editing_{fs.id}"] = False
+                                    st.success("✅ 伏笔已更新")
+                                    st.rerun()
 
             if collected:
                 with st.expander(f"✅ 已回收（{len(collected)}条）", expanded=False):
@@ -795,6 +904,173 @@ def page_settings():
                     with st.expander("📄 查看已保存的参考文本节选"):
                         st.text(novel_fresh.style_reference_text[:1000]
                                 + ("…" if len(novel_fresh.style_reference_text) > 1000 else ""))
+
+        # ──────────────────────────────────────────────────
+        # Tab: 平台/标签风格（per-novel 选择）
+        # ──────────────────────────────────────────────────
+        with tab_platform:
+            st.markdown("### 📺 目标平台 & 标签")
+            st.caption(
+                "选择本小说的目标发布平台和创作标签，系统会自动将对应风格描述注入写作和润色的提示词中。\n\n"
+                "平台与标签的风格描述可在侧边栏「📺 平台风格配置」中全局管理。"
+            )
+
+            styles = load_platform_styles()
+            platform_list = list(styles.keys())
+
+            db = get_db()
+            novel_p = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+
+            current_platform = novel_p.target_platform or ""
+            current_tags = novel_p.get_target_tags() if novel_p else []
+
+            with st.form("platform_tag_form"):
+                # 平台选择（带"不指定"选项）
+                platform_options = ["（不指定）"] + platform_list
+                current_plat_idx = (
+                    platform_options.index(current_platform)
+                    if current_platform in platform_options else 0
+                )
+                selected_platform = st.selectbox(
+                    "目标平台", platform_options, index=current_plat_idx
+                )
+
+                # 标签多选（根据平台动态切换）
+                available_tags = list(styles.get(selected_platform, {}).keys()) \
+                    if selected_platform != "（不指定）" else []
+
+                selected_tags = st.multiselect(
+                    "创作标签（可多选）",
+                    options=available_tags,
+                    default=[t for t in current_tags if t in available_tags],
+                    help="选中的标签风格描述都会注入提示词，建议选 1~2 个最贴近的标签"
+                )
+
+                saved = st.form_submit_button(
+                    "💾 保存平台设定", use_container_width=True,
+                    type="primary", disabled=not can_edit(novel_id)
+                )
+
+            if saved:
+                db = get_db()
+                obj = db.query(Novel).filter(Novel.id == novel_id).first()
+                obj.target_platform = selected_platform if selected_platform != "（不指定）" else None
+                obj.set_target_tags(selected_tags)
+                db.commit()
+                db.close()
+                st.success("✅ 平台设定已保存，写作和润色时将自动应用对应风格")
+                st.rerun()
+
+            # 当前生效的风格描述预览
+            if current_platform and current_tags:
+                from core.platform_styles import get_style_description
+                preview = get_style_description(current_platform, current_tags)
+                if preview:
+                    st.divider()
+                    st.markdown("#### 当前注入的风格描述预览")
+                    st.info(preview)
+            elif not platform_list:
+                st.warning("尚未配置任何平台风格，请先在侧边栏「📺 平台风格配置」中添加")
+
+        # ──────────────────────────────────────────────────
+        # Tab: 写作质量参数
+        # ──────────────────────────────────────────────────
+        with tab_quality:
+            st.markdown("### ⚡ 写作质量参数")
+            st.caption("配置每章写作的审核与重写策略，覆盖全局默认值。留空时使用全局默认。")
+
+            from core.config import (
+                AUTO_APPROVE_THRESHOLD as _DEF_APPROVE,
+                REVIEW_SCORE_THRESHOLD as _DEF_REVIEW,
+                LOW_SCORE_REWRITE_THRESHOLD as _DEF_REWRITE,
+                MAX_REVIEW_ITERATIONS as _DEF_ITER,
+                MAX_TOTAL_ATTEMPTS as _DEF_TOTAL,
+            )
+
+            db = get_db()
+            novel_q = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+            q_cfg = novel_q.get_quality_config() if novel_q else {}
+
+            with st.form("quality_config_form"):
+                st.markdown("#### 冲突检测")
+                auto_approve = st.number_input(
+                    f"严重冲突 severity 阈值（默认 {_DEF_APPROVE}）",
+                    min_value=1, max_value=10,
+                    value=int(q_cfg.get("auto_approve_threshold", _DEF_APPROVE)),
+                    step=1,
+                    help="severity ≥ 此值的冲突被认为是「严重冲突」，"
+                         "章节含严重冲突时不会通过审核，会继续修改或重写。"
+                )
+
+                st.markdown("#### 审核评分")
+                review_score = st.number_input(
+                    f"审核通过评分（默认 {_DEF_REVIEW}）",
+                    min_value=0.0, max_value=10.0,
+                    value=float(q_cfg.get("review_score_threshold", _DEF_REVIEW)),
+                    step=0.5,
+                    help="评分 ≥ 此值且无严重冲突时退出修改循环，章节视为通过审核。"
+                )
+                rewrite_score = st.number_input(
+                    f"触发重写评分（默认 {_DEF_REWRITE}）",
+                    min_value=0.0, max_value=10.0,
+                    value=float(q_cfg.get("low_score_rewrite_threshold", _DEF_REWRITE)),
+                    step=0.5,
+                    help="修改循环结束后若评分仍低于此值或含严重冲突，触发整章重写。设为 0 禁用重写。"
+                )
+
+                st.markdown("#### 迭代次数")
+                max_iter = st.number_input(
+                    f"最大修改轮次（默认 {_DEF_ITER}）",
+                    min_value=1, max_value=20,
+                    value=int(q_cfg.get("max_review_iterations", _DEF_ITER)),
+                    step=1,
+                    help="每轮包含一次审核 + 一次修复。达到上限后进入重写阶段（如果评分未达标）。"
+                )
+                max_total = st.number_input(
+                    f"全局审核次数上限（默认 {_DEF_TOTAL}）",
+                    min_value=1, max_value=50,
+                    value=int(q_cfg.get("max_total_attempts", _DEF_TOTAL)),
+                    step=1,
+                    help="跨修改轮次和重写轮次的审核总次数上限。达到后自动选历史最高分版本作为终稿。"
+                )
+
+                saved = st.form_submit_button("💾 保存质量参数", use_container_width=True,
+                                              type="primary", disabled=not can_edit(novel_id))
+
+            if saved:
+                new_cfg = {
+                    "auto_approve_threshold":    auto_approve,
+                    "review_score_threshold":    review_score,
+                    "low_score_rewrite_threshold": rewrite_score,
+                    "max_review_iterations":     max_iter,
+                    "max_total_attempts":        max_total,
+                }
+                db = get_db()
+                obj = db.query(Novel).filter(Novel.id == novel_id).first()
+                obj.set_quality_config(new_cfg)
+                db.commit()
+                db.close()
+                st.success("✅ 写作质量参数已保存")
+                st.rerun()
+
+            st.divider()
+            st.markdown("#### 当前有效参数")
+            db = get_db()
+            novel_q2 = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+            q2 = novel_q2.get_quality_config() if novel_q2 else {}
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("严重冲突阈值", int(q2.get("auto_approve_threshold", _DEF_APPROVE)))
+                st.metric("审核通过评分", f"{float(q2.get('review_score_threshold', _DEF_REVIEW)):.1f}")
+                st.metric("触发重写评分", f"{float(q2.get('low_score_rewrite_threshold', _DEF_REWRITE)):.1f}")
+            with col_b:
+                st.metric("最大修改轮次", int(q2.get("max_review_iterations", _DEF_ITER)))
+                st.metric("全局审核次数上限", int(q2.get("max_total_attempts", _DEF_TOTAL)))
+            if not q2:
+                st.info("当前使用全局默认值，保存后生效。")
 
         # ──────────────────────────────────────────────────
         # Tab: API Key

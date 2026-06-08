@@ -79,6 +79,14 @@ def render_sidebar():
                 st.session_state.page = page
                 st.rerun()
 
+        # 全局配置（不依赖项目）
+        st.divider()
+        is_ps = st.session_state.page == "平台风格"
+        if st.button("📺 平台风格配置", use_container_width=True,
+                     type="primary" if is_ps else "secondary"):
+            st.session_state.page = "平台风格"
+            st.rerun()
+
         if st.session_state.novel_id:
             st.divider()
             render_global_chat(st.session_state.novel_id)

@@ -16,6 +16,7 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
+from core.platform_styles import get_style_description
 
 
 def _safe_json_loads(text: str) -> dict | list:
@@ -334,15 +335,30 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=min(3000 + ch_count * 400, 16000)
+            max_tokens=min(4000 + ch_count * 600, 32000)
         )
 
         arr_start = response.find("[")
+        if arr_start < 0:
+            raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
+
         arr_end = response.rfind("]") + 1
-        if arr_start >= 0 and arr_end > arr_start:
+        if arr_end > arr_start:
+            # 正常情况：有完整的 JSON 数组
             result = _safe_json_loads(response[arr_start:arr_end])
-            if isinstance(result, list):
+            if isinstance(result, list) and result:
                 return result
+
+        # 截断兜底：尝试用 json_repair 修复不完整的 JSON
+        try:
+            from json_repair import repair_json
+            partial = response[arr_start:]
+            result = json.loads(repair_json(partial))
+            if isinstance(result, list) and result:
+                return result
+        except Exception:
+            pass
+
         raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
 
     def analyze_chapter_consistency(self, chapter_number: int, content: str) -> dict:
@@ -352,14 +368,33 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         Returns:
             {
               "new_characters": [{"name", "role", "personality", "background", "reason"}],
+              "character_updates": [{"name", "field", "new_value", "reason"}],
               "outline_updates": [{"field", "current_value", "suggestion", "reason"}],
               "world_setting_updates": [{"key", "value", "reason"}]
             }
         """
         global_ctx = self.memory.global_mem.build_global_context()
-        existing_chars = [c.name for c in self.memory.global_mem.get_all_characters()]
+        all_chars = self.memory.global_mem.get_all_characters()
+        existing_chars = [c.name for c in all_chars]
 
-        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲和设定对照，找出需要新增或更新的内容。
+        # 构建现有人物状态摘要，供 AI 对比
+        char_state_lines = []
+        for c in all_chars:
+            parts = [f"【{c.name}】"]
+            if c.current_state:
+                parts.append(f"当前状态：{c.current_state[:120]}")
+            if c.growth_arc:
+                parts.append(f"成长弧光：{c.growth_arc[:80]}")
+            if c.abilities:
+                parts.append(f"能力：{c.abilities[:80]}")
+            rels = c.get_relationships()
+            if rels:
+                rel_strs = [f"{k}:{v}" for k, v in rels.items()]
+                parts.append(f"人际关系：{', '.join(rel_strs)[:120]}")
+            char_state_lines.append("  ".join(parts))
+        char_state_summary = "\n".join(char_state_lines) or "（无）"
+
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要新增或更新的内容。
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
@@ -367,10 +402,10 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 【现有大纲和设定摘要】
 {global_ctx}
 
-【已有人物列表】
-{", ".join(existing_chars) or "（无）"}
+【已有人物及当前状态】
+{char_state_summary}
 
-请按以下 JSON 格式输出检测结果，只列出章节中实际出现且需要记录的内容，不要虚构：
+请按以下 JSON 格式输出检测结果，只列出章节中实际发生且需要记录的变化，不要虚构：
 
 {{
   "new_characters": [
@@ -379,7 +414,16 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
       "role": "主角/配角/反派等",
       "personality": "性格特点",
       "background": "背景信息（从章节推断）",
+      "relationships": {{"已有人物A": "关系描述", "已有人物B": "关系描述"}},
       "reason": "为什么需要新增"
+    }}
+  ],
+  "character_updates": [
+    {{
+      "name": "已有人物的姓名（必须在已有人物列表中）",
+      "field": "current_state 或 growth_arc 或 abilities 或 relationships 之一",
+      "new_value": "更新后的完整内容",
+      "reason": "本章中发生了什么导致此变化"
     }}
   ],
   "outline_updates": [
@@ -405,8 +449,72 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return _safe_json_loads(response[json_start:json_end])
-        return {"new_characters": [], "outline_updates": [], "world_setting_updates": []}
+            result = _safe_json_loads(response[json_start:json_end])
+            # 过滤掉 character_updates 中不在已有人物列表里的条目（防止 AI 乱填）
+            if isinstance(result, dict) and "character_updates" in result:
+                result["character_updates"] = [
+                    u for u in result.get("character_updates", [])
+                    if u.get("name") in existing_chars
+                ]
+            return result
+        return {
+            "new_characters": [], "character_updates": [],
+            "outline_updates": [], "world_setting_updates": []
+        }
+
+    def extract_relationships(self, chapter_number: int, content: str) -> list[dict]:
+        """
+        从章节内容中专门提取人物关系。
+        比 analyze_chapter_consistency 更聚焦，提取率更高。
+
+        Returns:
+            [{"character": "人物名", "relationships": {"人物B": "关系描述", ...}}]
+        """
+        all_chars = self.memory.global_mem.get_all_characters()
+        existing_names = [c.name for c in all_chars]
+
+        char_rel_lines = []
+        for c in all_chars:
+            rels = c.get_relationships()
+            rel_str = ", ".join(f"{k}: {v}" for k, v in rels.items()) if rels else "（暂无）"
+            char_rel_lines.append(f"【{c.name}】（{c.role or ''}）— 现有关系：{rel_str}")
+        char_rel_summary = "\n".join(char_rel_lines) or "（无人物）"
+
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，提取所有人物之间的关系。
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+【已有人物及现有关系】
+{char_rel_summary}
+
+任务：找出本章中体现的人物关系（包括新出现的关系和已有关系的变化）。
+- 关注对话、互动、称呼、情感、冲突、合作等细节
+- 关系描述要具体（如"师徒"、"青梅竹马"、"宿敌"、"暗恋对象"），不要笼统写"认识"
+- 同时输出双向关系（A对B是师父，B对A是徒弟）
+- 只提取章节中有实际依据的关系，不要虚构
+
+请输出 JSON 数组，每项表示一个人物需要更新的关系：
+[
+  {{
+    "character": "人物姓名",
+    "relationships": {{
+      "人物B": "关系描述",
+      "人物C": "关系描述"
+    }}
+  }}
+]
+
+只返回 JSON 数组，不包含其他文字。如果本章没有体现任何人物关系，返回空数组 []。"""
+
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        arr_start = response.find("[")
+        arr_end = response.rfind("]") + 1
+        if arr_start >= 0 and arr_end > arr_start:
+            result = _safe_json_loads(response[arr_start:arr_end])
+            if isinstance(result, list):
+                return [r for r in result if r.get("character") in existing_names]
+        return []
 
     def close(self):
         self.memory.close()
@@ -564,6 +672,12 @@ class WriterAgent:
 - 适度使用悬念，让每章结尾都有留人的钩子
 - 避免大量重复使用同一个词或句式
 
+去AI味规则（必须严格遵守）：
+- 坚决使用主观视角描写：不要以上帝视角说"这个房间很冷"，而是写"陈默打了个冷颤，把领口往上拉了拉"
+- 拒绝大道理：角色不要发表长篇大论的演讲，人类说话是零碎的、有错漏的，允许出现半句话、结巴、或者口头禅
+- 严禁收尾综合征：每一章、每一段的结尾，绝对不要出现"这意味着……"、"他不知道的是，更大的危机正在逼近……"、"这就是命运的安排"等总结性发言
+- 增强潜台词：人类很少直接说出心里话。想表达愤怒时，写他捏碎了纸杯；想表达关心时，写他把烟头掐灭
+
 输出要求：
 - 直接输出小说正文，不要加解释或注释
 - 字数控制在章纲要求的范围内（一般2000-4000字）
@@ -579,7 +693,9 @@ class WriterAgent:
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
-                       stream_callback=None) -> str:
+                       word_count_tolerance: float = 0.30,
+                       stream_callback=None,
+                       review_feedback: str = "") -> str:
         """
         生成指定章节的正文
 
@@ -631,12 +747,24 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
+        # 平台/标签风格块
+        platform_block = ""
+        if novel:
+            _pt = novel.target_platform or ""
+            _tg = novel.get_target_tags()
+            _ps = get_style_description(_pt, _tg)
+            if _ps:
+                platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
+
+        feedback_block = ""
+        if review_feedback:
+            feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
+
         user_prompt = f"""请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}
-
+{writing_context}{style_block}{platform_block}{feedback_block}
 【写作要求】
-- 目标字数：约{word_target}字
+- 字数严格控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字，容差 ±{int(word_count_tolerance * 100)}%），切勿大幅超出上限
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
 - 注意与前几章的连贯性
@@ -791,7 +919,8 @@ class ReviewerAgent:
 
     def fix_all_issues(self, content: str,
                         report: "ReviewReport",
-                        novel_id: int) -> str:
+                        novel_id: int,
+                        chapter_number: int = 0) -> str:
         """
         根据完整审核报告修复所有问题（不限严重程度）。
         用于审核-修改自动循环中的每次改写。
@@ -807,19 +936,42 @@ class ReviewerAgent:
             for c in report.conflicts
         ])
 
+        # 获取章纲目标，让编辑明确本章应当实现什么
+        chapter_goal_block = ""
+        if chapter_number:
+            ch = self.memory.global_mem.get_chapter_outline(chapter_number)
+            if ch:
+                goal_lines = []
+                if ch.outline_core_event:
+                    goal_lines.append(f"核心事件：{ch.outline_core_event}")
+                if ch.outline_conflict:
+                    goal_lines.append(f"主要冲突：{ch.outline_conflict}")
+                if ch.outline_scene:
+                    goal_lines.append(f"场景设定：{ch.outline_scene}")
+                if ch.outline_emotion:
+                    goal_lines.append(f"情感基调：{ch.outline_emotion}")
+                if ch.outline_ending:
+                    goal_lines.append(f"结尾方式：{ch.outline_ending}")
+                if goal_lines:
+                    chapter_goal_block = (
+                        "\n【本章章纲目标（修改后的内容必须完整实现这些目标）】\n"
+                        + "\n".join(goal_lines) + "\n"
+                    )
+
         system_prompt = (
             "你是一位资深小说编辑，负责根据审核意见修改章节正文。\n"
             "修改原则：\n"
             "1. 严格按审核意见逐条修复问题\n"
-            "2. 保持故事情节、人物关系、场景氛围不变\n"
-            "3. 只改有问题的部分，其余内容保持原样\n"
+            "2. 确保修改后的内容完整实现本章章纲目标\n"
+            "3. 保持人物关系、场景氛围的一致性\n"
             "4. 直接输出完整修改后正文，不加任何说明或标注"
         )
         user_prompt = (
             f"章节正文：\n{content}\n\n"
             f"本次审核评分：{report.overall_score:.1f}/10\n"
+            f"{chapter_goal_block}"
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
-            "请修复以上所有问题，直接输出完整修改后正文："
+            "请修复以上所有问题并确保章纲目标得以实现，直接输出完整修改后正文："
         )
         return llm.generate(system_prompt, user_prompt, max_tokens=12000)
 
@@ -900,9 +1052,17 @@ class PolisherAgent:
         style_profile = novel.get_style_profile() if novel else {}
         style_profile_text = self._format_style_profile(style_profile) if style_profile else ""
 
+        # 平台/标签风格
+        platform_style_text = ""
+        if novel:
+            _pt = novel.target_platform or ""
+            _tg = novel.get_target_tags()
+            platform_style_text = get_style_description(_pt, _tg)
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
+{f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference}" if style_reference else ""}
 
