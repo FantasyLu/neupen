@@ -1,6 +1,6 @@
 # Neupen
 
-> AI 驱动的中长篇小说创作系统。从一句话灵感出发，六个专职 Agent 协同完成大纲、人物、正文全流程创作，三层记忆系统保障跨章节叙事连贯。内置冲突检测、风格迁移、伏笔调度与读者模拟，支持多模型供应商与协同写作。
+> AI 驱动的中长篇小说创作系统。从一句话灵感出发，八个专职 Agent 协同完成大纲、人物、正文全流程创作，三层记忆系统保障跨章节叙事连贯。内置冲突检测、风格迁移、伏笔调度、读者模拟与平台风格适配，支持多模型供应商、协同写作与四种格式导出。
 
 ---
 
@@ -11,15 +11,19 @@
 - [多模型分工](#多模型分工)
 - [功能特性](#功能特性)
   - [风格迁移](#风格迁移)
+  - [平台风格适配](#平台风格适配)
   - [智能伏笔调度](#智能伏笔调度)
   - [读者模拟](#读者模拟)
   - [结构可视化](#结构可视化)
   - [协同写作](#协同写作)
+  - [AI 创作助手](#ai-创作助手)
+  - [去 AI 味写作](#去-ai-味写作)
+- [导出格式](#导出格式)
 - [配置项说明](#配置项说明)
 - [常见问题](#常见问题)
 - [系统架构](#系统架构)
 - [核心模块详解](#核心模块详解)
-  - [六大 Agent](#六大-agent)
+  - [八大 Agent](#八大-agent)
   - [三层记忆系统](#三层记忆系统)
   - [冲突检测与变更同步](#冲突检测与变更同步)
   - [工作流编排](#工作流编排)
@@ -122,20 +126,27 @@ streamlit run app.py
 ### 典型工作流
 
 ```
-① 项目管理页 → 新建项目，填写标题 + 一句话灵感，勾选「立即生成大纲」
+① 项目管理页 → 新建项目，填写标题 + 作者 + 一句话灵感，勾选「立即生成大纲」
                  ↓ 自动生成邀请码，可分享给协作者
-② 大纲管理页 → 检查/微调章纲，查看伏笔调度警告
-                 ↓
-③ 设定管理页 → 查看 AI 生成的人物档案，补充世界观细节
+② 大纲管理页 → 检查/微调章纲，管理卷大纲（排序/新建/删除），查看伏笔调度警告
+                 ↓ AI 大纲助手侧栏随时辅助调整
+③ 设定管理页 → 查看 AI 生成的人物档案（支持手动编辑所有字段），补充世界观细节
+               → 配置文档设定（世界观背景、力量体系、社会架构等 Markdown 文档）
                → 模型设置 tab 配置各 Agent 分工
                → 风格迁移 tab 上传参考文本提取风格
+               → 平台风格 tab 选择目标发布平台和标签
+               → 写作质量 tab 调整自动审核阈值等参数
                  ↓
 ④ 写作页     → 逐章生成，查看审核报告，运行读者模拟
+               → 编辑章节摘要 / 手动调整审核评分和读者评分
+               → 章节状态回退（单章或批量）
                → 审阅者可添加评论、审批章节
+               → AI 写作助手侧栏辅助修改
                  ↓
 ⑤ 可视化页   → 人物关系网络 / 伏笔分布 / 情感曲线
+               → AI 同步人物关系（从已写章节自动提取）
                  ↓
-⑥ 导出页     → 选择格式导出
+⑥ 导出页     → 选择 TXT / Markdown / Word / EPUB 格式导出
 ```
 
 ---
@@ -145,48 +156,58 @@ streamlit run app.py
 ### 项目管理
 
 - **我的项目**：展示所有项目的字数/章数进度，点击「打开」进入
-- **新建项目**：填写灵感 + 选择模型 + 勾选「立即生成大纲」→ 自动生成邀请码
+- **新建项目**：填写标题 + 作者/笔名 + 灵感 + 选择模型 + 勾选「立即生成大纲」→ 自动生成邀请码
+- **灵感对话**：与 AI 多轮聊天理清思路，聊完后一键提取项目配置并创建
 - **加入项目**：输入邀请码以审阅者身份加入他人项目
+- **删除项目**：两步确认，级联删除所有关联数据
 
-### 设定管理（6 个 tab）
+### 设定管理（9 个 tab）
 
-- **世界观设定**：修改后自动触发影响分析，报告受影响章节
-- **人物档案**：AI 生成 / 手动编辑，保存时触发设定冲突检测
-- **伏笔管理**：手动记录 / AI 分配截止章节 / 同步大纲伏笔，按紧急度排序
-- **模型设置**：项目默认模型 + 各 Agent 分工配置 + 一键推荐配置
-- **风格迁移**：粘贴/上传参考文本 → 分析 → 编辑 10 维特征 → 保存
-- **API Key**：在页面内管理各提供商的 API Key，保存后立即生效
+| Tab | 功能 |
+|-----|------|
+| 文档设定 | Markdown 格式的世界观背景文档，支持多类型（背景/力量体系/人物/自定义），AI 建议一键应用 |
+| 世界观 | 结构化键值编辑（世界规则、力量体系、社会结构、地理等），保存时自动触发影响分析 |
+| 人物档案 | AI 生成 / 手动新建 / 完整编辑所有 16 个字段，保存时触发设定冲突检测 |
+| 伏笔 | 手动记录 / AI 分配截止章节 / 同步大纲伏笔 / 完整编辑已有伏笔，按紧急度排序 |
+| 模型 | 项目默认模型 + 各 Agent 分工配置 + 一键推荐配置 |
+| 风格 | 粘贴/上传参考文本 → 分析 → 编辑 10 维特征 → 保存；或从已写章节自动提取风格 |
+| 平台 | 选择目标发布平台和标签，平台特有写作规则自动注入写作 prompt |
+| 写作质量 | 自动审核阈值、评分标准、最大修复轮次、低分重写阈值等参数 |
+| API Key | 在页面内管理各提供商的 API Key，保存后立即生效 |
 
 ### 大纲管理
 
-- 总览进度 + 伏笔调度警告面板
-- 章纲编辑支持伏笔埋下/回收的逗号分隔输入
-- 修改核心字段触发下游影响分析
-- 审批状态 badge 显示在章节标题旁
+- **AI 大纲助手**（左侧栏）：自然语言对话调整大纲，AI 输出的结构化代码块可一键应用
+- **总体大纲**：Markdown 编辑器，保存时自动解析为结构化字段
+- **卷大纲管理**：新建/编辑/删除/排序（上移/下移），设置起止章节和剧情概要
+- **章节大纲**：
+  - 批量 AI 生成，支持从卷大纲自动填充起止章节和剧情描述
+  - 状态和关键词筛选
+  - 完整编辑（核心事件、冲突、场景、情感弧、登场人物、伏笔埋下/回收、章尾）
+  - 修改核心字段触发下游影响分析
+- **文档导入**：自由格式文本导入，AI 解析为结构化大纲/世界观/人物/章纲，预览确认后写入
+- 伏笔调度警告面板（过期/即将到期）
 
 ### 写作
 
-- **生成流水线**：写作 → 审核 → 自动修复 → 润色 → 摘要，一键完成
-- **编辑模式**：手动改正文，保存时触发冲突检测（仅主笔）
-- **审批状态**：三按钮（通过 / 需修改 / 驳回），重新生成自动重置
-- **章节评论**：评论列表 + 发表评论（主笔和审阅者均可）
-- **读者模拟**：一键运行，三种读者视角的评分卡片 + 亮点/建议
-- **批量写作**：选择章节范围，一键按顺序生成多章，实时展示进度，完成后汇总报告
-- **版本历史**：最近 5 个版本（草稿/润色/用户编辑）
+- **AI 写作助手**（左侧栏）：对话式辅助修改，输出的章节代码块可一键保存
+- **生成流水线**：写作 → 审核修复循环（最多 5 轮）→ 低分自动重写（最多 10 次）→ 可选润色 → 摘要，一键完成
+- **正文编辑**：手动改正文，保存时触发同步检测（新人物/人物变化/大纲偏离/世界观变更），逐项确认或跳过
+- **章节摘要**：查看和编辑 AI 生成的摘要和关键事件
+- **审核报告**：五类冲突逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
+- **读者模拟**：三种读者视角评分卡片 + 亮点/建议，手动编辑读者评分
+- **审批状态**：通过 / 需修改 / 驳回，重新生成自动重置
+- **章节评论**：主笔和审阅者均可评论
+- **版本历史**：最近 5 个版本（草稿/审核/润色/用户编辑）
+- **批量写作**：选择章节范围一键按顺序生成，单章失败不中断，完成后汇总报告
+- **状态回退**：单章回退（已发布 → 待审核）和批量回退
 
 ### 可视化
 
-- 人物关系力导向图（可筛选主要人物）
-- 伏笔甘特图（跨度 + 颜色 + 截止菱形）
-- 情感多折线（可选指标 + 字数柱状图）
-
-### 导出
-
-| 格式 | 适用场景 | 特色选项 |
-|------|---------|---------|
-| TXT | 任意设备阅读 | 可附大纲摘要 |
-| Markdown | Obsidian / Typora | 含目录、人物档案、伏笔追踪表 |
-| Word | 出版投稿 | 规范版式，自动处理段落缩进 |
+- **人物关系网络**：力导向图（streamlit-agraph），节点按角色着色/大小区分主次，边标签精简为 4 字，hover 显示完整双向关系
+- **AI 同步人物关系**：一键从已写章节中提取人物关系并写入人物档案，逐章分析带进度条
+- **伏笔分布甘特图**：横向条形图，颜色编码重要度，截止章节用菱形标记，支持筛选已回收
+- **情感曲线**：多折线图（审核评分 / 各类型读者评分），可选指标筛选，附字数柱状图和各章情感基调
 
 ---
 
@@ -194,13 +215,20 @@ streamlit run app.py
 
 支持 5 家提供商 12 个模型，可为每个 Agent 单独配置：
 
-| 提供商 | 模型 | 特色 |
-|-------|------|------|
-| Anthropic | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5 | 支持 prompt caching，中文写作质量最高 |
-| DeepSeek | deepseek-chat, deepseek-reasoner | 成本极低，推理能力突出 |
-| 字节豆包 | doubao-pro-32k, doubao-lite-32k | 中文优化，速度快 |
-| 阿里通义千问 | qwen-max, qwen-plus, qwen-turbo | 中文理解能力强 |
-| Google | gemini-2.0-flash, gemini-1.5-pro | 长上下文，速度快 |
+| 提供商 | 模型 | 上下文 | 速度 | 成本 | 特色 |
+|-------|------|--------|------|------|------|
+| Anthropic | Claude Opus 4.6 | 200K | 慢 | 高 | 最高质量，支持 prompt caching |
+| Anthropic | Claude Sonnet 4.6 | 200K | 中 | 中 | 性价比最优 |
+| Anthropic | Claude Haiku 4.5 | 200K | 快 | 低 | 快速任务 |
+| DeepSeek | DeepSeek V3 (chat) | 64K | 快 | 极低 | 中文网文优化 |
+| DeepSeek | DeepSeek R1 (reasoner) | 64K | 中 | 低 | 推理能力突出 |
+| 字节豆包 | Doubao Pro 32K | 32K | 快 | 低 | 都市言情优化 |
+| 字节豆包 | Doubao Lite 32K | 32K | 极快 | 极低 | 快速草稿 |
+| 阿里通义千问 | Qwen Max | 32K | 中 | 中 | 东方文化理解 |
+| 阿里通义千问 | Qwen Plus | 131K | 快 | 低 | 均衡之选 |
+| 阿里通义千问 | Qwen Turbo | 1M | 极快 | 极低 | 超长上下文 |
+| Google | Gemini 2.0 Flash | 1M | 快 | 低 | 创意世界观构建 |
+| Google | Gemini 1.5 Pro | 1M | 中 | 中 | 多线叙事 |
 
 ### 推荐配置
 
@@ -221,7 +249,7 @@ streamlit run app.py
 
 ### 风格迁移
 
-上传喜欢的作家作品片段（500-3000 字），AI 自动提取 10 维风格特征，润色时忠实复现该风格。
+上传喜欢的作家作品片段（500-3000 字），AI 自动提取 10 维风格特征，润色时忠实复现该风格。也可从已完成的章节中自动提取写作风格。
 
 #### 10 个风格维度
 
@@ -239,6 +267,21 @@ streamlit run app.py
 | 润色指令 | 直接告诉润色者该做什么（核心字段） |
 
 风格档案可手动微调后保存，清除后恢复默认润色风格。
+
+### 平台风格适配
+
+针对不同网文发布平台的读者口味，内置平台和标签风格描述，写作时自动注入对应的风格规则。
+
+#### 内置平台
+
+| 平台 | 内置标签 |
+|------|---------|
+| 起点中文网 | 系统流、无敌流、种田流、无限流、诸天流 |
+| 晋江文学城 | 甜宠、年代文、宫斗、仙侠 |
+| 番茄小说 | 赘婿逆袭、神医、战神归来 |
+| 掌阅 | 都市异能、末世求生 |
+
+支持自定义平台和标签，每个标签可配置独立的写作风格描述。在设定管理的「平台」tab 中选择目标平台和标签后，对应的风格规则会自动注入写作 prompt。
 
 ### 智能伏笔调度
 
@@ -277,7 +320,7 @@ streamlit run app.py
 
 独立「可视化」页面，三个 tab，纯前端渲染，零 LLM 成本：
 
-- **人物关系网络**：力导向图，节点按角色着色，边从人物关系 JSON 生成
+- **人物关系网络**：力导向图，节点按角色着色，主要人物节点更大，边标签精简显示，hover 查看完整双向关系。支持一键 AI 同步（从已写章节提取人物关系）
 - **伏笔分布甘特图**：横向条形图，颜色编码重要度，截止章节用菱形标记
 - **情感曲线**：多折线图（审核评分 / 读者评分），附字数柱状图
 
@@ -287,21 +330,60 @@ streamlit run app.py
 
 | 操作 | 主笔（owner） | 审阅者（reviewer） |
 |------|:---:|:---:|
-| 查看所有内容 | Y | Y |
-| 编辑世界观/人物/章纲/内容 | Y | - |
-| AI 生成大纲/人物/章节 | Y | - |
-| 伏笔管理（增删改） | Y | - |
-| 模型/风格设置 | Y | - |
-| 运行读者模拟 | Y | Y |
-| 添加章节评论 | Y | Y |
-| 审批章节（通过/需修改/驳回） | Y | Y |
-| 查看可视化 / 导出 | Y | Y |
+| 查看所有内容 | ✓ | ✓ |
+| 编辑世界观/人物/章纲/内容 | ✓ | - |
+| AI 生成大纲/人物/章节 | ✓ | - |
+| 伏笔管理（增删改） | ✓ | - |
+| 模型/风格/质量设置 | ✓ | - |
+| 运行读者模拟 | ✓ | ✓ |
+| 添加章节评论 | ✓ | ✓ |
+| 审批章节（通过/需修改/驳回） | ✓ | ✓ |
+| 查看可视化 / 导出 | ✓ | ✓ |
+
+**在线状态**：侧边栏实时显示在线协作者及其所在页面（10 分钟活动超时）。
 
 工作流：主笔创建项目 → 生成邀请码 → 协作者输入邀请码加入 → 主笔写作，审阅者评论和审批 → 重新生成章节时审批状态自动重置。
+
+### AI 创作助手
+
+每个主要页面都配备 AI 创作助手侧栏（CanvasAgent），支持自然语言对话辅助创作：
+
+| 位置 | 角色 | 功能 |
+|------|------|------|
+| 侧边栏 | 全局助手 | 通用创意对话 |
+| 设定管理页 | 设定顾问 | 世界观/人物讨论，输出结构化建议可一键应用到文档设定 |
+| 大纲管理页 | 大纲助手 | 大纲调整建议，输出结构化大纲代码块可一键应用 |
+| 写作页 | 写作助手 | 内容修改建议，输出章节代码块可一键保存到正文 |
+
+AI 助手感知完整的小说上下文（大纲、设定、当前编辑内容），可生成带类型标记的代码块供一键操作。
+
+### 去 AI 味写作
+
+WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 痕迹：
+
+1. **禁用通感式滥用比喻**：禁止"仿佛"、"如同"开头的段落，禁止连续使用两个以上比喻
+2. **消灭总结式段尾**：禁止段末出现"他知道…"、"这一刻他明白了…"等心理总结句
+3. **打破三段式节奏**：禁止连续出现"描写-动作-感悟"的固定循环
+4. **去除虚假的优美**：禁止空洞的抒情描写，一切描写须服务于叙事推进或人物塑造
+
+---
+
+## 导出格式
+
+| 格式 | 适用场景 | 特色选项 |
+|------|---------|---------|
+| TXT | 任意设备阅读 | 可附大纲摘要，按卷分组 |
+| Markdown | Obsidian / Typora | YAML Front Matter，含目录、人物档案、伏笔追踪表 |
+| Word (.docx) | 出版投稿 | 规范版式（宋体/黑体），自动处理段落缩进和对话格式 |
+| EPUB | Kindle / Apple Books | 电子书元数据（作者/语言），CSS 排版，按卷分组目录，可附人物档案和伏笔追踪 |
+
+导出页面顶部显示可导出章节数、总字数、小说名称和作者信息。已导出的文件列表（最近 10 个）支持直接下载。
 
 ---
 
 ## 配置项说明
+
+### 环境变量
 
 | 变量名 | 默认值 | 说明 |
 |-------|-------|------|
@@ -310,16 +392,34 @@ streamlit run app.py
 | `DOUBAO_API_KEY` | — | 豆包 API 密钥 |
 | `QWEN_API_KEY` | — | 通义千问 API 密钥 |
 | `GOOGLE_API_KEY` | — | Google AI API 密钥 |
-| `DEFAULT_MODEL` | `claude-sonnet-4-6` | 全局默认模型 |
+| `DEFAULT_MODEL` | `claude-opus-4-6` | 全局默认模型 |
 | `DATA_DIR` | `./data` | 数据存储根目录 |
 | `LANCEDB_DIR` | `./data/lancedb` | LanceDB 持久化目录 |
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | 向量化使用的 Embedding 模型 |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+
+### 记忆系统参数
+
+| 变量名 | 默认值 | 说明 |
+|-------|-------|------|
 | `RECENT_CHAPTERS_COUNT` | `5` | Layer 2 记忆注入的近期章节数 |
 | `VECTOR_TOP_K` | `10` | Layer 3 语义检索返回的片段数 |
 | `CHUNK_SIZE` | `500` | 章节向量化分块大小（字符数） |
+
+### 写作质量参数
+
+| 变量名 | 默认值 | 说明 |
+|-------|-------|------|
 | `DEFAULT_CHAPTER_WORDS` | `3000` | 默认目标字数 |
-| `AUTO_APPROVE_THRESHOLD` | `3` | 冲突严重度 < 此值时自动修复 |
+| `WORD_COUNT_TOLERANCE` | `0.30` | 字数容差比例（30%） |
+| `AUTO_APPROVE_THRESHOLD` | `6` | 自动通过的审核评分阈值 |
+| `REVIEW_SCORE_THRESHOLD` | `7.0` | 审核通过的最低评分 |
+| `LOW_SCORE_REWRITE_THRESHOLD` | `7.0` | 触发全文重写的评分阈值 |
+| `MAX_REVIEW_ITERATIONS` | `5` | 单次尝试中的最大修复轮次 |
+| `MAX_TOTAL_ATTEMPTS` | `10` | 最大重写尝试次数 |
 | `MAX_VERSIONS` | `10` | 每章保留的最大历史版本数 |
+
+写作质量参数也支持在设定管理的「写作质量」tab 中按项目单独配置。
 
 ---
 
@@ -327,7 +427,7 @@ streamlit run app.py
 
 **Q: 生成速度很慢？**
 
-写作 + 审核 + 润色三步共需 3 次 API 调用，对 Opus 模型来说每章约 1-3 分钟。可以关闭「自动润色」跳过第三步，或将写手部模型切换为 Sonnet/Haiku 提速。
+写作 + 审核修复循环 + 润色共需多次 API 调用，对 Opus 模型来说每章约 1-3 分钟。可以关闭「自动润色」跳过润色步骤，或将写手部模型切换为 Sonnet/Haiku 提速。
 
 **Q: 提示 "rate limit exceeded"？**
 
@@ -335,21 +435,21 @@ streamlit run app.py
 
 **Q: 审核报告冲突太多？**
 
-审核师采用"零容忍主义"。可以：① 调高 `AUTO_APPROVE_THRESHOLD`（更多问题自动修复）；② 手动编辑修正；③ 直接继续写作。
+审核师采用"零容忍主义"。可以：① 在设定管理「写作质量」tab 调高自动通过阈值；② 手动编辑修正；③ 直接继续写作。
 
 **Q: LanceDB 初始化报错？**
 
 确认 `data/lancedb` 目录有写权限，或指定其他路径：`LANCEDB_DIR=/tmp/lancedb`。首次启动会自动下载 Qwen3-Embedding 模型（约 1.2 GB），请确保网络畅通。
 
-**Q: Word 导出提示缺少模块？**
+**Q: Word / EPUB 导出提示缺少模块？**
 
 ```bash
-pip install python-docx
+pip install python-docx EbookLib
 ```
 
 **Q: 如何完整备份？**
 
-复制 `data/` 目录即可。SQLite 在 `data/novels.db`，向量库在 `data/lancedb/`（Lance 格式，支持版本快照），导出文件在 `data/exports/`。
+复制 `data/` 目录即可。SQLite 在 `data/novels.db`，向量库在 `data/lancedb/`（Lance 格式，支持版本快照），导出文件在 `data/exports/`，API Key 在 `data/api_keys.json`。
 
 **Q: 修改世界观/人物后要全部重写吗？**
 
@@ -371,6 +471,14 @@ pip install python-docx
 
 三种方式均可：① 启动后在页面内配置（推荐，保存在 `data/api_keys.json`）；② 编辑 `.env` 文件；③ Docker 环境变量注入。应用内配置优先级最高。
 
+**Q: 章节写完后发现不满意，如何回退？**
+
+写作页提供章节状态回退功能。已发布的章节可以回退到「待审核」状态重新生成，也支持批量回退多章。
+
+**Q: 人物关系图为空？**
+
+需要先在人物档案的 relationships 字段中添加关系描述（JSON 格式），或在可视化页面点击「AI 同步人物关系」从已写章节中自动提取。
+
 ---
 
 ## 系统架构
@@ -379,8 +487,8 @@ pip install python-docx
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                    表现层  ui/                             │
-│          Streamlit Web UI（6 个功能页面）                    │
+│                    表现层  ui/                              │
+│          Streamlit Web UI（7 个功能页面）                    │
 │  ui/pages/  · ui/components/  · ui/sidebar.py              │
 └────────────────────────┬───────────────────────────────────┘
                          │ 调用
@@ -400,13 +508,15 @@ pip install python-docx
 │ ReviewAgent │  │ OOC 检测      │  │                  │
 │ PolishAgent │  │ 影响范围分析   │  │ MemoryManager    │
 │ ReaderAgent │  │               │  │                  │
+│ IdeaAgent   │  │               │  │                  │
+│ CanvasAgent │  │               │  │                  │
 └──────┬──────┘  └───────┬───────┘  └────────┬─────────┘
        │                 │                    │
 ┌──────▼─────────────────▼────────────────────▼─────────┐
 │                    基础设施层  core/                     │
 │                                                        │
 │   models.py (SQLAlchemy ORM)    config.py              │
-│   llm.py (多提供商 LLM 接口)                            │
+│   llm.py (多提供商 LLM 接口)    platform_styles.py     │
 │   SQLite: novels.db              LanceDB: data/lancedb/ │
 └────────────────────────────────────────────────────────┘
 ```
@@ -415,56 +525,52 @@ pip install python-docx
 
 ```
 neupen/
-├── app.py                    # 入口（~15 行）
-├── core/                     # 后端核心包
+├── app.py                    # 入口
+├── core/                     # 后端核心
 │   ├── config.py             # 环境配置 + API Key 持久化
-│   ├── models.py             # SQLAlchemy ORM
-│   ├── llm.py                # 多提供商 LLM 接口
+│   ├── models.py             # SQLAlchemy ORM + 自动迁移
+│   ├── llm.py                # 多提供商 LLM 接口 + MODEL_REGISTRY
 │   ├── memory.py             # 三层记忆系统
-│   ├── detector.py           # 冲突检测
-│   ├── agents.py             # 六大 Agent
+│   ├── detector.py           # 冲突检测 + 影响分析
+│   ├── agents.py             # 八大 Agent
 │   ├── workflow.py           # 工作流编排
-│   └── permissions.py        # 权限管理
-├── ui/                       # 前端 Streamlit 包
+│   ├── permissions.py        # 权限管理
+│   └── platform_styles.py    # 平台/标签风格系统
+├── ui/                       # 前端 Streamlit
 │   ├── app.py                # 路由 + 会话状态
-│   ├── sidebar.py            # 侧边栏导航
+│   ├── sidebar.py            # 侧边栏导航 + 在线状态 + 全局 AI 助手
 │   ├── helpers.py            # 格式化工具函数
-│   ├── pages/                # 各功能页面
-│   │   ├── project.py        # 项目管理
-│   │   ├── settings.py       # 设定管理（6 个 tab）
-│   │   ├── outline.py        # 大纲管理
-│   │   ├── writing.py        # 写作 + 批量写作
-│   │   ├── visualization.py  # 可视化
-│   │   └── export.py         # 导出
+│   ├── pages/                # 功能页面
+│   │   ├── project.py        # 项目管理 + 灵感对话
+│   │   ├── settings.py       # 设定管理（9 个 tab）
+│   │   ├── outline.py        # 大纲管理 + 文档导入
+│   │   ├── writing.py        # 写作 + 批量写作 + 状态回退
+│   │   ├── visualization.py  # 可视化（关系图/甘特图/曲线）
+│   │   ├── export.py         # 导出（TXT/MD/DOCX/EPUB）
+│   │   └── platform_styles.py # 平台风格管理
 │   └── components/           # 共用 UI 组件
-│       ├── model_selector.py # 模型选择器
-│       ├── api_key.py        # API Key 配置
-│       ├── collaboration.py  # 评论/审批
-│       └── alerts.py         # 影响报告/伏笔警告
+│       ├── model_selector.py # 模型选择器 + 模型卡片
+│       ├── api_key.py        # API Key 配置 + 首次引导
+│       ├── collaboration.py  # 评论/审批/身份对话
+│       ├── alerts.py         # 影响报告/伏笔警告
+│       └── global_chat.py    # AI 创作助手侧栏
 ├── utils/
-│   └── export.py             # 多格式导出
-└── scripts/                  # 构建脚本
+│   └── export.py             # 多格式导出（NovelExporter）
+├── scripts/                  # 构建脚本
+│   ├── build_mac.sh          # PyInstaller 打包 .app
+│   ├── create_dmg.sh         # 封装 .dmg 安装包
+│   └── launcher.py           # macOS 启动器
+├── Dockerfile                # Docker 镜像构建
+├── docker-compose.yml        # Docker Compose 编排
+├── requirements.txt          # Python 依赖
+└── .env.example              # 环境变量模板
 ```
-
-### 模块职责速查
-
-| 模块 | 职责 | 关键类/函数 |
-|------|------|------------|
-| `core/workflow.py` | 创作流程编排，对外统一入口 | `NovelWorkflow` |
-| `core/agents.py` | 六大专职 Agent，封装 LLM 调用 | `*Agent` |
-| `core/llm.py` | 多提供商 LLM 统一接口 | `NovelLLM`, `MODEL_REGISTRY` |
-| `core/detector.py` | 冲突检测与变更影响分析 | `ConflictDetector`, `ReviewReport` |
-| `core/memory.py` | 三层记忆系统，上下文构建 | `MemoryManager`, `GlobalMemory`, `ChapterMemory`, `FragmentMemory` |
-| `core/models.py` | SQLAlchemy 数据模型 | `Novel`, `Chapter`, `Character`, `Collaborator`, `Comment`, ... |
-| `core/permissions.py` | 协同写作权限管理 | `can_edit()`, `can_comment()`, `can_approve()` |
-| `core/config.py` | 环境变量加载、常量定义、API Key 持久化 | `save_api_keys()`, `apply_saved_keys()` |
-| `utils/export.py` | 多格式导出 | `NovelExporter` |
 
 ---
 
 ## 核心模块详解
 
-### 六大 Agent
+### 八大 Agent
 
 每个 Agent 有独立的系统提示词和明确的职责边界，互相之间不直接通信，全部通过 `NovelWorkflow` 编排。底层使用 `NovelLLM` 封装，对超过 1000 字符的系统提示词自动启用 Anthropic 的提示词缓存（`cache_control: ephemeral`），降低重复调用成本。
 
@@ -473,23 +579,27 @@ neupen/
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      NovelLLM                            │
-│  generate(system, user, cache_system=True)               │
-│  generate_stream(system, user)  ← 流式输出              │
+│  generate(system, user)         generate_stream()        │
+│  generate_chat()                                         │
 │                                                          │
 │  provider=="anthropic" → anthropic.Anthropic             │
 │  其他提供商 → openai.OpenAI(base_url=...)                │
-└──────┬──────┬──────┬──────┬──────┬──────┬───────────────┘
-       │      │      │      │      │      │
-   Outline Char  Writer Review Polish Reader
-   Agent   Agent  Agent  Agent  Agent  Agent
+└───┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬────┘
+    │      │      │      │      │      │      │      │
+ Outline Char Writer Review Polish Reader Idea Canvas
+ Agent   Agent Agent  Agent  Agent  Agent Agent Agent
 ```
 
-- **大纲师** `OutlineAgent`：输入一句话灵感，输出结构化大纲 JSON（总纲 + 卷纲 + 章纲）。有活跃伏笔时自动注入调度表。
-- **人设师** `CharacterAgent`：根据大纲生成结构化人物档案，可批量检测人物设定矛盾。
-- **写手部** `WriterAgent`：基于三层记忆整合的上下文 + 章纲生成正文，支持流式输出。
-- **审核师** `ReviewerAgent`：五类冲突检测（设定/OOC/大纲/矛盾/逻辑），严重度 < 3 自动修复。
-- **润色师** `PolisherAgent`：消除 AI 痕迹、增强文学性，支持风格迁移。
-- **读者模拟** `ReaderAgent`：三种读者视角的体验评分，按需调用。
+| Agent | 角色 | 关键方法 |
+|-------|------|---------|
+| 大纲师 `OutlineAgent` | 生成结构化大纲 JSON（总纲 + 卷纲 + 章纲） | `generate_full_outline()`, `generate_chapter_range_outlines()`, `refine_chapter_outline()`, `analyze_chapter_consistency()`, `extract_relationships()`, `parse_document()` |
+| 人设师 `CharacterAgent` | 生成人物档案，检测人物矛盾 | `generate_characters()`, `check_character_consistency()`, `update_character_state()` |
+| 写手部 `WriterAgent` | 基于三层记忆 + 章纲生成正文，支持流式输出 | `write_chapter()`, `summarize_chapter()`, `regenerate_section()` |
+| 审核师 `ReviewerAgent` | 五类冲突检测，自动修复轻微问题 | `review_chapter()`, `auto_fix_minor_issues()`, `fix_all_issues()` |
+| 润色师 `PolisherAgent` | 消除 AI 痕迹、增强文学性，支持风格迁移 | `polish_chapter()`, `apply_style_to_selection()`, `analyze_style()` |
+| 读者模拟 `ReaderAgent` | 三种读者视角的体验评分 | `evaluate_chapter()` |
+| 灵感师 `IdeaAgent` | 多轮创意对话，提取项目配置 | `chat()`, `extract_project_config()` |
+| 画布助手 `CanvasAgent` | 页面内嵌 AI 助手（4 种角色模式） | `chat()` — 感知完整小说上下文，输出可操作的代码块 |
 
 ### 三层记忆系统
 
@@ -501,6 +611,7 @@ neupen/
 │         build_writing_context()  ← 写作前调用            │
 │         build_review_context()   ← 审核前调用            │
 │         save_new_chapter()       ← 写完后同步三层         │
+│         get_status_report()      ← 项目状态报告          │
 └───────────┬───────────────┬─────────────────┬───────────┘
             │               │                 │
    ┌────────▼──────┐ ┌──────▼──────┐ ┌────────▼────────┐
@@ -518,8 +629,8 @@ neupen/
    └───────────────┘ └─────────────┘ └──────────────────┘
 ```
 
-- **Layer 1 — 全局记忆（永久，SQLite）**：世界观、人物档案、大纲、伏笔库、时间线。
-- **Layer 2 — 章节记忆（中期，SQLite）**：最近 5 章的正文和摘要。
+- **Layer 1 — 全局记忆（永久，SQLite）**：世界观、人物档案、大纲、伏笔库、时间线。全量 CRUD 接口，支持伏笔截止管理。
+- **Layer 2 — 章节记忆（中期，SQLite）**：最近 5 章的正文和摘要。版本历史管理（最多 10 个版本）。
 - **Layer 3 — 碎片化记忆（向量，LanceDB + Qwen3-Embedding）**：按 500 字分块向量化，中文语义检索。单表多小说，支持跨小说检索和 Lance 原生版本快照。
 
 **写作上下文构建顺序**：全局设定（L1）+ 近期章节（L2）+ 语义相关片段（L3）+ 当前章纲 → WriterAgent 输入。
@@ -534,7 +645,9 @@ neupen/
 | 前后矛盾 | 角色昨天在A城，今天无理由出现在B城 |
 | 逻辑漏洞 | 锁着的门没人开但角色进去了 |
 
-每个冲突项含：类型、严重度（1-10）、引用原文、修复方案。修改世界观/章纲后自动触发影响分析，返回受影响章节列表。
+每个冲突项含：类型、严重度（1-10）、引用原文、修复方案列表。
+
+**变更同步**：章节写作完成后自动检测新引入的人物、人物状态变化、大纲偏离和世界观新增内容，逐项确认后同步到设定库。修改世界观/章纲后自动触发影响分析，返回受影响章节列表及严重度排序。
 
 ### 工作流编排
 
@@ -542,40 +655,93 @@ neupen/
 write_and_review_chapter(chapter_number, word_target, auto_polish)
 │
 ├── 1. WriterAgent.write_chapter()        → 生成草稿（流式输出）
-├── 2. ReviewerAgent.review_chapter()     → 冲突检测
-├── 3. ReviewerAgent.auto_fix_minor()     → 自动修复轻微问题
+├── 2. 修复-审核循环（最多 MAX_REVIEW_ITERATIONS 轮）
+│      ├── ReviewerAgent.review_chapter() → 冲突检测
+│      └── ReviewerAgent.auto_fix()       → 自动修复
+├── 3. 低分重写循环（最多 MAX_TOTAL_ATTEMPTS 次）
+│      └── 评分 < LOW_SCORE_REWRITE_THRESHOLD → 全文重写
 ├── 4. PolisherAgent.polish_chapter()     → 文笔润色（可选）
 ├── 5. save → SQLite + LanceDB + 版本历史
 ├── 6. summarize_chapter()                → 摘要供后续记忆注入
-└── 7. chapter.approval_status = "pending"
+└── 7. 返回同步检测结果（新人物/人物变化/大纲偏离/世界观变更）
 ```
 
-批量写作：选择章节范围后一键按顺序执行，单章失败不中断后续，完成后汇总报告。
+批量写作：选择章节范围后一键按顺序执行，单章失败不中断后续，完成后汇总报告（成功/失败/用时/字数/评分）。
 
 ---
 
 ## 数据模型
 
-所有数据存储在 `data/novels.db`（SQLite），使用 SQLAlchemy ORM 管理。
+所有数据存储在 `data/novels.db`（SQLite），使用 SQLAlchemy ORM 管理。新增字段通过 `_migrate_add_columns()` 自动迁移，无需手动操作。
 
 ```
 Novel (小说项目)
-│  id, title, logline, genre, world_setting(JSON), writing_style, status
-│  llm_model, model_outline/character/writer/reviewer/polisher/reader
-│  style_profile(JSON), style_reference_text, invite_code
+│  id, title, author, logline, genre, world_setting(JSON), writing_style
+│  status, llm_model, model_outline/.../model_reader
+│  style_profile(JSON), style_reference_text, quality_config(JSON)
+│  target_platform, target_tags(JSON), invite_code
 │
 ├── NovelOutline (总大纲)
+│     premise, theme, main_conflict, story_structure(JSON)
+│     protagonist_arc, ending_summary, total_chapters
+│
+├── NovelDocument (设定文档) [多个]
+│     doc_type(background/system/characters/custom), title, content(MD)
+│
 ├── Volume (卷) [多个]
+│     volume_number, title, summary, main_conflict, arc_goal
+│     start_chapter, end_chapter
+│
 ├── Chapter (章节) [多个]
+│   │  chapter_number, title, status(7种状态), approval_status
+│   │  outline_core_event, outline_conflict, outline_scene, outline_emotion
+│   │  outline_characters(JSON), outline_foreshadowing_set/collect(JSON)
+│   │  content, content_draft, word_count, summary, key_events(JSON)
+│   │  review_report(JSON), review_score, reader_feedback(JSON), reader_score
+│   │
 │   ├── ContentVersion (版本历史) [多个]
+│   │     version_number, content, version_type(draft/reviewed/polished/user_edit)
+│   │
 │   └── Comment (章节评论) [多个]
+│         author_name, content
+│
 ├── Character (人物档案) [多个]
+│     name, aliases(JSON), role, age, gender, appearance
+│     personality, background, abilities(JSON), relationships(JSON)
+│     growth_arc, current_state, motivations, secrets
+│     speech_patterns, behavioral_patterns, is_main
+│
 ├── Foreshadowing (伏笔) [多个]
+│     name, description, set_chapter, set_content
+│     collect_chapter, collect_content, collect_by_chapter(截止)
+│     importance(high/medium/low), status(active/collected/abandoned), notes
+│
 ├── TimelineEvent (时间线) [多个]
+│     chapter_number, in_story_time, event_name, characters_involved(JSON)
+│
 └── Collaborator (协作者) [多个]
+      display_name, role(owner/reviewer), last_seen_at, current_page
 ```
 
 **章节状态流转**：`outline_pending → outlined → writing → review_pending → reviewed → polished → published`
+
+**审批状态**：`pending → approved / needs_revision / rejected`
+
+---
+
+## 技术栈
+
+| 类别 | 技术 |
+|------|------|
+| 前端框架 | Streamlit |
+| 关系型存储 | SQLite + SQLAlchemy ORM |
+| 向量存储 | LanceDB（Lance 格式，支持版本快照） |
+| Embedding 模型 | Qwen3-Embedding-0.6B（sentence-transformers） |
+| LLM SDK | Anthropic SDK（prompt caching）+ OpenAI SDK（兼容接口） |
+| 可视化 | streamlit-agraph（力导向图）、Altair（图表） |
+| 导出 | python-docx（Word）、EbookLib（EPUB） |
+| 部署 | Docker / PyInstaller macOS .app / 源码运行 |
+| JSON 容错 | json-repair（处理 LLM 输出格式瑕疵） |
 
 ---
 
