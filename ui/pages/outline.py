@@ -286,9 +286,26 @@ def page_outline():
                         st.rerun()
 
             # 卷大纲
+            st.divider()
+            vol_hdr1, vol_hdr2 = st.columns([3, 1])
+            with vol_hdr1:
+                st.markdown(f"**卷大纲（共 {len(volumes)} 卷）**")
+            with vol_hdr2:
+                if st.button("➕ 新建卷", use_container_width=True, disabled=not can_edit(novel_id)):
+                    next_num = max((v.volume_number for v in volumes), default=0) + 1
+                    last_end = max((v.end_chapter or 0 for v in volumes), default=0)
+                    workflow = load_novel(novel_id)
+                    workflow.memory.global_mem.save_volume({
+                        "volume_number": next_num,
+                        "title": f"第{next_num}卷",
+                        "start_chapter": last_end + 1,
+                        "end_chapter": last_end + 10,
+                    })
+                    workflow.close()
+                    st.success(f"✅ 已新建第{next_num}卷")
+                    st.rerun()
+
             if volumes:
-                st.divider()
-                st.markdown("**卷大纲**")
                 for vol in volumes:
                     with st.expander(
                         f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
@@ -299,7 +316,19 @@ def page_outline():
                             ve_summary = st.text_area("简介", value=vol.summary or "", height=80)
                             ve_conflict = st.text_area("主要矛盾", value=vol.main_conflict or "", height=60)
                             ve_goal = st.text_area("本卷目标/主题", value=vol.arc_goal or "", height=60)
-                            if st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id)):
+                            ve_c1, ve_c2 = st.columns(2)
+                            with ve_c1:
+                                ve_start = st.number_input("起始章节", min_value=1,
+                                                            value=vol.start_chapter or 1, key=f"ve_start_{vol.id}")
+                            with ve_c2:
+                                ve_end = st.number_input("结束章节", min_value=1,
+                                                          value=vol.end_chapter or 1, key=f"ve_end_{vol.id}")
+                            ve_btn1, ve_btn2 = st.columns([3, 1])
+                            with ve_btn1:
+                                _save_vol = st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id))
+                            with ve_btn2:
+                                _del_vol = st.form_submit_button("🗑️ 删除此卷", disabled=not can_edit(novel_id))
+                            if _save_vol:
                                 workflow = load_novel(novel_id)
                                 workflow.memory.global_mem.save_volume({
                                     "volume_number": vol.volume_number,
@@ -307,12 +336,21 @@ def page_outline():
                                     "summary": ve_summary.strip(),
                                     "main_conflict": ve_conflict.strip(),
                                     "arc_goal": ve_goal.strip(),
-                                    "start_chapter": vol.start_chapter,
-                                    "end_chapter": vol.end_chapter,
+                                    "start_chapter": ve_start,
+                                    "end_chapter": ve_end,
                                 })
                                 workflow.close()
                                 st.success("✅ 卷大纲已保存")
                                 st.rerun()
+                            if _del_vol:
+                                db = get_db()
+                                db.query(Volume).filter_by(id=vol.id).delete()
+                                db.commit()
+                                db.close()
+                                st.success(f"✅ 第{vol.volume_number}卷已删除")
+                                st.rerun()
+            else:
+                st.info("暂无卷大纲，点击「新建卷」手动创建，或通过 AI 生成大纲时自动创建")
 
         # ── Tab2: 章节大纲 ────────────────────────────────
         with tab2:
