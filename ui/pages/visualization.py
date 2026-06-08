@@ -34,33 +34,38 @@ def render_character_network(novel_id: int):
                              help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用")
 
     if sync_btn:
-        with st.spinner("正在分析已完成章节，同步人物设定和关系…"):
-            workflow = load_novel(novel_id)
-            db = get_db()
-            published = db.query(Chapter).filter(
-                Chapter.novel_id == novel_id,
-                Chapter.content.isnot(None),
-                Chapter.content != ""
-            ).order_by(Chapter.chapter_number).all()
-            db.close()
+        workflow = load_novel(novel_id)
+        db = get_db()
+        published = db.query(Chapter).filter(
+            Chapter.novel_id == novel_id,
+            Chapter.content.isnot(None),
+            Chapter.content != ""
+        ).order_by(Chapter.chapter_number).all()
+        db.close()
 
-            if not published:
-                st.warning("暂无已写内容，无法同步")
+        if not published:
+            st.warning("暂无已写内容，无法同步")
+        else:
+            total_synced = 0
+            progress_bar = st.progress(0, text="准备同步…")
+            for idx, ch in enumerate(published):
+                progress_bar.progress(
+                    (idx + 1) / len(published),
+                    text=f"正在分析第 {ch.chapter_number} 章（{idx + 1}/{len(published)}）"
+                )
+                try:
+                    sync_result = workflow.analyze_and_sync_chapter(ch.chapter_number)
+                    if sync_result and sync_result.success:
+                        total_synced += sync_result.data.get("synced_count", 0)
+                except Exception:
+                    pass
+            progress_bar.empty()
+            workflow.close()
+            if total_synced > 0:
+                st.success(f"✅ 同步完成，更新了 {total_synced} 条人物关系")
             else:
-                total_synced = 0
-                for ch in published:
-                    try:
-                        sync_result = workflow.analyze_and_sync_chapter(ch.chapter_number)
-                        if sync_result and sync_result.success:
-                            total_synced += sync_result.data.get("synced_count", 0)
-                    except Exception:
-                        pass
-                workflow.close()
-                if total_synced > 0:
-                    st.success(f"✅ 同步完成，更新了 {total_synced} 条人物设定")
-                else:
-                    st.info("所有人物设定已是最新，无需更新")
-                st.rerun()
+                st.info("所有人物关系已是最新，无需更新")
+            st.rerun()
 
     if only_main:
         chars = [c for c in chars if c.is_main]
