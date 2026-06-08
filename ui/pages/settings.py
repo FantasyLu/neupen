@@ -319,6 +319,7 @@ def page_settings():
             st.markdown("### 小说基本信息")
             with st.form("novel_info_form"):
                 new_title  = st.text_input("标题", value=novel.title)
+                new_author = st.text_input("作者/笔名", value=novel.author or "")
                 new_logline = st.text_area("简介（一句话灵感）", value=novel.logline or "", height=80)
                 new_genre  = st.text_input("题材", value=novel.genre or "")
                 new_style  = st.text_area("写作风格要求", value=novel.writing_style or "", height=80)
@@ -326,6 +327,7 @@ def page_settings():
                     db = get_db()
                     obj = db.query(Novel).filter(Novel.id == novel_id).first()
                     obj.title = new_title.strip()
+                    obj.author = new_author.strip()
                     obj.logline = new_logline.strip()
                     obj.genre = new_genre.strip()
                     obj.writing_style = new_style.strip()
