@@ -306,49 +306,85 @@ def page_outline():
                     st.rerun()
 
             if volumes:
-                for vol in volumes:
-                    with st.expander(
-                        f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
-                        expanded=False
-                    ):
-                        with st.form(f"vol_edit_{vol.id}"):
-                            ve_title = st.text_input("卷标题", value=vol.title or "")
-                            ve_summary = st.text_area("简介", value=vol.summary or "", height=80)
-                            ve_conflict = st.text_area("主要矛盾", value=vol.main_conflict or "", height=60)
-                            ve_goal = st.text_area("本卷目标/主题", value=vol.arc_goal or "", height=60)
-                            ve_c1, ve_c2 = st.columns(2)
-                            with ve_c1:
-                                ve_start = st.number_input("起始章节", min_value=1,
-                                                            value=vol.start_chapter or 1, key=f"ve_start_{vol.id}")
-                            with ve_c2:
-                                ve_end = st.number_input("结束章节", min_value=1,
-                                                          value=vol.end_chapter or 1, key=f"ve_end_{vol.id}")
-                            ve_btn1, ve_btn2 = st.columns([3, 1])
-                            with ve_btn1:
-                                _save_vol = st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id))
-                            with ve_btn2:
-                                _del_vol = st.form_submit_button("🗑️ 删除此卷", disabled=not can_edit(novel_id))
-                            if _save_vol:
-                                workflow = load_novel(novel_id)
-                                workflow.memory.global_mem.save_volume({
-                                    "volume_number": vol.volume_number,
-                                    "title": ve_title.strip() or vol.title,
-                                    "summary": ve_summary.strip(),
-                                    "main_conflict": ve_conflict.strip(),
-                                    "arc_goal": ve_goal.strip(),
-                                    "start_chapter": ve_start,
-                                    "end_chapter": ve_end,
-                                })
-                                workflow.close()
-                                st.success("✅ 卷大纲已保存")
-                                st.rerun()
-                            if _del_vol:
-                                db = get_db()
-                                db.query(Volume).filter_by(id=vol.id).delete()
-                                db.commit()
-                                db.close()
-                                st.success(f"✅ 第{vol.volume_number}卷已删除")
-                                st.rerun()
+                for idx, vol in enumerate(volumes):
+                    vol_col_main, vol_col_up, vol_col_down = st.columns([10, 1, 1])
+                    with vol_col_up:
+                        if st.button("⬆", key=f"vol_up_{vol.id}",
+                                     disabled=(idx == 0 or not can_edit(novel_id)),
+                                     use_container_width=True):
+                            prev_vol = volumes[idx - 1]
+                            db = get_db()
+                            a = db.query(Volume).filter_by(id=vol.id).first()
+                            b = db.query(Volume).filter_by(id=prev_vol.id).first()
+                            num_a, num_b = a.volume_number, b.volume_number
+                            a.volume_number = -99999
+                            db.flush()
+                            b.volume_number = num_a
+                            db.flush()
+                            a.volume_number = num_b
+                            db.commit()
+                            db.close()
+                            st.rerun()
+                    with vol_col_down:
+                        if st.button("⬇", key=f"vol_down_{vol.id}",
+                                     disabled=(idx == len(volumes) - 1 or not can_edit(novel_id)),
+                                     use_container_width=True):
+                            next_vol = volumes[idx + 1]
+                            db = get_db()
+                            a = db.query(Volume).filter_by(id=vol.id).first()
+                            b = db.query(Volume).filter_by(id=next_vol.id).first()
+                            num_a, num_b = a.volume_number, b.volume_number
+                            a.volume_number = -99999
+                            db.flush()
+                            b.volume_number = num_a
+                            db.flush()
+                            a.volume_number = num_b
+                            db.commit()
+                            db.close()
+                            st.rerun()
+                    with vol_col_main:
+                        with st.expander(
+                            f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
+                            expanded=False
+                        ):
+                            with st.form(f"vol_edit_{vol.id}"):
+                                ve_title = st.text_input("卷标题", value=vol.title or "")
+                                ve_summary = st.text_area("简介", value=vol.summary or "", height=80)
+                                ve_conflict = st.text_area("主要矛盾", value=vol.main_conflict or "", height=60)
+                                ve_goal = st.text_area("本卷目标/主题", value=vol.arc_goal or "", height=60)
+                                ve_c1, ve_c2 = st.columns(2)
+                                with ve_c1:
+                                    ve_start = st.number_input("起始章节", min_value=1,
+                                                                value=vol.start_chapter or 1, key=f"ve_start_{vol.id}")
+                                with ve_c2:
+                                    ve_end = st.number_input("结束章节", min_value=1,
+                                                              value=vol.end_chapter or 1, key=f"ve_end_{vol.id}")
+                                ve_btn1, ve_btn2 = st.columns([3, 1])
+                                with ve_btn1:
+                                    _save_vol = st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id))
+                                with ve_btn2:
+                                    _del_vol = st.form_submit_button("🗑️ 删除此卷", disabled=not can_edit(novel_id))
+                                if _save_vol:
+                                    workflow = load_novel(novel_id)
+                                    workflow.memory.global_mem.save_volume({
+                                        "volume_number": vol.volume_number,
+                                        "title": ve_title.strip() or vol.title,
+                                        "summary": ve_summary.strip(),
+                                        "main_conflict": ve_conflict.strip(),
+                                        "arc_goal": ve_goal.strip(),
+                                        "start_chapter": ve_start,
+                                        "end_chapter": ve_end,
+                                    })
+                                    workflow.close()
+                                    st.success("✅ 卷大纲已保存")
+                                    st.rerun()
+                                if _del_vol:
+                                    db = get_db()
+                                    db.query(Volume).filter_by(id=vol.id).delete()
+                                    db.commit()
+                                    db.close()
+                                    st.success(f"✅ 第{vol.volume_number}卷已删除")
+                                    st.rerun()
             else:
                 st.info("暂无卷大纲，点击「新建卷」手动创建，或通过 AI 生成大纲时自动创建")
 
