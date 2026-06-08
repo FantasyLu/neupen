@@ -596,50 +596,33 @@ class NovelWorkflow:
     def analyze_and_sync_chapter(self, chapter_number: int) -> WorkflowResult:
         """
         分析指定章节内容，仅同步人物关系到数据库。
-        用于可视化页面的批量同步。
+        使用专用的 extract_relationships 方法，提取率远高于通用分析。
         """
         try:
             chapter = self.memory.chapter_mem.get_chapter(chapter_number)
             if not chapter or not chapter.content:
                 return WorkflowResult(success=True, message="无内容", data={"synced_count": 0})
 
-            sync_checks = self.outline_agent.analyze_chapter_consistency(
+            rel_list = self.outline_agent.extract_relationships(
                 chapter_number, chapter.content
             )
             count = 0
 
-            # 新增人物：仅提取 relationships 写入已有人物
-            for char in sync_checks.get("new_characters", []):
-                if char.get("relationships"):
-                    rels = char["relationships"]
-                    rels_str = json.dumps(rels, ensure_ascii=False) if not isinstance(rels, str) else rels
-                    # 将新人物与已有人物的关系写入已有人物的 relationships
-                    if isinstance(rels, dict):
-                        for target_name, rel_desc in rels.items():
-                            try:
-                                target = self.memory.global_mem.get_character(target_name)
-                                if target:
-                                    existing_rels = target.get_relationships()
-                                    existing_rels[char.get("name", "")] = rel_desc
-                                    self.memory.global_mem.save_character({
-                                        "name": target_name,
-                                        "relationships": json.dumps(existing_rels, ensure_ascii=False),
-                                    })
-                                    count += 1
-                            except Exception:
-                                pass
-
-            # 人物更新：仅同步 relationships 字段
-            for cu in sync_checks.get("character_updates", []):
-                if cu.get("field") != "relationships":
+            for item in rel_list:
+                char_name = item.get("character", "")
+                new_rels = item.get("relationships", {})
+                if not char_name or not new_rels:
                     continue
                 try:
-                    value = cu.get("new_value", "")
-                    if value and not isinstance(value, str):
-                        value = json.dumps(value, ensure_ascii=False)
+                    char = self.memory.global_mem.get_character(char_name)
+                    if not char:
+                        continue
+                    # 合并到现有关系（新关系覆盖旧描述）
+                    existing_rels = char.get_relationships()
+                    existing_rels.update(new_rels)
                     self.memory.global_mem.save_character({
-                        "name": cu.get("name", ""),
-                        "relationships": value,
+                        "name": char_name,
+                        "relationships": json.dumps(existing_rels, ensure_ascii=False),
                     })
                     count += 1
                 except Exception:

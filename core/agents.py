@@ -462,6 +462,60 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             "outline_updates": [], "world_setting_updates": []
         }
 
+    def extract_relationships(self, chapter_number: int, content: str) -> list[dict]:
+        """
+        从章节内容中专门提取人物关系。
+        比 analyze_chapter_consistency 更聚焦，提取率更高。
+
+        Returns:
+            [{"character": "人物名", "relationships": {"人物B": "关系描述", ...}}]
+        """
+        all_chars = self.memory.global_mem.get_all_characters()
+        existing_names = [c.name for c in all_chars]
+
+        char_rel_lines = []
+        for c in all_chars:
+            rels = c.get_relationships()
+            rel_str = ", ".join(f"{k}: {v}" for k, v in rels.items()) if rels else "（暂无）"
+            char_rel_lines.append(f"【{c.name}】（{c.role or ''}）— 现有关系：{rel_str}")
+        char_rel_summary = "\n".join(char_rel_lines) or "（无人物）"
+
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，提取所有人物之间的关系。
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+【已有人物及现有关系】
+{char_rel_summary}
+
+任务：找出本章中体现的人物关系（包括新出现的关系和已有关系的变化）。
+- 关注对话、互动、称呼、情感、冲突、合作等细节
+- 关系描述要具体（如"师徒"、"青梅竹马"、"宿敌"、"暗恋对象"），不要笼统写"认识"
+- 同时输出双向关系（A对B是师父，B对A是徒弟）
+- 只提取章节中有实际依据的关系，不要虚构
+
+请输出 JSON 数组，每项表示一个人物需要更新的关系：
+[
+  {{
+    "character": "人物姓名",
+    "relationships": {{
+      "人物B": "关系描述",
+      "人物C": "关系描述"
+    }}
+  }}
+]
+
+只返回 JSON 数组，不包含其他文字。如果本章没有体现任何人物关系，返回空数组 []。"""
+
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        arr_start = response.find("[")
+        arr_end = response.rfind("]") + 1
+        if arr_start >= 0 and arr_end > arr_start:
+            result = _safe_json_loads(response[arr_start:arr_end])
+            if isinstance(result, list):
+                return [r for r in result if r.get("character") in existing_names]
+        return []
+
     def close(self):
         self.memory.close()
 
