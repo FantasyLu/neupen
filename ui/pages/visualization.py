@@ -98,26 +98,33 @@ def render_character_network(novel_id: int):
             title=f"{c.name}（{c.role or '未设定'}）\n{c.personality or ''}"[:100],
         ))
 
-    # 构建边（去重：A→B 和 B→A 只保留一条）
+    # 构建边（去重：A→B 和 B→A 合并为一条，hover 显示完整双向关系）
     edges = []
-    seen_edges = set()
+    edge_data = {}  # {(A,B): {"a_to_b": desc, "b_to_a": desc}}
     for c in chars:
         rels = c.get_relationships()
         for target_name, desc in rels.items():
             if target_name not in char_names:
                 continue
             edge_key = tuple(sorted([c.name, target_name]))
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            # 截断过长的关系描述
-            short_desc = desc[:12] + "..." if len(desc) > 12 else desc
-            edges.append(Edge(
-                source=c.name,
-                target=target_name,
-                label=short_desc,
-                color="#888888",
-            ))
+            if edge_key not in edge_data:
+                edge_data[edge_key] = {}
+            edge_data[edge_key][f"{c.name}→{target_name}"] = desc
+
+    for edge_key, rel_map in edge_data.items():
+        # hover 显示完整双向关系
+        hover_lines = [f"{k}：{v}" for k, v in rel_map.items()]
+        hover_text = "\n".join(hover_lines)
+        # 线上只显示最短的关系描述（取最短的一条，截取前4字）
+        shortest = min(rel_map.values(), key=len)
+        label = shortest[:4] if len(shortest) > 4 else shortest
+        edges.append(Edge(
+            source=edge_key[0],
+            target=edge_key[1],
+            title=hover_text,
+            label=label,
+            color="#888888",
+        ))
 
     if not edges:
         st.warning("人物档案中尚未设置关系数据，请在人物的 relationships 字段中添加关系描述")

@@ -126,7 +126,8 @@ class NovelWorkflow:
     @staticmethod
     def create_novel(title: str, logline: str, genre: str = "",
                       writing_style: str = "",
-                      llm_model: str = None) -> int:
+                      llm_model: str = None,
+                      author: str = "") -> int:
         """
         创建新小说项目
         返回新建项目的 ID
@@ -134,6 +135,7 @@ class NovelWorkflow:
         db = get_db()
         novel = Novel(
             title=title,
+            author=author or "",
             logline=logline,
             genre=genre,
             writing_style=writing_style,
@@ -1272,11 +1274,12 @@ class NovelWorkflow:
 
 def create_new_novel(title: str, logline: str, genre: str = "",
                       writing_style: str = "",
-                      llm_model: str = None) -> "NovelWorkflow":
+                      llm_model: str = None,
+                      author: str = "") -> "NovelWorkflow":
     """
     创建新小说项目并返回工作流对象
     """
-    novel_id = NovelWorkflow.create_novel(title, logline, genre, writing_style, llm_model)
+    novel_id = NovelWorkflow.create_novel(title, logline, genre, writing_style, llm_model, author=author)
     return NovelWorkflow(novel_id)
 
 
