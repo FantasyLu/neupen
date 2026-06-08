@@ -502,7 +502,7 @@ class NovelExporter:
         book.set_identifier(f"neupen-novel-{self.novel_id}")
         book.set_title(novel.title)
         book.set_language("zh-CN")
-        book.add_author(novel.author or "佚名")
+        book.add_author("佚名")
 
         # ---- 全局 CSS ----
         css_content = """
