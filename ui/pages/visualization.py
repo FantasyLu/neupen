@@ -38,8 +38,7 @@ def render_character_network(novel_id: int):
         db = get_db()
         published = db.query(Chapter).filter(
             Chapter.novel_id == novel_id,
-            Chapter.content.isnot(None),
-            Chapter.content != ""
+            Chapter.status.in_(["review_pending", "reviewed", "polished", "published"]),
         ).order_by(Chapter.chapter_number).all()
         db.close()
 
