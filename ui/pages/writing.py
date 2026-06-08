@@ -307,6 +307,44 @@ def page_writing():
                         st.session_state.batch_writing = False
                         st.rerun()
 
+        with st.expander("🔙 批量回退状态", expanded=False):
+            published_chs = [c for c in chapters if c.status == "published"]
+            if not published_chs:
+                st.info("没有已完成的章节")
+            else:
+                st.caption(f"共 {len(published_chs)} 个已完成章节")
+                rv1, rv2 = st.columns(2)
+                with rv1:
+                    rv_start = st.selectbox("起始章节", [c.chapter_number for c in published_chs],
+                                            format_func=lambda n: f"第{n}章", key="revert_start")
+                with rv2:
+                    rv_end_opts = [c.chapter_number for c in published_chs if c.chapter_number >= rv_start]
+                    rv_end = st.selectbox("结束章节", rv_end_opts,
+                                          index=len(rv_end_opts) - 1,
+                                          format_func=lambda n: f"第{n}章", key="revert_end")
+                rv_status_options = {
+                    "outlined": "已有章纲（可重新生成）",
+                    "writing": "写作中",
+                    "review_pending": "待审核",
+                    "reviewed": "已审核（可重新润色）",
+                }
+                rv_target = st.selectbox("回退到", list(rv_status_options.keys()),
+                                          format_func=lambda x: rv_status_options[x],
+                                          key="batch_revert_target")
+                rv_range = [c for c in published_chs if rv_start <= c.chapter_number <= rv_end]
+                st.caption(f"将回退 **{len(rv_range)}** 章（第{rv_start}~{rv_end}章）→ {rv_status_options[rv_target]}")
+                if st.button(f"确认批量回退（{len(rv_range)}章）", use_container_width=True,
+                             disabled=not can_edit(novel_id)):
+                    db = get_db()
+                    for c in rv_range:
+                        ch_obj = db.query(Chapter).filter_by(id=c.id).first()
+                        if ch_obj:
+                            ch_obj.status = rv_target
+                    db.commit()
+                    db.close()
+                    st.success(f"✅ 已回退 {len(rv_range)} 章")
+                    st.rerun()
+
     # ─── 右栏：章节内容 ──────────────────────────────────
     with col_content:
         # 执行写作
