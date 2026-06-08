@@ -466,6 +466,223 @@ class NovelExporter:
         return str(filepath)
 
     # ======================================
+    # EPUB 导出
+    # ======================================
+
+    def export_epub(self, include_characters: bool = True,
+                    include_foreshadowings: bool = False) -> str:
+        """
+        导出为 EPUB 电子书格式
+
+        Args:
+            include_characters: 是否附上人物档案
+            include_foreshadowings: 是否附上伏笔追踪
+
+        Returns:
+            导出文件的绝对路径
+        """
+        try:
+            from ebooklib import epub
+        except ImportError:
+            raise RuntimeError("请先安装 EbookLib：pip install EbookLib")
+
+        novel = self._get_novel()
+        if not novel:
+            raise ValueError(f"小说项目 {self.novel_id} 不存在")
+
+        chapters = self._get_published_chapters()
+        if not chapters:
+            raise ValueError("没有已完成的章节可供导出")
+
+        volumes = self._get_volumes()
+
+        book = epub.EpubBook()
+
+        # ---- 元数据 ----
+        book.set_identifier(f"neupen-novel-{self.novel_id}")
+        book.set_title(novel.title)
+        book.set_language("zh-CN")
+        book.add_author(novel.author or "佚名")
+
+        # ---- 全局 CSS ----
+        css_content = """
+body { font-family: "Noto Serif SC", "Source Han Serif CN", "宋体", serif;
+       line-height: 1.8; }
+h1 { text-align: center; margin: 2em 0 1em; }
+h2 { margin: 1.5em 0 0.8em; }
+h3 { margin: 1em 0 0.5em; }
+p  { text-indent: 2em; margin: 0.4em 0; }
+p.dialogue { text-indent: 0; padding-left: 2em; }
+.meta { color: #999; font-size: 0.9em; text-align: center; }
+.cover-title { font-size: 2em; font-weight: bold; text-align: center;
+               margin-top: 30%; }
+.cover-logline { text-align: center; color: #666; margin-top: 1em; }
+.cover-stats { text-align: center; color: #999; margin-top: 2em; font-size: 0.9em; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+th { background: #f5f5f5; }
+"""
+        css = epub.EpubItem(uid="style", file_name="style/default.css",
+                            media_type="text/css", content=css_content.encode("utf-8"))
+        book.add_item(css)
+
+        spine = ["nav"]
+        toc = []
+        epub_chapters = []
+
+        # ---- 封面页 ----
+        total_words = sum(ch.word_count or 0 for ch in chapters)
+        cover_html = f"""<html><body>
+<p class="cover-title">{novel.title}</p>
+{'<p class="cover-logline">' + novel.logline + '</p>' if novel.logline else ''}
+<p class="cover-stats">共 {len(chapters)} 章 · {total_words:,} 字<br/>
+导出于 {datetime.now().strftime('%Y年%m月%d日')}</p>
+</body></html>"""
+        cover_ch = epub.EpubHtml(title="封面", file_name="cover.xhtml", lang="zh-CN")
+        cover_ch.content = cover_html.encode("utf-8")
+        cover_ch.add_item(css)
+        book.add_item(cover_ch)
+        spine.append(cover_ch)
+
+        # ---- 人物档案（可选） ----
+        if include_characters:
+            from core.models import Character
+            chars = (
+                self.db.query(Character)
+                .filter(Character.novel_id == self.novel_id)
+                .order_by(Character.is_main.desc())
+                .all()
+            )
+            if chars:
+                char_parts = ["<h1>人物档案</h1>"]
+                for char in chars:
+                    role_tag = "⭐ 主要人物" if char.is_main else "配角"
+                    char_parts.append(
+                        f"<h2>{'★ ' if char.is_main else ''}{char.name}"
+                        f"（{char.role or role_tag}）</h2>"
+                    )
+                    info = []
+                    if char.gender: info.append(f"性别：{char.gender}")
+                    if char.age: info.append(f"年龄：{char.age}")
+                    if info:
+                        char_parts.append(f"<p style='text-indent:0'>{' | '.join(info)}</p>")
+                    if char.personality:
+                        char_parts.append(f"<p><b>性格特征：</b>{char.personality}</p>")
+                    if char.background:
+                        char_parts.append(f"<p><b>背景故事：</b>{char.background}</p>")
+                    if char.motivations:
+                        char_parts.append(f"<p><b>核心动机：</b>{char.motivations}</p>")
+                    if char.growth_arc:
+                        char_parts.append(f"<p><b>成长弧光：</b>{char.growth_arc}</p>")
+
+                char_ch = epub.EpubHtml(title="人物档案", file_name="characters.xhtml", lang="zh-CN")
+                char_ch.content = ("<html><body>" + "\n".join(char_parts) + "</body></html>").encode("utf-8")
+                char_ch.add_item(css)
+                book.add_item(char_ch)
+                spine.append(char_ch)
+                toc.append(epub.Link("characters.xhtml", "人物档案", "characters"))
+
+        # ---- 正文章节 ----
+        current_volume = None
+        vol_toc_children = []  # 当前卷下的章节列表
+        vol_section = None
+
+        def _flush_volume():
+            """将上一个卷的 toc section 写入 toc"""
+            nonlocal vol_section, vol_toc_children
+            if vol_section and vol_toc_children:
+                toc.append((vol_section, vol_toc_children))
+            elif vol_toc_children:
+                toc.extend(vol_toc_children)
+            vol_toc_children = []
+            vol_section = None
+
+        for chapter in chapters:
+            vol = self._get_volume_for_chapter(chapter.chapter_number, volumes)
+
+            # 卷切换
+            if vol and (current_volume is None or vol.id != current_volume.id):
+                _flush_volume()
+                current_volume = vol
+                vol_section = epub.Section(f"第{vol.volume_number}卷 · {vol.title}")
+
+            chapter_title = chapter.title or f"第{chapter.chapter_number}章"
+            full_title = f"第{chapter.chapter_number}章  {chapter_title}"
+
+            # 构建 HTML
+            html_parts = [f"<h2>{full_title}</h2>"]
+            if chapter.word_count:
+                html_parts.append(f'<p class="meta">{chapter.word_count:,} 字</p>')
+
+            content = chapter.content or ""
+            for para in content.split("\n"):
+                para = para.strip()
+                if not para:
+                    continue
+                if para.startswith(("「", "『", "\u201c", '"', "【")):
+                    html_parts.append(f'<p class="dialogue">{para}</p>')
+                else:
+                    html_parts.append(f"<p>{para}</p>")
+
+            file_name = f"chapter_{chapter.chapter_number:04d}.xhtml"
+            epub_ch = epub.EpubHtml(title=full_title, file_name=file_name, lang="zh-CN")
+            epub_ch.content = ("<html><body>" + "\n".join(html_parts) + "</body></html>").encode("utf-8")
+            epub_ch.add_item(css)
+            book.add_item(epub_ch)
+            epub_chapters.append(epub_ch)
+            spine.append(epub_ch)
+            vol_toc_children.append(epub.Link(file_name, full_title, f"ch{chapter.chapter_number}"))
+
+        _flush_volume()
+
+        # ---- 伏笔追踪（可选） ----
+        if include_foreshadowings:
+            from core.models import Foreshadowing
+            fs_list = (
+                self.db.query(Foreshadowing)
+                .filter(Foreshadowing.novel_id == self.novel_id)
+                .order_by(Foreshadowing.set_chapter)
+                .all()
+            )
+            if fs_list:
+                status_map = {"active": "未回收", "collected": "已回收", "abandoned": "放弃"}
+                imp_map = {"high": "高", "medium": "中", "low": "低"}
+                rows = []
+                for fs in fs_list:
+                    collect = f"第{fs.collect_chapter}章" if fs.collect_chapter else "-"
+                    rows.append(
+                        f"<tr><td>{fs.name}</td><td>第{fs.set_chapter}章</td>"
+                        f"<td>{collect}</td>"
+                        f"<td>{status_map.get(fs.status, fs.status)}</td>"
+                        f"<td>{imp_map.get(fs.importance, fs.importance)}</td></tr>"
+                    )
+                fs_html = (
+                    "<html><body><h1>伏笔追踪</h1>"
+                    "<table><tr><th>伏笔名称</th><th>埋下章节</th><th>回收章节</th>"
+                    "<th>状态</th><th>重要程度</th></tr>"
+                    + "\n".join(rows) + "</table></body></html>"
+                )
+                fs_ch = epub.EpubHtml(title="伏笔追踪", file_name="foreshadowings.xhtml", lang="zh-CN")
+                fs_ch.content = fs_html.encode("utf-8")
+                fs_ch.add_item(css)
+                book.add_item(fs_ch)
+                spine.append(fs_ch)
+                toc.append(epub.Link("foreshadowings.xhtml", "伏笔追踪", "foreshadowings"))
+
+        # ---- 组装 ----
+        book.toc = toc
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = spine
+
+        # ---- 保存 ----
+        filename = self._build_filename(novel, "epub")
+        filepath = self.export_dir / filename
+        epub.write_epub(str(filepath), book, {})
+
+        return str(filepath)
+
+    # ======================================
     # 便捷导出接口
     # ======================================
 
@@ -487,8 +704,10 @@ class NovelExporter:
             return self.export_markdown(**kwargs)
         elif format in ("word", "docx"):
             return self.export_word(**kwargs)
+        elif format == "epub":
+            return self.export_epub(**kwargs)
         else:
-            raise ValueError(f"不支持的导出格式：{format}，请选择 txt/markdown/word")
+            raise ValueError(f"不支持的导出格式：{format}，请选择 txt/markdown/word/epub")
 
     def get_export_stats(self) -> dict:
         """

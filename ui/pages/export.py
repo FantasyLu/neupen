@@ -32,7 +32,7 @@ def page_export():
 
     # 导出选项
     st.markdown("### 选择导出格式")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         with st.container(border=True):
@@ -109,6 +109,36 @@ def page_export():
                         )
                     except ImportError:
                         st.error("请先安装 python-docx：`pip install python-docx`")
+                    except Exception as e:
+                        st.error(f"导出失败：{e}")
+
+    with col4:
+        with st.container(border=True):
+            st.markdown("### 📱 EPUB 电子书")
+            st.caption("适合 Kindle、Apple Books 等阅读器")
+            include_chars_epub = st.checkbox("包含人物档案", value=True, key="epub_chars")
+            include_fs_epub = st.checkbox("包含伏笔追踪", key="epub_fs")
+            if st.button("导出 EPUB", use_container_width=True, type="primary", key="btn_epub"):
+                with st.spinner("正在生成EPUB文件..."):
+                    try:
+                        exporter = NovelExporter(novel_id)
+                        filepath = exporter.export_epub(
+                            include_characters=include_chars_epub,
+                            include_foreshadowings=include_fs_epub
+                        )
+                        exporter.close()
+                        st.success("✅ 导出成功！")
+                        with open(filepath, "rb") as f:
+                            content = f.read()
+                        st.download_button(
+                            "⬇️ 下载 EPUB 文件",
+                            data=content,
+                            file_name=Path(filepath).name,
+                            mime="application/epub+zip",
+                            use_container_width=True
+                        )
+                    except ImportError:
+                        st.error("请先安装 EbookLib：`pip install EbookLib`")
                     except Exception as e:
                         st.error(f"导出失败：{e}")
 
