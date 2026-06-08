@@ -45,6 +45,7 @@ class Novel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(200), nullable=False, comment="小说标题")
+    author = Column(String(100), nullable=True, default="", comment="作者/笔名")
     logline = Column(Text, comment="一句话灵感/简介")
     genre = Column(String(50), comment="题材类型（玄幻/都市/言情等）")
     world_setting = Column(Text, comment="世界观设定（JSON格式）")
@@ -499,6 +500,7 @@ def _migrate_add_columns():
         ("novels",         "quality_config",       "TEXT"),
         ("novels",         "target_platform",      "VARCHAR(100)"),
         ("novels",         "target_tags",          "TEXT"),
+        ("novels",         "author",               "VARCHAR(100) DEFAULT ''"),
     ]
 
     with engine.connect() as conn:

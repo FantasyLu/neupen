@@ -502,7 +502,7 @@ class NovelExporter:
         book.set_identifier(f"neupen-novel-{self.novel_id}")
         book.set_title(novel.title)
         book.set_language("zh-CN")
-        book.add_author("佚名")
+        book.add_author(novel.author or "佚名")
 
         # ---- 全局 CSS ----
         css_content = """
@@ -717,6 +717,7 @@ th { background: #f5f5f5; }
         novel = self._get_novel()
         return {
             "novel_title": novel.title if novel else "未知",
+            "author": novel.author if novel else "",
             "published_chapters": len(chapters),
             "total_words": sum(ch.word_count or 0 for ch in chapters),
             "can_export": len(chapters) > 0

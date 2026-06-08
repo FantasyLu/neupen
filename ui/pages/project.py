@@ -157,6 +157,7 @@ def page_project_management():
         st.markdown("### 创建新小说项目")
         with st.form("new_novel_form"):
             title = st.text_input("📝 小说标题 *", placeholder="例如：斗破苍穹")
+            author = st.text_input("✍️ 作者/笔名", placeholder="例如：天蚕土豆")
             logline = st.text_area(
                 "💡 核心灵感（一句话简介）*",
                 placeholder="例如：一个被废除魔法天赋的少年，凭借一本无名古籍，一步步登顶斗气大陆之巅。",
@@ -208,7 +209,8 @@ def page_project_management():
                         try:
                             workflow = create_new_novel(
                                 title.strip(), logline.strip(), genre, writing_style,
-                                llm_model=chosen_model_id
+                                llm_model=chosen_model_id,
+                                author=author.strip()
                             )
                             st.session_state.novel_id = workflow.novel_id
 

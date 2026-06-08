@@ -19,10 +19,11 @@ def page_export():
     exporter.close()
 
     # 导出统计
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col_author = st.columns(4)
     col1.metric("可导出章节", stats["published_chapters"])
     col2.metric("总字数", f"{stats['total_words']:,}")
     col3.metric("小说名称", stats["novel_title"])
+    col_author.metric("作者", stats.get("author") or "未设置")
 
     if not stats["can_export"]:
         st.warning("暂无已完成的章节，请先在「写作」页面生成章节内容")
