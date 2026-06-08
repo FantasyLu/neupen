@@ -371,8 +371,8 @@ def page_writing():
         pending = st.session_state.get(pending_key)
         if selected_ch:
 
-            tab_text, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
-                "📝 正文", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
+            tab_text, tab_summary, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
+                "📝 正文", "📄 摘要", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
             ])
 
             with tab_text:
@@ -865,6 +865,29 @@ def page_writing():
                 st.divider()
                 render_approval_status(novel_id, selected_ch)
 
+            with tab_summary:
+                st.markdown("### 📄 章节摘要")
+                st.caption("摘要和关键事件会作为后续章节的上下文，影响 AI 续写的连贯性")
+                _sum_key = f"ch_summary_{novel_id}_{selected_ch_num}"
+                _evt_key = f"ch_events_{novel_id}_{selected_ch_num}"
+                try:
+                    _existing_events = json.loads(selected_ch.key_events) if selected_ch.key_events else []
+                except (json.JSONDecodeError, TypeError):
+                    _existing_events = []
+                with st.form(f"edit_summary_{selected_ch.id}"):
+                    sum_text = st.text_area("章节摘要", value=selected_ch.summary or "",
+                                            height=150, placeholder="概括本章主要内容…")
+                    events_text = st.text_area("关键事件（每行一个）",
+                                               value="\n".join(_existing_events),
+                                               height=100, placeholder="事件1\n事件2\n…")
+                    if st.form_submit_button("💾 保存摘要", disabled=not can_edit(novel_id)):
+                        new_events = [e.strip() for e in events_text.strip().split("\n") if e.strip()]
+                        workflow = load_novel(novel_id)
+                        workflow.memory.chapter_mem.save_chapter_summary(selected_ch_num, sum_text.strip(), new_events)
+                        workflow.close()
+                        st.success("✅ 章节摘要已保存")
+                        st.rerun()
+
             with tab_review:
                 report = selected_ch.get_review_report() if selected_ch.review_report else {}
                 score  = selected_ch.review_score or 0
@@ -888,6 +911,27 @@ def page_writing():
                         st.success("没有发现明显冲突")
                 else:
                     st.info("暂无审核报告，生成章节后自动审核")
+
+                st.divider()
+                with st.expander("✏️ 手动编辑审核评分", expanded=False):
+                    with st.form(f"edit_review_{selected_ch.id}"):
+                        _rv_summary = report.get("summary", "") if report else ""
+                        rv_score_edit = st.number_input("审核评分", min_value=0.0, max_value=10.0,
+                                                         value=float(score), step=0.5)
+                        rv_summary_edit = st.text_area("审核摘要", value=_rv_summary, height=80)
+                        if st.form_submit_button("💾 保存评分", disabled=not can_edit(novel_id)):
+                            db = get_db()
+                            ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                            ch_obj.review_score = rv_score_edit
+                            if report:
+                                report["summary"] = rv_summary_edit.strip()
+                                ch_obj.review_report = json.dumps(report, ensure_ascii=False)
+                            elif rv_summary_edit.strip():
+                                ch_obj.review_report = json.dumps({"summary": rv_summary_edit.strip(), "conflicts": []}, ensure_ascii=False)
+                            db.commit()
+                            db.close()
+                            st.success("✅ 审核评分已更新")
+                            st.rerun()
 
             with tab_reader:
                 st.markdown("### 📖 读者模拟测试")
@@ -943,6 +987,20 @@ def page_writing():
                                 if suggestions:
                                     st.markdown("**改进建议：**")
                                     for s in suggestions: st.markdown(f"- {s}")
+
+                st.divider()
+                with st.expander("✏️ 手动编辑读者评分", expanded=False):
+                    with st.form(f"edit_reader_{selected_ch.id}"):
+                        rd_score_edit = st.number_input("综合评分", min_value=0.0, max_value=10.0,
+                                                         value=float(selected_ch.reader_score or 0), step=0.5)
+                        if st.form_submit_button("💾 保存评分", disabled=not can_edit(novel_id)):
+                            db = get_db()
+                            ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                            ch_obj.reader_score = rd_score_edit
+                            db.commit()
+                            db.close()
+                            st.success("✅ 读者评分已更新")
+                            st.rerun()
 
             with tab_history:
                 db = get_db()

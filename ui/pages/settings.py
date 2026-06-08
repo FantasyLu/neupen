@@ -361,8 +361,42 @@ def page_settings():
                         else:
                             st.error(result.message)
 
+            # ── 手动新建人物 ──
+            with st.expander("➕ 手动新建人物", expanded=False):
+                with st.form("create_character_form"):
+                    nc_c1, nc_c2 = st.columns(2)
+                    with nc_c1:
+                        nc_name = st.text_input("姓名 *")
+                        nc_role = st.selectbox("角色定位", ["主角", "配角", "反派", "导师", "其他"], index=1)
+                        nc_age = st.text_input("年龄", placeholder="如：18岁、20-30岁")
+                        nc_gender = st.text_input("性别", placeholder="如：男、女")
+                    with nc_c2:
+                        nc_personality = st.text_area("性格特征", height=68)
+                        nc_motivations = st.text_input("动机/目标")
+                        nc_is_main = st.checkbox("主要人物")
+                    nc_appearance = st.text_area("外貌描述", height=60)
+                    nc_background = st.text_area("背景故事", height=60)
+                    nc_growth = st.text_area("成长弧光", height=60)
+                    if st.form_submit_button("✅ 创建人物", disabled=not can_edit(novel_id)):
+                        if not nc_name.strip():
+                            st.error("姓名为必填项")
+                        else:
+                            char_data = {"name": nc_name.strip(), "role": nc_role, "is_main": nc_is_main}
+                            if nc_age.strip(): char_data["age"] = nc_age.strip()
+                            if nc_gender.strip(): char_data["gender"] = nc_gender.strip()
+                            if nc_personality.strip(): char_data["personality"] = nc_personality.strip()
+                            if nc_motivations.strip(): char_data["motivations"] = nc_motivations.strip()
+                            if nc_appearance.strip(): char_data["appearance"] = nc_appearance.strip()
+                            if nc_background.strip(): char_data["background"] = nc_background.strip()
+                            if nc_growth.strip(): char_data["growth_arc"] = nc_growth.strip()
+                            workflow = load_novel(novel_id)
+                            workflow.memory.global_mem.save_character(char_data)
+                            workflow.close()
+                            st.success(f"✅ 人物「{nc_name.strip()}」已创建")
+                            st.rerun()
+
             if not chars:
-                st.info("暂无人物档案，点击「AI生成人物」根据大纲自动生成")
+                st.info("暂无人物档案，点击「AI生成人物」根据大纲自动生成，或手动新建")
             else:
                 search = st.text_input("🔍 搜索人物", placeholder="姓名或角色")
                 filtered = [c for c in chars if not search or search in c.name or search in (c.role or "")]
@@ -386,17 +420,53 @@ def page_settings():
                             st.markdown(f"**成长弧光：** {char.growth_arc}")
 
                         with st.form(f"char_edit_{char.id}"):
-                            st.markdown("**快速编辑**")
-                            new_state       = st.text_input("当前状态", value=char.current_state or "")
-                            new_secrets     = st.text_area("隐藏秘密", value=char.secrets or "", height=60)
-                            new_personality = st.text_area("性格", value=char.personality or "", height=60)
-                            new_motivations = st.text_input("动机", value=char.motivations or "")
+                            st.markdown("**编辑人物档案**")
+                            ec1, ec2 = st.columns(2)
+                            with ec1:
+                                e_name       = st.text_input("姓名", value=char.name or "")
+                                e_role       = st.text_input("角色定位", value=char.role or "")
+                                e_age        = st.text_input("年龄", value=char.age or "")
+                                e_gender     = st.text_input("性别", value=char.gender or "")
+                                e_is_main    = st.checkbox("主要人物", value=bool(char.is_main))
+                            with ec2:
+                                e_personality  = st.text_area("性格", value=char.personality or "", height=60)
+                                e_motivations  = st.text_input("动机/目标", value=char.motivations or "")
+                                e_state        = st.text_input("当前状态", value=char.current_state or "")
+                                e_secrets      = st.text_area("隐藏秘密", value=char.secrets or "", height=60)
+                            e_appearance   = st.text_area("外貌描述", value=char.appearance or "", height=60)
+                            e_background   = st.text_area("背景故事", value=char.background or "", height=60)
+                            e_growth       = st.text_area("成长弧光", value=char.growth_arc or "", height=60)
+                            e_speech       = st.text_area("说话风格/口头禅", value=char.speech_patterns or "", height=60)
+                            e_behavior     = st.text_area("行为习惯", value=char.behavioral_patterns or "", height=60)
+                            try:
+                                _aliases_list = json.loads(char.aliases) if char.aliases else []
+                            except (json.JSONDecodeError, TypeError):
+                                _aliases_list = []
+                            e_aliases      = st.text_input("别名/绰号（逗号分隔）", value=", ".join(_aliases_list) if _aliases_list else "")
+                            e_abilities    = st.text_area("能力/技能（每行一个）", value="\n".join(char.get_abilities()) if char.get_abilities() else "", height=60)
+                            e_relations    = st.text_area("人际关系（JSON 或自由文本）", value=char.relationships or "", height=60)
                             if st.form_submit_button("💾 保存并检测影响", disabled=not can_edit(novel_id)):
+                                # 构建字段映射
+                                field_map = {
+                                    "name": e_name.strip(), "role": e_role.strip(),
+                                    "age": e_age.strip(), "gender": e_gender.strip(),
+                                    "is_main": e_is_main,
+                                    "personality": e_personality.strip(), "motivations": e_motivations.strip(),
+                                    "current_state": e_state.strip(), "secrets": e_secrets.strip(),
+                                    "appearance": e_appearance.strip(), "background": e_background.strip(),
+                                    "growth_arc": e_growth.strip(),
+                                    "speech_patterns": e_speech.strip(), "behavioral_patterns": e_behavior.strip(),
+                                    "aliases": json.dumps([a.strip() for a in e_aliases.split(",") if a.strip()], ensure_ascii=False) if e_aliases.strip() else "",
+                                    "abilities": json.dumps([a.strip() for a in e_abilities.strip().split("\n") if a.strip()], ensure_ascii=False) if e_abilities.strip() else "",
+                                    "relationships": e_relations.strip(),
+                                }
                                 updates = {}
-                                if new_state       != (char.current_state or ""): updates["current_state"]  = new_state
-                                if new_secrets     != (char.secrets or ""):       updates["secrets"]         = new_secrets
-                                if new_personality != (char.personality or ""):   updates["personality"]     = new_personality
-                                if new_motivations != (char.motivations or ""):   updates["motivations"]     = new_motivations
+                                for k, v in field_map.items():
+                                    old_val = getattr(char, k, None)
+                                    if k == "is_main":
+                                        if v != bool(old_val): updates[k] = v
+                                    else:
+                                        if v != (old_val or ""): updates[k] = v
                                 if not updates:
                                     st.info("没有检测到修改")
                                 else:
@@ -487,7 +557,7 @@ def page_settings():
                             deadline_badge = f"  📅 第{fs.collect_by_chapter}章前"
 
                     with st.container(border=True):
-                        fc1, fc2, fc3 = st.columns([3, 1, 1])
+                        fc1, fc2, fc3, fc4 = st.columns([3, 1, 1, 1])
                         with fc1:
                             st.markdown(f"{imp_color} **{fs.name}**（第{fs.set_chapter}章）{deadline_badge}")
                             if fs.description: st.caption(fs.description)
@@ -504,6 +574,44 @@ def page_settings():
                                 db.commit()
                                 db.close()
                                 st.rerun()
+                        with fc4:
+                            _edit_key = f"fs_editing_{fs.id}"
+                            if st.button("✏️ 编辑", key=f"btn_edit_fs_{fs.id}", disabled=not can_edit(novel_id)):
+                                st.session_state[_edit_key] = not st.session_state.get(_edit_key, False)
+                                st.rerun()
+                        if st.session_state.get(f"fs_editing_{fs.id}", False):
+                            with st.form(f"fs_edit_form_{fs.id}"):
+                                fe_name = st.text_input("伏笔名称", value=fs.name or "")
+                                fe_desc = st.text_area("详细描述", value=fs.description or "", height=60)
+                                fe_c1, fe_c2 = st.columns(2)
+                                with fe_c1:
+                                    fe_set_ch = st.number_input("埋下章节", min_value=1, value=fs.set_chapter or 1, key=f"fe_set_{fs.id}")
+                                    fe_imp = st.selectbox("重要程度", ["high", "medium", "low"],
+                                                          index=["high", "medium", "low"].index(fs.importance or "medium"),
+                                                          format_func=lambda x: {"high": "高", "medium": "中", "low": "低"}[x],
+                                                          key=f"fe_imp_{fs.id}")
+                                with fe_c2:
+                                    fe_deadline = st.number_input("最晚回收章节（0=不限）", min_value=0,
+                                                                   value=fs.collect_by_chapter or 0, key=f"fe_dl_{fs.id}")
+                                    fe_notes = st.text_input("备注", value=fs.notes or "", key=f"fe_notes_{fs.id}")
+                                fe_set_content = st.text_area("埋下时的内容", value=fs.set_content or "", height=60, key=f"fe_sc_{fs.id}")
+                                fe_collect_content = st.text_area("回收时的内容", value=fs.collect_content or "", height=60, key=f"fe_cc_{fs.id}")
+                                if st.form_submit_button("💾 保存修改"):
+                                    db = get_db()
+                                    obj = db.query(Foreshadowing).filter_by(id=fs.id).first()
+                                    obj.name = fe_name.strip() or obj.name
+                                    obj.description = fe_desc.strip()
+                                    obj.set_chapter = fe_set_ch
+                                    obj.importance = fe_imp
+                                    obj.collect_by_chapter = fe_deadline if fe_deadline > 0 else None
+                                    obj.notes = fe_notes.strip() or None
+                                    obj.set_content = fe_set_content.strip() or None
+                                    obj.collect_content = fe_collect_content.strip() or None
+                                    db.commit()
+                                    db.close()
+                                    st.session_state[f"fs_editing_{fs.id}"] = False
+                                    st.success("✅ 伏笔已更新")
+                                    st.rerun()
 
             if collected:
                 with st.expander(f"✅ 已回收（{len(collected)}条）", expanded=False):

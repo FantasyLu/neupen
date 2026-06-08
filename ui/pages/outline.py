@@ -294,10 +294,25 @@ def page_outline():
                         f"第{vol.volume_number}卷《{vol.title}》  第{vol.start_chapter}~{vol.end_chapter}章",
                         expanded=False
                     ):
-                        if vol.summary:
-                            st.markdown(f"**简介：** {vol.summary}")
-                        if vol.main_conflict:
-                            st.markdown(f"**主要矛盾：** {vol.main_conflict}")
+                        with st.form(f"vol_edit_{vol.id}"):
+                            ve_title = st.text_input("卷标题", value=vol.title or "")
+                            ve_summary = st.text_area("简介", value=vol.summary or "", height=80)
+                            ve_conflict = st.text_area("主要矛盾", value=vol.main_conflict or "", height=60)
+                            ve_goal = st.text_area("本卷目标/主题", value=vol.arc_goal or "", height=60)
+                            if st.form_submit_button("💾 保存卷大纲", disabled=not can_edit(novel_id)):
+                                workflow = load_novel(novel_id)
+                                workflow.memory.global_mem.save_volume({
+                                    "volume_number": vol.volume_number,
+                                    "title": ve_title.strip() or vol.title,
+                                    "summary": ve_summary.strip(),
+                                    "main_conflict": ve_conflict.strip(),
+                                    "arc_goal": ve_goal.strip(),
+                                    "start_chapter": vol.start_chapter,
+                                    "end_chapter": vol.end_chapter,
+                                })
+                                workflow.close()
+                                st.success("✅ 卷大纲已保存")
+                                st.rerun()
 
         # ── Tab2: 章节大纲 ────────────────────────────────
         with tab2:
