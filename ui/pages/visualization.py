@@ -30,7 +30,8 @@ def render_character_network(novel_id: int):
         only_main = st.checkbox("只显示主要人物", value=False)
     with ctrl2:
         sync_btn = st.button("🔄 AI 同步人物关系", use_container_width=True,
-                             disabled=not can_edit(novel_id))
+                             disabled=not can_edit(novel_id),
+                             help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用")
 
     if sync_btn:
         with st.spinner("正在分析已完成章节，同步人物设定和关系…"):
