@@ -423,6 +423,29 @@ def page_writing():
                         suggest_clicked = st.button("✨ AI 建议", use_container_width=True,
                                                     help="让 AI 提出改进建议，结果将显示在左侧聊天中")
 
+                    # 章节状态回退
+                    if selected_ch.status == "published":
+                        with st.expander("🔙 回退章节状态", expanded=False):
+                            _status_options = {
+                                "outlined": "已有章纲（可重新生成）",
+                                "writing": "写作中",
+                                "review_pending": "待审核",
+                                "reviewed": "已审核（可重新润色）",
+                            }
+                            _target_status = st.selectbox(
+                                "回退到", list(_status_options.keys()),
+                                format_func=lambda x: _status_options[x],
+                                key=f"revert_status_{selected_ch.id}"
+                            )
+                            if st.button("确认回退", key=f"revert_btn_{selected_ch.id}"):
+                                db = get_db()
+                                ch_obj = db.query(Chapter).filter_by(id=selected_ch.id).first()
+                                ch_obj.status = _target_status
+                                db.commit()
+                                db.close()
+                                st.success(f"✅ 章节状态已回退为「{_status_options[_target_status]}」")
+                                st.rerun()
+
                     if save_clicked:
                         with st.spinner("保存中…"):
                             try:
