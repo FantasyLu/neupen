@@ -365,40 +365,43 @@ def page_outline():
                     total_ch = novel_outline.total_chapters if novel_outline and novel_outline.total_chapters else 0
 
                     # ── 从卷纲填充 ──
-                    _vol_prefill_start = None
-                    _vol_prefill_end = None
-                    _vol_prefill_desc = ""
                     if volumes:
                         vol_labels = ["不选择（手动填写）"] + [
                             f"第{v.volume_number}卷《{v.title}》  第{v.start_chapter}~{v.end_chapter}章"
                             for v in volumes
                         ]
                         vol_sel = st.selectbox("📖 从卷纲填充", vol_labels, key="batch_vol_sel")
-                        if vol_sel != "不选择（手动填写）":
-                            sel_vol = volumes[vol_labels.index(vol_sel) - 1]
-                            _vol_prefill_start = sel_vol.start_chapter or ch_min
-                            _vol_prefill_end = sel_vol.end_chapter or (_vol_prefill_start + 9)
-                            _desc_parts = []
-                            if sel_vol.summary:
-                                _desc_parts.append(sel_vol.summary)
-                            if sel_vol.main_conflict:
-                                _desc_parts.append(f"核心矛盾：{sel_vol.main_conflict}")
-                            if sel_vol.arc_goal:
-                                _desc_parts.append(f"本卷目标：{sel_vol.arc_goal}")
-                            _vol_prefill_desc = "\n".join(_desc_parts)
+
+                        # 检测选择变化，主动写入 session_state
+                        _prev_vol_key = f"_batch_prev_vol_sel_{novel_id}"
+                        if vol_sel != st.session_state.get(_prev_vol_key):
+                            st.session_state[_prev_vol_key] = vol_sel
+                            if vol_sel != "不选择（手动填写）":
+                                sel_vol = volumes[vol_labels.index(vol_sel) - 1]
+                                st.session_state["batch_range_start"] = sel_vol.start_chapter or ch_min
+                                st.session_state["batch_range_end"] = sel_vol.end_chapter or (st.session_state["batch_range_start"] + 9)
+                                _desc_parts = []
+                                if sel_vol.summary:
+                                    _desc_parts.append(sel_vol.summary)
+                                if sel_vol.main_conflict:
+                                    _desc_parts.append(f"核心矛盾：{sel_vol.main_conflict}")
+                                if sel_vol.arc_goal:
+                                    _desc_parts.append(f"本卷目标：{sel_vol.arc_goal}")
+                                st.session_state["batch_range_desc"] = "\n".join(_desc_parts)
+                                st.rerun()
 
                     rc1, rc2 = st.columns(2)
                     with rc1:
                         range_start = st.number_input(
                             "起始章节", min_value=1,
-                            value=_vol_prefill_start or ch_min,
+                            value=ch_min,
                             step=1, key="batch_range_start"
                         )
                     with rc2:
-                        _default_end = _vol_prefill_end or (min(ch_min + 9, total_ch) if total_ch else ch_min + 9)
+                        _default_end = min(ch_min + 9, total_ch) if total_ch else ch_min + 9
                         range_end = st.number_input(
-                            "结束章节", min_value=range_start,
-                            value=max(range_start, _default_end), step=1, key="batch_range_end"
+                            "结束章节", min_value=1,
+                            value=max(1, _default_end), step=1, key="batch_range_end"
                         )
 
                     ch_count_label = range_end - range_start + 1
@@ -406,7 +409,6 @@ def page_outline():
 
                     range_desc = st.text_area(
                         "描述这段剧情的内容和进展",
-                        value=_vol_prefill_desc,
                         height=100,
                         placeholder="例如：这10章完成主角进入魔法学院后的适应期，经历入学考核、结交同伴、遭遇第一个强敌，最终在一次危机中展现出潜力，引起教授关注。",
                         key="batch_range_desc"
