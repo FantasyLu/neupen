@@ -44,20 +44,28 @@ def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
         wf = load_novel(novel_id)
         for char in sync_checks.get("new_characters", []):
             try:
-                wf.memory.global_mem.save_character({
+                char_data = {
                     "name":        char.get("name", ""),
                     "role":        char.get("role", ""),
                     "personality": char.get("personality", ""),
                     "background":  char.get("background", ""),
-                })
+                }
+                if char.get("relationships"):
+                    rels = char["relationships"]
+                    char_data["relationships"] = json.dumps(rels, ensure_ascii=False) if not isinstance(rels, str) else rels
+                wf.memory.global_mem.save_character(char_data)
                 count += 1
             except Exception:
                 pass
         for cu in sync_checks.get("character_updates", []):
             try:
+                field = cu.get("field", "current_state")
+                value = cu.get("new_value", "")
+                if field in ("relationships", "abilities") and value and not isinstance(value, str):
+                    value = json.dumps(value, ensure_ascii=False)
                 wf.memory.global_mem.save_character({
                     "name": cu.get("name", ""),
-                    cu.get("field", "current_state"): cu.get("new_value", ""),
+                    field: value,
                 })
                 count += 1
             except Exception:
@@ -717,12 +725,16 @@ def page_writing():
                                                  use_container_width=True, type="primary"):
                                         try:
                                             wf = load_novel(novel_id)
-                                            wf.memory.global_mem.save_character({
+                                            _nc_data = {
                                                 "name": char.get("name", ""),
                                                 "role": char.get("role", ""),
                                                 "personality": char.get("personality", ""),
                                                 "background": char.get("background", ""),
-                                            })
+                                            }
+                                            if char.get("relationships"):
+                                                _nc_rels = char["relationships"]
+                                                _nc_data["relationships"] = json.dumps(_nc_rels, ensure_ascii=False) if not isinstance(_nc_rels, str) else _nc_rels
+                                            wf.memory.global_mem.save_character(_nc_data)
                                             wf.close()
                                             new_chars.pop(i)
                                             sync_result["new_characters"] = new_chars
@@ -760,9 +772,13 @@ def page_writing():
                                                  use_container_width=True, type="primary"):
                                         try:
                                             wf = load_novel(novel_id)
+                                            _sync_field = cu.get("field", "current_state")
+                                            _sync_value = cu.get("new_value", "")
+                                            if _sync_field in ("relationships", "abilities") and _sync_value and not isinstance(_sync_value, str):
+                                                _sync_value = json.dumps(_sync_value, ensure_ascii=False)
                                             wf.memory.global_mem.save_character({
                                                 "name":       cu.get("name", ""),
-                                                cu.get("field", "current_state"): cu.get("new_value", ""),
+                                                _sync_field: _sync_value,
                                             })
                                             wf.close()
                                             char_upds.pop(i)

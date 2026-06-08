@@ -593,6 +593,55 @@ class NovelWorkflow:
         except Exception as e:
             return WorkflowResult(success=False, message=f"保存失败：{e}")
 
+    def analyze_and_sync_chapter(self, chapter_number: int) -> WorkflowResult:
+        """
+        分析指定章节内容，自动同步人物设定（含关系）到数据库。
+        用于可视化页面的批量同步。
+        """
+        try:
+            chapter = self.memory.chapter_mem.get_chapter(chapter_number)
+            if not chapter or not chapter.content:
+                return WorkflowResult(success=True, message="无内容", data={"synced_count": 0})
+
+            sync_checks = self.outline_agent.analyze_chapter_consistency(
+                chapter_number, chapter.content
+            )
+            count = 0
+
+            for char in sync_checks.get("new_characters", []):
+                try:
+                    char_data = {
+                        "name": char.get("name", ""),
+                        "role": char.get("role", ""),
+                        "personality": char.get("personality", ""),
+                        "background": char.get("background", ""),
+                    }
+                    if char.get("relationships"):
+                        rels = char["relationships"]
+                        char_data["relationships"] = json.dumps(rels, ensure_ascii=False) if not isinstance(rels, str) else rels
+                    self.memory.global_mem.save_character(char_data)
+                    count += 1
+                except Exception:
+                    pass
+
+            for cu in sync_checks.get("character_updates", []):
+                try:
+                    field = cu.get("field", "current_state")
+                    value = cu.get("new_value", "")
+                    if field in ("relationships", "abilities") and value and not isinstance(value, str):
+                        value = json.dumps(value, ensure_ascii=False)
+                    self.memory.global_mem.save_character({
+                        "name": cu.get("name", ""),
+                        field: value,
+                    })
+                    count += 1
+                except Exception:
+                    pass
+
+            return WorkflowResult(success=True, message=f"同步{count}条", data={"synced_count": count})
+        except Exception as e:
+            return WorkflowResult(success=False, message=f"同步失败：{e}", data={"synced_count": 0})
+
     def update_character(self, character_name: str,
                            updates: dict) -> WorkflowResult:
         """

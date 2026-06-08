@@ -387,6 +387,10 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                 parts.append(f"成长弧光：{c.growth_arc[:80]}")
             if c.abilities:
                 parts.append(f"能力：{c.abilities[:80]}")
+            rels = c.get_relationships()
+            if rels:
+                rel_strs = [f"{k}:{v}" for k, v in rels.items()]
+                parts.append(f"人际关系：{', '.join(rel_strs)[:120]}")
             char_state_lines.append("  ".join(parts))
         char_state_summary = "\n".join(char_state_lines) or "（无）"
 
@@ -410,6 +414,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
       "role": "主角/配角/反派等",
       "personality": "性格特点",
       "background": "背景信息（从章节推断）",
+      "relationships": {{"已有人物A": "关系描述", "已有人物B": "关系描述"}},
       "reason": "为什么需要新增"
     }}
   ],
