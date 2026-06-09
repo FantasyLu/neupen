@@ -61,6 +61,8 @@ class OutlineAgent:
    - 回收的伏笔（收束之前布局的线索）
    - 情感基调（读者应有的情绪体验）
 
+如果用户提供的信息中包含完整规范的大纲内容，你应该尽量整体保留这些部分，不要做过多删减
+
 输出格式：必须是合法的JSON格式。"""
 
     def __init__(self, novel_id: int, model_id: str = None):
