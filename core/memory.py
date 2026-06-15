@@ -141,6 +141,15 @@ class GlobalMemory:
             self.db.refresh(char)
             return char
 
+    def delete_character(self, name: str) -> bool:
+        """按名称删除人物档案。返回是否成功删除。"""
+        existing = self.get_character(name)
+        if existing:
+            self.db.delete(existing)
+            self.db.commit()
+            return True
+        return False
+
     def get_outline(self) -> Optional[NovelOutline]:
         """获取总大纲"""
         return self.db.query(NovelOutline).filter(

@@ -73,10 +73,19 @@ def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
         for upd in sync_checks.get("outline_updates", []):
             try:
                 field = upd.get("field", "")
-                if field:
-                    outline = wf.memory.global_mem.get_outline()
-                    current = (getattr(outline, field, "") or "") if outline else ""
-                    new_val = (current + "\n\n" + upd.get("suggestion", "")).strip()
+                merged = upd.get("merged_content", "")
+                suggestion = upd.get("suggestion", "")
+                if not field:
+                    continue
+                outline = wf.memory.global_mem.get_outline()
+                current = (getattr(outline, field, "") or "") if outline else ""
+                if merged:
+                    # LLM 已产出合并后的完整文本，直接替换
+                    wf.memory.global_mem.save_outline({field: merged.strip()})
+                    count += 1
+                elif suggestion and suggestion.strip() not in (current or ""):
+                    # 回退：去重追加（仅当 suggestion 不在当前内容中）
+                    new_val = (current + "\n\n" + suggestion).strip()
                     wf.memory.global_mem.save_outline({field: new_val})
                     count += 1
             except Exception:
@@ -139,6 +148,10 @@ def page_writing():
         ).first()
         db.close()
 
+        # 全局助手使用的 session 键
+        pending_key = f"writing_pending_{novel_id}_{selected_ch_num}"
+        text_key    = f"edit_content_{novel_id}_{selected_ch_num}"
+
         # 章节信息
         if selected_ch:
             with st.container(border=True):
@@ -172,66 +185,6 @@ def page_writing():
         )
 
         st.divider()
-
-        # AI 写作助手聊天
-        st.markdown("#### 🤖 AI 写作助手")
-        chat_key    = f"writing_chat_{novel_id}_{selected_ch_num}"
-        pending_key = f"writing_pending_{novel_id}_{selected_ch_num}"
-        text_key    = f"edit_content_{novel_id}_{selected_ch_num}"
-        if chat_key not in st.session_state:
-            st.session_state[chat_key] = []
-        if pending_key not in st.session_state:
-            st.session_state[pending_key] = None
-
-        with st.container(height=340, border=True):
-            history = st.session_state[chat_key]
-            if not history:
-                st.caption("💡 可以讨论章节思路，或让 AI 建议修改。AI 提供新版文本时会自动写入编辑器。")
-            for idx, msg in enumerate(history):
-                with st.chat_message(msg["role"]):
-                    text = msg["content"]
-                    suggestion = _extract_suggestion(text) if msg["role"] == "assistant" else None
-                    if suggestion:
-                        display = re.sub(r'```(?:markdown|text)?\n.*?```', '', text, flags=re.DOTALL).strip()
-                        if display:
-                            st.markdown(display)
-                        with st.container(border=True):
-                            st.markdown(suggestion[:200] + ("…" if len(suggestion) > 200 else ""))
-                            st.caption("✅ 已自动写入编辑器")
-                            if st.button("↩️ 重新写入", key=f"reapply_writing_{novel_id}_{selected_ch_num}_{idx}",
-                                         use_container_width=True):
-                                st.session_state[pending_key] = suggestion
-                                st.rerun()
-                    else:
-                        st.markdown(text)
-
-        if user_input := st.chat_input("和 AI 讨论本章…", key=f"writing_chat_input_{selected_ch_num}"):
-            history = st.session_state[chat_key]
-            history.append({"role": "user", "content": user_input})
-            # 当前章节内容作上下文
-            ch_ctx = selected_ch.content or selected_ch.outline_core_event or ""
-            with st.spinner("AI 思考中…"):
-                try:
-                    agent = CanvasAgent(novel_id=novel_id, role="writer")
-                    reply = agent.chat(history, document_content=ch_ctx)
-                    agent.close()
-                except Exception as e:
-                    history.pop()
-                    st.error(f"AI 出错：{e}")
-                    st.stop()
-            history.append({"role": "assistant", "content": reply})
-            st.session_state[chat_key] = history
-            # 自动写入编辑器并保存（无需点击应用按钮）
-            auto_sug = _extract_suggestion(reply)
-            if auto_sug:
-                _auto_save(novel_id, selected_ch_num, auto_sug, pending_key, text_key, "AI 写作助手自动保存")
-                st.toast("✅ 已自动保存")
-            st.rerun()
-
-        if st.session_state[chat_key]:
-            if st.button("🗑️ 清空对话", use_container_width=True, key=f"clear_writing_chat_{selected_ch_num}"):
-                st.session_state[chat_key] = []
-                st.rerun()
 
         # 批量写作（折叠）
         st.divider()

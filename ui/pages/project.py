@@ -5,6 +5,7 @@ from core.workflow import create_new_novel, delete_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key
 from core.agents import IdeaAgent
 from core.permissions import generate_invite_code
+from core.platform_styles import load_platform_styles
 from ui.helpers import get_all_novels, format_status, format_approval_badge
 from ui.components.model_selector import build_model_options
 
@@ -171,6 +172,26 @@ def page_project_management():
                 )
             with col2:
                 total_chapters = st.number_input("📊 预计总章节数", min_value=10, max_value=500, value=100, step=10)
+
+            # 平台与标签
+            all_styles = load_platform_styles()
+            platform_names = [""] + list(all_styles.keys())
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                target_platform = st.selectbox(
+                    "📺 目标发布平台（可选）",
+                    platform_names,
+                    format_func=lambda x: x or "暂不选择"
+                )
+            with col_p2:
+                available_tags = list(all_styles.get(target_platform, {}).keys()) if target_platform else []
+                target_tags = st.multiselect(
+                    "🏷️ 创作标签（可选，可多选）",
+                    options=available_tags,
+                    disabled=not target_platform,
+                    placeholder="先选择平台" if not target_platform else "选择标签"
+                )
+
             writing_style = st.text_area(
                 "🖊️ 写作风格要求（可选）",
                 placeholder="例如：文笔细腻，注重人物心理描写，对话自然流畅，适当幽默...",
@@ -219,6 +240,11 @@ def page_project_management():
                             novel_obj = db.query(Novel).filter(Novel.id == workflow.novel_id).first()
                             invite_code = generate_invite_code()
                             novel_obj.invite_code = invite_code
+                            # 保存平台与标签配置
+                            if target_platform:
+                                novel_obj.target_platform = target_platform
+                            if target_tags:
+                                novel_obj.set_target_tags(target_tags)
                             owner = Collaborator(
                                 novel_id=workflow.novel_id,
                                 display_name=st.session_state["collab_display_name"],

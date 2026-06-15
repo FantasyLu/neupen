@@ -28,3 +28,6 @@ build/
 # macOS
 .DS_Store
 docs/
+**/.codewhale/*
+!**/.codewhale/constitution.json
+.deepseek/

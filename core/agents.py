@@ -371,7 +371,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             {
               "new_characters": [{"name", "role", "personality", "background", "reason"}],
               "character_updates": [{"name", "field", "new_value", "reason"}],
-              "outline_updates": [{"field", "current_value", "suggestion", "reason"}],
+              "outline_updates": [{"field", "merged_content", "added_info", "reason"}],
               "world_setting_updates": [{"key", "value", "reason"}]
             }
         """
@@ -431,8 +431,8 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
   "outline_updates": [
     {{
       "field": "main_conflict 或 protagonist_arc 或 ending_summary 等字段名",
-      "current_value": "当前字段值简述",
-      "suggestion": "建议添加或修改的内容",
+      "merged_content": "将本章新信息有机融入原有内容后的完整文本（不要把新旧内容拆成两段，必须融合成一段连贯文字）",
+      "added_info": "本章新增的关键信息（一句话概括）",
       "reason": "为什么需要更新"
     }}
   ],
@@ -445,7 +445,9 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
   ]
 }}
 
-只返回 JSON，不包含其他文字。某类没有需要更新时对应数组留空 []。"""
+只返回 JSON，不包含其他文字。某类没有需要更新时对应数组留空 []。
+
+重要约束：outline_updates 的 merged_content 必须是一段完整的、连贯的文本，将大纲中原有的内容与本章新增的信息有机融合。禁止只写"新增：xxx"这样拆成两段的格式。"""
 
         response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
         json_start = response.find("{")
@@ -1411,13 +1413,13 @@ class CanvasAgent:
     """
 
     _ROLE_PROMPTS = {
-        "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观设定、章节写作的一切问题。
+        "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。
 
 【输出规范】
 普通讨论、分析和建议直接用正常文字，不加代码块。
-当你要给出可直接写入文档的内容时，使用以下专属代码块格式（不要用普通 markdown 代码块代替）：
+当你需要提供可直接写入系统的结构化内容时，使用以下专属代码块格式（每种代码块对应一个明确的写入目标）：
 
-若要更新整体大纲（包含 ## 前提设定 / 核心主题 / 主要矛盾等节）：
+若要更新整体大纲（包含前提设定、核心主题、主要矛盾等）：
 ```outline
 （完整大纲 Markdown，保留现有内容并补充修改）
 ```
@@ -1427,54 +1429,62 @@ class CanvasAgent:
 （完整设定 Markdown 文档）
 ```
 
+若要对世界观做结构化键值更新（如"世界规则"、"力量体系"、"社会结构"等键）：
+```world
+{"键名": "完整的设定内容", "另一个键": "完整内容"}
+```
+
+若要创建或更新人物档案（必须包含 name 字段，其余字段可选填）：
+```characters
+[
+  {
+    "name": "人物姓名",
+    "role": "主角/配角/反派",
+    "age": "年龄",
+    "gender": "性别",
+    "personality": "性格特征",
+    "background": "背景故事",
+    "abilities": ["能力1", "能力2"],
+    "appearance": "外貌描述",
+    "growth_arc": "成长弧光",
+    "current_state": "当前状态",
+    "motivations": "动机",
+    "speech_patterns": "说话风格",
+    "secrets": "隐藏信息",
+    "is_main": true
+  }
+]
+```
+
+若要删除人物档案，在 characters 块中传入 action 字段：
+```characters
+[
+  {"name": "要删除的人物姓名", "action": "delete"}
+]
+```
+增删可混在同一数组中。
+
 若要给出当前章节的正文或修改版本：
 ```chapter
 （完整章节正文）
 ```
 
-用户可以一键将代码块内容应用到对应位置。""",
-
-        "outline": """你是一位专业的小说大纲编辑助手。
-
-职责：
-- 帮助用户理清故事方向，完善前提设定、核心主题、主要矛盾、人物弧光、三幕结构
-- 发现大纲中的逻辑漏洞和节奏问题
-- 建议章节安排和情节调整
-
-**当你需要提供修改后的大纲文档时，请用如下格式输出完整新版本：**
-```markdown
-（完整的整体大纲 Markdown 文档，使用 ## 分节）
+若要创建或更新卷大纲：
+```volume
+{"volume_number": 1, "title": "卷名", "summary": "卷简介", "main_conflict": "核心矛盾", "arc_goal": "目标主题", "start_chapter": 1, "end_chapter": 30}
 ```
-用户可一键应用你的建议。普通讨论时无需代码块格式。""",
 
-        "settings": """你是一位专业的小说世界观设定顾问。
-
-职责：
-- 帮助完善背景设定、科技/魔法体系、人物设定
-- 保证内部逻辑自洽，避免设定矛盾
-- 根据故事类型提供专业的世界观建议
-
-**当你需要提供修改后的设定文档时，请用如下格式输出完整新版本：**
-```markdown
-（完整的设定 Markdown 文档）
+若要创建新的伏笔条目：
+```foreshadowing
+[
+  {"name": "伏笔名", "description": "伏笔内容描述", "importance": "high/medium/low", "set_chapter": 1, "collect_by_chapter": 10}
+]
 ```
-用户可一键应用你的建议。""",
 
-        "writer": """你是一位专业的小说创作助手，正在协助用户打磨章节内容。
-
-职责：
-- 讨论章节的情节安排、节奏把控、人物刻画
-- 针对用户的描述给出具体修改意见
-- 在用户要求时生成修改后的段落或章节
-
-**当你需要提供修改后的章节文本时，请严格使用如下格式输出（不要用其他代码块格式代替）：**
-```chapter
-（修改后的完整章节正文）
-```
-用户可一键将内容直接写入编辑器。普通讨论时无需代码块。""",
+用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
     }
 
-    def __init__(self, novel_id: int, model_id: str = None, role: str = "outline"):
+    def __init__(self, novel_id: int, model_id: str = None, role: str = "global"):
         from core.memory import MemoryManager
         from core.llm import DEFAULT_MODEL_ID
         self.novel_id = novel_id
@@ -1489,7 +1499,7 @@ class CanvasAgent:
         document_content: 当前文档内容（注入 system prompt）
         messages: [{"role": "user"/"assistant", "content": "..."}]
         """
-        role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["outline"])
+        role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
         global_ctx = self.memory.global_mem.build_global_context()
 
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
