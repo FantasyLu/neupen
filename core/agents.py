@@ -696,8 +696,8 @@ class WriterAgent:
         self.llm = NovelLLM(model_id)
 
     def write_chapter(self, chapter_number: int,
-                       word_target: int = 3000,
-                       word_count_tolerance: float = 0.30,
+                       word_target: int = 2500,
+                       word_count_tolerance: float = 0.20,
                        stream_callback=None,
                        review_feedback: str = "") -> str:
         """

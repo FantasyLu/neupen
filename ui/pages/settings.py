@@ -859,6 +859,7 @@ def page_settings():
                 LOW_SCORE_REWRITE_THRESHOLD as _DEF_REWRITE,
                 MAX_REVIEW_ITERATIONS as _DEF_ITER,
                 MAX_TOTAL_ATTEMPTS as _DEF_TOTAL,
+                WORD_COUNT_TOLERANCE as _DEF_TOLERANCE,
             )
 
             db = get_db()
@@ -893,6 +894,15 @@ def page_settings():
                     help="修改循环结束后若评分仍低于此值或含严重冲突，触发整章重写。设为 0 禁用重写。"
                 )
 
+                st.markdown("#### 字数控制")
+                word_tol = st.number_input(
+                    f"字数容差（默认 {int(_DEF_TOLERANCE * 100)}%）",
+                    min_value=10, max_value=50,
+                    value=int(float(q_cfg.get("word_count_tolerance", _DEF_TOLERANCE)) * 100),
+                    step=5, format="%d%%",
+                    help="允许实际字数偏离目标字数的比例。30% 时，目标 3000 字允许 2100~3900 字。"
+                )
+
                 st.markdown("#### 迭代次数")
                 max_iter = st.number_input(
                     f"最大修改轮次（默认 {_DEF_ITER}）",
@@ -919,6 +929,7 @@ def page_settings():
                     "low_score_rewrite_threshold": rewrite_score,
                     "max_review_iterations":     max_iter,
                     "max_total_attempts":        max_total,
+                    "word_count_tolerance":      word_tol / 100,
                 }
                 db = get_db()
                 obj = db.query(Novel).filter(Novel.id == novel_id).first()
@@ -939,6 +950,7 @@ def page_settings():
                 st.metric("严重冲突阈值", int(q2.get("auto_approve_threshold", _DEF_APPROVE)))
                 st.metric("审核通过评分", f"{float(q2.get('review_score_threshold', _DEF_REVIEW)):.1f}")
                 st.metric("触发重写评分", f"{float(q2.get('low_score_rewrite_threshold', _DEF_REWRITE)):.1f}")
+                st.metric("字数容差", f"{int(float(q2.get('word_count_tolerance', _DEF_TOLERANCE)) * 100)}%")
             with col_b:
                 st.metric("最大修改轮次", int(q2.get("max_review_iterations", _DEF_ITER)))
                 st.metric("全局审核次数上限", int(q2.get("max_total_attempts", _DEF_TOTAL)))

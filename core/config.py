@@ -57,10 +57,10 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 # 写作配置
 # ======================================
 # 每章目标字数（仅供参考，实际字数由大纲决定）
-DEFAULT_CHAPTER_WORDS = 3000
+DEFAULT_CHAPTER_WORDS = 2500
 
-# 字数容差（允许实际字数偏离目标字数的比例，0.30 = ±30%）
-WORD_COUNT_TOLERANCE = float(os.getenv("WORD_COUNT_TOLERANCE", "0.30"))
+# 字数容差（允许实际字数偏离目标字数的比例，0.20 = ±20%）
+WORD_COUNT_TOLERANCE = float(os.getenv("WORD_COUNT_TOLERANCE", "0.20"))
 
 # 审核通过的最高冲突等级（0-10，超过此值需要人工确认）
 AUTO_APPROVE_THRESHOLD = 6

@@ -277,7 +277,7 @@ class NovelWorkflow:
     def write_and_review_chapter(
         self,
         chapter_number: int,
-        word_target: int = 3000,
+        word_target: int = 2500,
         word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
@@ -1013,7 +1013,8 @@ class NovelWorkflow:
     def batch_write_chapters(
         self,
         chapter_numbers: list[int],
-        word_target: int = 3000,
+        word_target: int = 2500,
+        word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
         chapter_callback: Callable = None,
@@ -1024,6 +1025,7 @@ class NovelWorkflow:
         Args:
             chapter_numbers: 要写作的章节号列表（已排序）
             word_target: 每章目标字数
+            word_count_tolerance: 字数容差（0.1~0.5），None 时使用项目配置或全局默认
             auto_polish: 是否自动润色
             progress_callback: 整体进度回调 (message: str)
             chapter_callback: 单章完成回调 (chapter_number: int, result: WorkflowResult)
@@ -1041,6 +1043,7 @@ class NovelWorkflow:
             result = self.write_and_review_chapter(
                 chapter_number=ch_num,
                 word_target=word_target,
+                word_count_tolerance=word_count_tolerance,
                 auto_polish=auto_polish,
                 progress_callback=progress_callback,
             )

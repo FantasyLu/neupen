@@ -168,9 +168,9 @@ def page_writing():
 
         st.divider()
         st.markdown("#### 写作参数")
-        word_target = st.slider("目标字数", 1000, 6000, 3000, step=500)
-        word_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
-                                   help="允许实际字数偏离目标字数的比例。设为30%时，目标3000字则允许2100~3900字。") / 100
+        word_target = st.slider("目标字数", 1000, 6000, 2500, step=500)
+        word_tolerance = st.slider("字数容差", 10, 50, 20, step=5, format="%d%%",
+                                   help="允许实际字数偏离目标字数的比例。设为20%时，目标2500字则允许2000~3000字。") / 100
         auto_polish = st.toggle("自动润色", value=True)
 
         wc1, wc2 = st.columns(2)
@@ -208,9 +208,9 @@ def page_writing():
                     st.caption(f"将写作 **{len(selected_range)}** 章（第{selected_range[0]}~{selected_range[-1]}章）")
                     bp1, bp2 = st.columns(2)
                     with bp1:
-                        batch_words     = st.slider("每章目标字数", 1000, 6000, 3000, step=500, key="batch_words")
+                        batch_words     = st.slider("每章目标字数", 1000, 6000, 2500, step=500, key="batch_words")
                     with bp2:
-                        batch_tolerance = st.slider("字数容差", 10, 50, 30, step=5, format="%d%%",
+                        batch_tolerance = st.slider("字数容差", 10, 50, 20, step=5, format="%d%%",
                                                     key="batch_tolerance",
                                                     help="允许实际字数偏离目标字数的比例。") / 100
                     bp3, bp4 = st.columns(2)
