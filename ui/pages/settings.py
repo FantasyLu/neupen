@@ -784,6 +784,47 @@ def page_settings():
                     else:
                         st.error(result.message)
 
+            # ── 去AI味写作规则 ──
+            st.divider()
+            st.markdown("### 🚫 去AI味写作规则")
+            st.caption("自定义去AI味约束，每行一条规则。留空则使用系统默认规则。")
+
+            from core.config import DEFAULT_DEAI_RULES
+            db_deai = get_db()
+            novel_deai = db_deai.query(Novel).filter(Novel.id == novel_id).first()
+            db_deai.close()
+            current_deai = novel_deai.deai_rules if novel_deai and novel_deai.deai_rules else ""
+
+            new_deai = st.text_area(
+                "规则内容（每行一条，以 - 开头）",
+                value=current_deai if current_deai else DEFAULT_DEAI_RULES,
+                height=180,
+                placeholder=DEFAULT_DEAI_RULES,
+                key="deai_rules_editor"
+            )
+            col_deai_save, col_deai_reset = st.columns([3, 1])
+            with col_deai_save:
+                if st.button("💾 保存去AI味规则", use_container_width=True,
+                              disabled=not can_edit(novel_id)):
+                    db_s = get_db()
+                    obj = db_s.query(Novel).filter(Novel.id == novel_id).first()
+                    obj.deai_rules = new_deai.strip() if new_deai.strip() != DEFAULT_DEAI_RULES.strip() else None
+                    db_s.commit()
+                    db_s.close()
+                    st.session_state.pop("deai_rules_editor", None)
+                    st.success("✅ 去AI味规则已保存")
+                    st.rerun()
+            with col_deai_reset:
+                if st.button("🔄 恢复默认", use_container_width=True):
+                    db_r = get_db()
+                    obj_r = db_r.query(Novel).filter(Novel.id == novel_id).first()
+                    obj_r.deai_rules = None
+                    db_r.commit()
+                    db_r.close()
+                    st.session_state.pop("deai_rules_editor", None)
+                    st.success("✅ 已恢复系统默认规则")
+                    st.rerun()
+
         # ──────────────────────────────────────────────────
         # Tab: 平台风格
         # ──────────────────────────────────────────────────

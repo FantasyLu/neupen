@@ -765,11 +765,16 @@ class WriterAgent:
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
+        # 项目自定义去AI味规则（覆盖系统默认）
+        deai_block = ""
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            deai_block = f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}\n"
+
         user_prompt = f"""📏 字数硬性约束：本章必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字），不得超过上限。
 
 请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}{platform_block}{feedback_block}
+{writing_context}{style_block}{platform_block}{feedback_block}{deai_block}
 【写作要求】
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
@@ -1544,6 +1549,9 @@ class CanvasAgent:
             system_parts.append(style_block)
         if platform_block:
             system_parts.append(platform_block)
+        # 项目自定义去AI味规则
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            system_parts.append(f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}")
         if document_content.strip():
             system_parts += [
                 "", "---",

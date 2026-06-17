@@ -66,6 +66,7 @@ class Novel(Base):
     quality_config = Column(Text, nullable=True, comment="写作质量参数（JSON格式）")
     target_platform = Column(String(100), nullable=True, comment="目标发布平台（如：起点中文网）")
     target_tags = Column(Text, nullable=True, comment="目标标签（JSON数组，如：[\"玄幻\",\"都市\"]）")
+    deai_rules = Column(Text, nullable=True, comment="去AI味写作规则（多行文本，为空时使用系统默认）")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
