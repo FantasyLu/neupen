@@ -88,9 +88,9 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "64K",
         "api_key_env": "DEEPSEEK_API_KEY",
         "api_key_url": "https://platform.deepseek.com/api_keys",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
-        "note": "性价比之王，爽文/网文的不二之选",
+        "note": "性价比之王，爽文/网文的不二之选；服务端磁盘缓存自动命中",
     },
     "deepseek-reasoner": {
         "display_name": "DeepSeek R1（推理增强）",
@@ -108,7 +108,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "64K",
         "api_key_env": "DEEPSEEK_API_KEY",
         "api_key_url": "https://platform.deepseek.com/api_keys",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "推理型模型，尤其适合担任审核师角色；写作速度较慢",
     },
@@ -130,7 +130,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "32K",
         "api_key_env": "DOUBAO_API_KEY",
         "api_key_url": "https://console.volcengine.com/ark",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "需在火山引擎控制台开通 Ark 并获取 API Key；模型 ID 即 doubao-pro-32k",
     },
@@ -150,7 +150,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "32K",
         "api_key_env": "DOUBAO_API_KEY",
         "api_key_url": "https://console.volcengine.com/ark",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "轻量版，追求极致速度和成本时使用",
     },
@@ -172,7 +172,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "32K",
         "api_key_env": "QWEN_API_KEY",
         "api_key_url": "https://dashscope.console.aliyun.com/apiKey",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "古风/仙侠题材首选，中华文化理解最深",
     },
@@ -192,7 +192,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "131K",
         "api_key_env": "QWEN_API_KEY",
         "api_key_url": "https://dashscope.console.aliyun.com/apiKey",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "千问家族性价比最高，适合大批量写作",
     },
@@ -212,7 +212,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "1M",
         "api_key_env": "QWEN_API_KEY",
         "api_key_url": "https://dashscope.console.aliyun.com/apiKey",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "超低成本，推荐仅用于章节摘要等辅助任务",
     },
@@ -234,7 +234,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "1M",
         "api_key_env": "GEMINI_API_KEY",
         "api_key_url": "https://aistudio.google.com/app/apikey",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "创意与速度并重；需要能访问 Google 服务的网络环境",
     },
@@ -254,7 +254,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "context_window": "1M",
         "api_key_env": "GEMINI_API_KEY",
         "api_key_url": "https://aistudio.google.com/app/apikey",
-        "supports_caching": False,
+        "supports_caching": True,
         "supports_streaming": True,
         "note": "最大上下文窗口，适合超长篇小说；需要 Google 服务访问权限",
     },
@@ -381,6 +381,10 @@ class NovelLLM:
         """
         多轮对话接口
         messages 格式: [{"role": "user"/"assistant", "content": "..."}]
+
+        对于 OpenAI-compatible 提供商（DeepSeek/豆包/千问/Gemini），
+        自动将系统提示词中的动态上下文（--- 之后的部分）移到最后一条用户消息前缀，
+        使 system message 保持字节级稳定以命中服务端磁盘缓存。
         """
         if self.provider == "anthropic":
             try:
@@ -399,11 +403,32 @@ class NovelLLM:
             except Exception as e:
                 raise RuntimeError(f"Anthropic API 调用失败：{e}")
         else:
+            # OpenAI-compatible 提供商：拆分静态/动态部分以优化缓存命中
+            static_prompt = system_prompt
+            dynamic_context = ""
+            if "\n---\n" in system_prompt:
+                parts = system_prompt.split("\n---\n", 1)
+                static_prompt = parts[0].strip()
+                dynamic_context = parts[1].strip()
             try:
+                api_messages = [{"role": "system", "content": static_prompt}]
+                if dynamic_context:
+                    # 将动态上下文注入最后一条用户消息前缀
+                    if messages and messages[-1]["role"] == "user":
+                        prefixed = messages[:-1] + [{
+                            "role": "user",
+                            "content": f"{dynamic_context}\n\n---\n\n{messages[-1]['content']}"
+                        }]
+                        api_messages += prefixed
+                    else:
+                        api_messages.append({"role": "user", "content": dynamic_context})
+                        api_messages += messages
+                else:
+                    api_messages += messages
                 response = self.client.chat.completions.create(
                     model=self.model_id,
                     max_tokens=max_tokens,
-                    messages=[{"role": "system", "content": system_prompt}] + messages,
+                    messages=api_messages,
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
