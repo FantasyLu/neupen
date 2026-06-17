@@ -896,11 +896,11 @@ def page_settings():
 
                 st.markdown("#### 字数控制")
                 word_tol = st.number_input(
-                    f"字数容差（默认 {int(_DEF_TOLERANCE * 100)}%）",
+                    f"字数容差 %（默认 {int(_DEF_TOLERANCE * 100)}）",
                     min_value=10, max_value=50,
                     value=int(float(q_cfg.get("word_count_tolerance", _DEF_TOLERANCE)) * 100),
-                    step=5, format="%d%%",
-                    help="允许实际字数偏离目标字数的比例。30% 时，目标 3000 字允许 2100~3900 字。"
+                    step=5,
+                    help="允许实际字数偏离目标字数的比例。30 时，目标 3000 字允许 2100~3900 字。"
                 )
 
                 st.markdown("#### 迭代次数")
