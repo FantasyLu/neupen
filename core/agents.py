@@ -668,6 +668,7 @@ class WriterAgent:
 - **连续性优先**：写作前必须熟读前情，确保时间线、道具状态、人物位置的连贯
 - **沉浸式描写**：多用感官细节、心理描写，少用直白叙述
 - **节奏控制**：张弛有度，高潮前必须有铺垫，不要平铺直叙
+- **字数约束**：严格按用户指定的字数范围写作，这是硬性要求，不可超出上限
 
 写作规范：
 - 对话要体现人物性格，避免口吻雷同
@@ -696,8 +697,8 @@ class WriterAgent:
         self.llm = NovelLLM(model_id)
 
     def write_chapter(self, chapter_number: int,
-                       word_target: int = 2500,
-                       word_count_tolerance: float = 0.20,
+                       word_target: int = 3000,
+                       word_count_tolerance: float = 0.30,
                        stream_callback=None,
                        review_feedback: str = "") -> str:
         """
@@ -764,15 +765,18 @@ class WriterAgent:
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
-        user_prompt = f"""请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
+        user_prompt = f"""📏 字数硬性约束：本章必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字），不得超过上限。
+
+请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
 {writing_context}{style_block}{platform_block}{feedback_block}
 【写作要求】
-- 字数严格控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字，容差 ±{int(word_count_tolerance * 100)}%），切勿大幅超出上限
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
 - 注意与前几章的连贯性
 - 章节结尾需要有合适的收束或钩子
+
+⚠️ 再次强调：本章字数必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间，不得超过 {int(word_target * (1 + word_count_tolerance))} 字。
 
 请直接开始写作正文，从标题开始："""
 
@@ -820,7 +824,11 @@ class WriterAgent:
             json_end = response.rfind("}") + 1
             if json_start >= 0:
                 data = _safe_json_loads(response[json_start:json_end])
-                return data.get("summary", ""), data.get("key_events", [])
+                if isinstance(data, dict):
+                    return data.get("summary", ""), data.get("key_events", [])
+                # LLM 可能返回数组或纯字符串，尝试从数组第一个元素提取
+                if isinstance(data, list) and data and isinstance(data[0], dict):
+                    return data[0].get("summary", ""), data[0].get("key_events", [])
         except Exception as e:
             print(f"⚠️ 章节摘要生成失败：{e}")
         return "", []

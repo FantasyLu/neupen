@@ -277,7 +277,7 @@ class NovelWorkflow:
     def write_and_review_chapter(
         self,
         chapter_number: int,
-        word_target: int = 2500,
+        word_target: int = 3000,
         word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
@@ -1013,7 +1013,7 @@ class NovelWorkflow:
     def batch_write_chapters(
         self,
         chapter_numbers: list[int],
-        word_target: int = 2500,
+        word_target: int = 3000,
         word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
