@@ -1489,7 +1489,13 @@ class CanvasAgent:
 ]
 ```
 
-用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
+用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。
+
+【去AI味写作规则（使用 chapter 或修改章节正文时必须严格遵守）】
+- 主观视角描写：不要以上帝视角说"这个房间很冷"，写"陈默打了个冷颤，把领口往上拉了拉"
+- 拒绝大道理：角色不说长篇大论，人类说话是零碎的、有错漏的，允许半句话、结巴、口头禅
+- 严禁收尾综合征：每章每段结尾，绝对不要出现"这意味着……"、"他不知道的是……"、"这就是命运的安排"等总结句
+- 增强潜台词：不直说心里话。表达愤怒→写捏碎纸杯；表达关心→写掐灭烟头""",
     }
 
     def __init__(self, novel_id: int, model_id: str = None, role: str = "global"):
@@ -1510,7 +1516,34 @@ class CanvasAgent:
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
         global_ctx = self.memory.global_mem.build_global_context()
 
+        # 注入风格档案和平台约束（与 WriterAgent 对齐）
+        style_block = ""
+        platform_block = ""
+        novel = self.memory.global_mem.get_novel()
+        if novel:
+            style_profile = novel.get_style_profile()
+            if style_profile:
+                _labels = {
+                    "overall_style": "总体风格", "sentence_patterns": "句式", "vocabulary": "词汇",
+                    "narrative_voice": "叙述视角", "dialogue_style": "对话", "description_style": "描写",
+                    "rhythm_pacing": "节奏", "emotion_expression": "情感表达",
+                    "signature_techniques": "标志手法", "polish_instructions": "核心指令",
+                }
+                sl = [f"- {lbl}：{style_profile[k]}" for k, lbl in _labels.items() if style_profile.get(k)]
+                if sl:
+                    style_block = "\n【全书写作风格档案（严格遵循）】\n" + "\n".join(sl)
+            pt = novel.target_platform or ""
+            tg = novel.get_target_tags()
+            from core.platform_styles import get_style_description
+            ps = get_style_description(pt, tg)
+            if ps:
+                platform_block = f"\n【目标平台风格要求】\n{ps}\n"
+
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
+        if style_block:
+            system_parts.append(style_block)
+        if platform_block:
+            system_parts.append(platform_block)
         if document_content.strip():
             system_parts += [
                 "", "---",
