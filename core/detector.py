@@ -132,6 +132,14 @@ class ConflictDetector:
         # 构建审核上下文
         review_context = self.memory.build_review_context(chapter, content)
 
+        # 注入项目自定义去AI味规则（供AI痕迹检测维度使用）
+        novel = self.memory.global_mem.get_novel()
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            review_context += f"\n\n【去AI味规则（必须逐条对照检测违规）】\n{novel.deai_rules.strip()}"
+        else:
+            from core.config import DEFAULT_DEAI_RULES
+            review_context += f"\n\n【去AI味规则（必须逐条对照检测违规）】\n{DEFAULT_DEAI_RULES}"
+
         # 构建审核提示词
         system_prompt = """你是一位专业的小说审核师，负责检测小说内容中的各类问题。
 你必须严格、客观、全面地审核，不放过任何细节。
@@ -142,6 +150,12 @@ class ConflictDetector:
 3. **大纲冲突**：内容是否偏离章纲（核心事件是否发生、情节是否跑偏）
 4. **前后矛盾**：是否与前几章的内容矛盾（事件顺序、人物位置、道具状态等）
 5. **逻辑漏洞**：情节是否有无法解释的跳跃或不合理之处
+6. **AI痕迹检测**：逐条对照下方「去AI味规则」检查原文是否存在违规：
+   - 上帝视角总结句（"这意味着…""他不知道的是…""这就是命运的安排"）
+   - 角色长篇大论式演讲或直白心理独白
+   - 段尾总结性发言
+   - AI常用的连接词堆砌（"同时""此时""然而""不得不"等过度使用）
+   - 直说情绪而非通过动作/细节表现
 
 输出要求：
 必须以合法的JSON格式输出，结构如下：
@@ -151,11 +165,11 @@ class ConflictDetector:
   "summary": "整体质量良好，存在少量问题",
   "conflicts": [
     {
-      "type": "OOC检测",
-      "severity": 6,
+      "type": "AI痕迹检测",
+      "severity": 5,
       "location": "引用原文中的具体位置...",
-      "description": "问题描述",
-      "solutions": ["方案1", "方案2", "方案3"]
+      "description": "违反了哪条去AI味规则",
+      "solutions": ["方案1", "方案2"]
     }
   ],
   "suggestions": ["总体建议1", "总体建议2"]
@@ -164,9 +178,9 @@ class ConflictDetector:
 评分标准：
 - 10分：完美，无任何问题
 - 8-9分：优秀，有极少量小问题
-- 6-7分：良好，有一些需要注意的问题
-- 4-5分：及格，有明显问题需要修改
-- 1-3分：不及格，有严重问题必须重写"""
+- 6-7分：良好，有一些需要注意的问题（含轻度AI痕迹）
+- 4-5分：及格，有明显问题需要修改（含中度AI痕迹）
+- 1-3分：不及格，有严重问题必须重写（含重度AI痕迹）"""
 
         user_prompt = f"""请对以下小说内容进行全面审核：
 
