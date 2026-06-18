@@ -1076,13 +1076,18 @@ class PolisherAgent:
             _tg = novel.get_target_tags()
             platform_style_text = get_style_description(_pt, _tg)
 
+        # 项目自定义去AI味规则
+        deai_block = ""
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            deai_block = f"\n【去AI味写作规则（项目自定义，润色时必须严格遵守）】\n{novel.deai_rules.strip()}\n"
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
 {f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference}" if style_reference else ""}
-
+{deai_block}
 【待润色内容】
 {content}
 
