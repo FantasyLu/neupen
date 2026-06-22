@@ -65,14 +65,13 @@ class OutlineAgent:
 
 输出格式：必须是合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature  # None = 使用模型默认值
 
     @staticmethod
     def _build_foreshadowing_schedule_prompt(active_fs: list) -> str:
@@ -167,7 +166,7 @@ class OutlineAgent:
 - 确保每章字数在2000-4000字能写完的量
 - 生成至少前20章的详细章纲，其余章节可以简略"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000)
 
         # 提取 JSON
         json_start = response.find("{")
@@ -210,7 +209,7 @@ class OutlineAgent:
   ...其他需要修改的字段
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -281,8 +280,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.PARSE_DOCUMENT_PROMPT, user_prompt,
-            max_tokens=8192, cache_system=False,
-            temperature=self.temperature
+            max_tokens=8192, cache_system=False
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -339,8 +337,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=min(4000 + ch_count * 600, 32000),
-            temperature=self.temperature
+            max_tokens=min(4000 + ch_count * 600, 32000)
         )
 
         arr_start = response.find("[")
@@ -452,7 +449,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 重要约束：outline_updates 的 merged_content 必须是一段完整的、连贯的文本，将大纲中原有的内容与本章新增的信息有机融合。禁止只写"新增：xxx"这样拆成两段的格式。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -514,7 +511,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 只返回 JSON 数组，不包含其他文字。如果本章没有体现任何人物关系，返回空数组 []。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
         arr_start = response.find("[")
         arr_end = response.rfind("]") + 1
         if arr_start >= 0 and arr_end > arr_start:
@@ -557,14 +554,13 @@ class CharacterAgent:
 
 输出格式：合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature
 
     def generate_characters(self, outline_text: str) -> list[dict]:
         """
@@ -602,7 +598,7 @@ class CharacterAgent:
   ]
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -634,7 +630,7 @@ class CharacterAgent:
 
 以列表形式输出所有问题（每个问题一行），没有问题则输出"无明显矛盾"。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
         problems = [line.strip() for line in response.split("\n") if line.strip() and line.strip() != "无明显矛盾"]
         return problems
 
@@ -682,24 +678,34 @@ class WriterAgent:
 - 避免大量重复使用同一个词或句式
 
 去AI味规则（必须严格遵守）：
-- 坚决使用主观视角描写：不要以上帝视角说"这个房间很冷"，而是写"陈默打了个冷颤，把领口往上拉了拉"
-- 拒绝大道理：角色不要发表长篇大论的演讲，人类说话是零碎的、有错漏的，允许出现半句话、结巴、或者口头禅
-- 严禁收尾综合征：每一章、每一段的结尾，绝对不要出现"这意味着……"、"他不知道的是，更大的危机正在逼近……"、"这就是命运的安排"等总结性发言
-- 增强潜台词：人类很少直接说出心里话。想表达愤怒时，写他捏碎了纸杯；想表达关心时，写他把烟头掐灭
+## 1. 视角与情感（Show, Don't Tell）
+- 【极致局部主观】严禁上帝视角。不用“房间很冷”，写“陈默打了个冷颤，把领口往上拉”；不用“张毅很恐慌”，写“张毅指节发白，死死抠在吧台边缘”。
+- 【台词留白错漏】严禁长篇大论的演讲和理智的“局势分析”。人类说话是零碎、自私、有错漏的，允许半句话、粗口、结巴或无效口头禅。
+- 【严禁动作套话】禁用“瞳孔骤缩、大脑空白、心跳漏一拍”等AI套话。改为真实的感官窄缩：视线发黑、耳鸣、手忙脚乱、连眨眼都忘了。
+- 【配角去神化】严禁刚出场的普通配角化身“设定百科全书”或“未卜先知”。医生也只能根据临床本能猜测，不能代替作者坐实世界观。
+## 2. 句式与字词封杀（Anti-AI Syntax）
+- 【根治碎句癌】严禁连续使用三、四个字的无主语超短碎句（如：开门。拔刀。血流。）。根据因果和生理逻辑，融成长短错落、有呼吸感的完整叙事句。
+- 【封杀对比解释句】坚决禁用“不是……而是……”、“与其说……不如说……”。AI喜欢用它纠正读者，必须直接砸出视觉事实。
+  * ❌ 错误：“那不是血，而是活的真菌。”
+  * ⭕ 正确：“流出来的已经没有红色的血了，是一股泛着暗金光的黏稠活体。”
+- 【动词瘦身】禁用“似乎、仿佛、宛如、隐约”等温吞词。大面积删减无意义的“着、地”和长副词。将“细得像蛇一样贴着地板缓缓地爬进来”精简为“一缕灰雾像蛇一样贴地滑了进来”。
+- 【切断收尾综合征】严禁在章尾、段尾出现“这意味着……”、“更大的危机正在逼近……”、“这就是命运的安排”等说书人式总结。在动作或死寂中直接断章。
+## 3. 战斗与异能（Hardcore Physics）
+- 【物理阻力与黏滞】严禁超能力/变异“魔法化、特效化”（禁用“金光大盛、残影、高压水枪般喷涌”）。
+- 【肉体代价】必须写出粗粝的生物质感。攻击要带痛感和阻力（如：砸进湿棉被的闷响、刀被纤维里的肉牙咬住）；异能暴长要写出肉体代价与微观异变（如：撕裂血痂、皮肤发烫蠕动、骨骼坚硬凸起、伴随蛋白质烧焦的恶臭）。
 
 输出要求：
 - 直接输出小说正文，不要加解释或注释
 - 字数控制在章纲要求的范围内（一般2000-4000字）
 - 分段合理，对话独占一行"""
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
@@ -770,16 +776,11 @@ class WriterAgent:
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
-        # 项目自定义去AI味规则（覆盖系统默认）
-        deai_block = ""
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            deai_block = f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}\n"
-
         user_prompt = f"""📏 字数硬性约束：本章必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字），不得超过上限。
 
 请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}{platform_block}{feedback_block}{deai_block}
+{writing_context}{style_block}{platform_block}{feedback_block}
 【写作要求】
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
@@ -794,7 +795,7 @@ class WriterAgent:
             # 流式生成
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
@@ -802,7 +803,7 @@ class WriterAgent:
         else:
             # 非流式生成
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
             )
 
     def summarize_chapter(self, chapter_number: int, title: str,
@@ -829,7 +830,7 @@ class WriterAgent:
 
         system = "你是一位专业的小说编辑，擅长提炼章节核心内容。输出合法JSON，不要有其他文字。"
         try:
-            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False, temperature=self.temperature)
+            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False)
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
@@ -861,7 +862,7 @@ class WriterAgent:
 
 请重写这段内容，保持故事连贯性："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
 
     def close(self):
         self.memory.close()
@@ -875,7 +876,7 @@ class ReviewerAgent:
     """
     审核师 Agent（核心中的核心）
     职责：对每次生成的内容进行全面检测
-    检测维度：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞、AI痕迹
+    检测维度：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞
     """
 
     SYSTEM_PROMPT = """你是一位严格的小说质量审核专家，你的职责是守护故事的一致性和逻辑性。
@@ -886,22 +887,20 @@ class ReviewerAgent:
 - **时间线侦探**：仔细追踪时间线，确保没有时间悖论
 - **逻辑探长**：每个情节都必须有合理的因果关系
 - **读者代理人**：从读者角度思考每个可能引发困惑的地方
-- **AI痕迹猎手**：逐条对照去AI味规则，标注每处机器人写作痕迹
 
 你的输出必须：
 - 精确引用冲突位置的原文
-- 明确说明与哪条设定冲突或违反哪条规则
+- 明确说明与哪条设定冲突
 - 提供至少2个可行的修改方案"""
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.model_id = model_id
-        self.temperature = temperature
-        self.detector = ConflictDetector(novel_id, model_id, temperature=temperature)
+        self.detector = ConflictDetector(novel_id, model_id)
 
     def review_chapter(self, chapter_number: int, content: str) -> ReviewReport:
         """
@@ -1052,14 +1051,13 @@ class PolisherAgent:
 
 输出格式：合法的JSON，不含其他文字。"""
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature
 
     def polish_chapter(self, content: str,
                          style_reference: str = "",
@@ -1084,18 +1082,13 @@ class PolisherAgent:
             _tg = novel.get_target_tags()
             platform_style_text = get_style_description(_pt, _tg)
 
-        # 项目自定义去AI味规则
-        deai_block = ""
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            deai_block = f"\n【去AI味写作规则（项目自定义，润色时必须严格遵守）】\n{novel.deai_rules.strip()}\n"
-
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
 {f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference}" if style_reference else ""}
-{deai_block}
+
 【待润色内容】
 {content}
 
@@ -1104,14 +1097,14 @@ class PolisherAgent:
         if stream_callback:
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
             return "".join(content_parts)
         else:
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
             )
 
     def apply_style_to_selection(self, selected_text: str,
@@ -1129,7 +1122,7 @@ class PolisherAgent:
 
 请直接输出修改后的内容："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
 
     def _format_style_profile(self, profile: dict) -> str:
         """将风格档案转为多行文本，供注入润色提示词"""
@@ -1253,14 +1246,13 @@ class ReaderAgent:
         },
     }
 
-    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None):
         self.novel_id = novel_id
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature
 
     def evaluate_chapter(self, chapter_number: int, content: str,
                           reader_types: list[str] = None) -> dict:
@@ -1396,9 +1388,8 @@ class IdeaAgent:
   "total_chapters": 100
 }"""
 
-    def __init__(self, model_id: str = None, temperature: float = None):
+    def __init__(self, model_id: str = None):
         self.llm = NovelLLM(model_id)
-        self.temperature = temperature
 
     def chat(self, messages: list) -> str:
         """
@@ -1406,7 +1397,7 @@ class IdeaAgent:
         messages: [{"role": "user"/"assistant", "content": "..."}]
         返回 AI 回复文本
         """
-        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024, temperature=self.temperature)
+        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024)
 
     def extract_project_config(self, messages: list) -> dict:
         """
@@ -1420,8 +1411,7 @@ class IdeaAgent:
         user_prompt = f"【对话记录】\n{history_text}"
         response = self.llm.generate(
             self.EXTRACT_PROMPT, user_prompt,
-            max_tokens=1024, cache_system=False,
-            temperature=self.temperature
+            max_tokens=1024, cache_system=False
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -1437,19 +1427,9 @@ class IdeaAgent:
 class CanvasAgent:
     """
     通用 Canvas AI 协作 Agent。
-    页面感知 + 意图识别 + 委托执行：将用户意图路由到对应专职 Agent，
-    确保大纲生成、人物设计、章节写作、润色审核等操作与主工作流一致。
-    一般性讨论和轻量建议仍由 CanvasAgent 自身 LLM 处理。
+    注入当前文档内容 + 小说全局上下文，支持多轮对话。
+    当 AI 建议修改文档时，以 ```markdown ... ``` 代码块输出新版本。
     """
-
-    # ── 意图关键词 ──────────────────────────────────────────────
-    _INTENT_WRITE        = {"写", "生成", "创作", "开始写", "写一下"}
-    _INTENT_MODIFY       = {"修改", "改", "调整", "优化", "重写"}
-    _INTENT_POLISH       = {"润色", "润饰", "打磨", "提升文笔"}
-    _INTENT_REVIEW       = {"审核", "审阅", "检查", "冲突检测"}
-    _INTENT_WRITE_REVIEW  = {"写并审", "写然后审", "写并审核", "写完审核", "写后审核", "写加审", "生成并审核"}
-    _INTENT_OUTLINE      = {"大纲", "章纲", "卷纲"}
-    _INTENT_CHARACTER    = {"人物", "角色", "人设", "主角", "配角", "反派"}
 
     _ROLE_PROMPTS = {
         "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。
@@ -1520,16 +1500,10 @@ class CanvasAgent:
 ]
 ```
 
-用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。
-
-【去AI味写作规则（使用 chapter 或修改章节正文时必须严格遵守）】
-- 主观视角描写：不要以上帝视角说"这个房间很冷"，写"陈默打了个冷颤，把领口往上拉了拉"
-- 拒绝大道理：角色不说长篇大论，人类说话是零碎的、有错漏的，允许半句话、结巴、口头禅
-- 严禁收尾综合征：每章每段结尾，绝对不要出现"这意味着……"、"他不知道的是……"、"这就是命运的安排"等总结句
-- 增强潜台词：不直说心里话。表达愤怒→写捏碎纸杯；表达关心→写掐灭烟头""",
+用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
     }
 
-    def __init__(self, novel_id: int, model_id: str = None, role: str = "global", temperature: float = None):
+    def __init__(self, novel_id: int, model_id: str = None, role: str = "global"):
         from core.memory import MemoryManager
         from core.llm import DEFAULT_MODEL_ID
         self.novel_id = novel_id
@@ -1537,232 +1511,17 @@ class CanvasAgent:
         self.memory = MemoryManager(novel_id)
         _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
         self.llm = NovelLLM(_model)
-        self.temperature = temperature
-        # 懒加载的专职 Agent 引用
-        self._outline_agent = None
-        self._character_agent = None
-        self._writer_agent = None
-        self._reviewer_agent = None
-        self._polisher_agent = None
 
-    # ── 懒加载 Agent 属性 ────────────────────────────────────────
-    @property
-    def outline_agent(self):
-        if not self._outline_agent:
-            self._outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
-        return self._outline_agent
-
-    @property
-    def character_agent(self):
-        if not self._character_agent:
-            self._character_agent = CharacterAgent(self.novel_id, temperature=self.temperature)
-        return self._character_agent
-
-    @property
-    def writer_agent(self):
-        if not self._writer_agent:
-            self._writer_agent = WriterAgent(self.novel_id, temperature=self.temperature)
-        return self._writer_agent
-
-    @property
-    def reviewer_agent(self):
-        if not self._reviewer_agent:
-            self._reviewer_agent = ReviewerAgent(self.novel_id, temperature=self.temperature)
-        return self._reviewer_agent
-
-    @property
-    def polisher_agent(self):
-        if not self._polisher_agent:
-            self._polisher_agent = PolisherAgent(self.novel_id, temperature=self.temperature)
-        return self._polisher_agent
-
-    # ── 意图识别 ─────────────────────────────────────────────────
-    def _recognize_intent(self, user_msg: str, page: str, chapter: int = None) -> str:
-        """从用户消息 + 页面上下文识别意图，返回 intent 字符串"""
-        msg = user_msg
-        # 章节操作（需在写作页）
-        if page == "写作" and chapter:
-            if any(kw in msg for kw in self._INTENT_WRITE_REVIEW):
-                return "write_review_chapter"
-            if any(kw in msg for kw in self._INTENT_WRITE):
-                return "write_chapter"
-            if any(kw in msg for kw in self._INTENT_POLISH):
-                return "polish_chapter"
-            if any(kw in msg for kw in self._INTENT_REVIEW):
-                return "review_chapter"
-            if any(kw in msg for kw in self._INTENT_MODIFY):
-                return "modify_chapter"
-        # 大纲操作
-        if any(kw in msg for kw in self._INTENT_OUTLINE):
-            return "outline_op"
-        # 人物操作
-        if any(kw in msg for kw in self._INTENT_CHARACTER):
-            return "character_op"
-        return "general"
-
-    # ── 委托处理器 ───────────────────────────────────────────────
-    def _delegate_write(self, chapter: int) -> str:
-        """委托 WriterAgent 写新章节"""
-        try:
-            result = self.writer_agent.write_chapter(chapter)
-            return f"```chapter\n{result}\n```"
-        except ValueError as e:
-            return f"⚠️ 无法生成第{chapter}章：{e}"
-
-    def _delegate_modify(self, chapter: int, instruction: str, current_content: str) -> str:
-        """委托 WriterAgent 修改指定章节"""
-        section = current_content or ""
-        try:
-            result = self.writer_agent.rewrite_section(chapter, section, instruction)
-            return f"```chapter\n{result}\n```"
-        except Exception as e:
-            return f"⚠️ 修改失败：{e}\n\n将使用对话模式提供建议。"
-
-    def _delegate_polish(self, chapter: int, current_content: str) -> str:
-        """委托 PolisherAgent 润色章节"""
-        if not current_content.strip():
-            return "⚠️ 当前没有章节内容可供润色，请先生成或编辑章节。"
-        try:
-            result = self.polisher_agent.polish_chapter(current_content)
-            return f"```chapter\n{result}\n```"
-        except Exception as e:
-            return f"⚠️ 润色失败：{e}"
-
-    def _delegate_review(self, chapter: int, current_content: str) -> str:
-        """委托 ReviewerAgent 审核章节"""
-        if not current_content.strip():
-            return "⚠️ 当前没有章节内容可供审核。"
-        try:
-            report = self.reviewer_agent.review_chapter(chapter, current_content)
-            lines = ["## 📋 章节审核报告", ""]
-            if hasattr(report, 'overall_score'):
-                lines.append(f"**综合评分**：{report.overall_score}/10")
-            if hasattr(report, 'conflicts') and report.conflicts:
-                lines.append(f"\n**发现 {len(report.conflicts)} 个冲突：**")
-                for c in report.conflicts:
-                    sev = getattr(c, 'severity', '?')
-                    desc = getattr(c, 'description', str(c))
-                    lines.append(f"- 🔴 严重度 {sev}：{desc}")
-            else:
-                lines.append("\n✅ 未发现明显冲突。")
-            if hasattr(report, 'suggestions') and report.suggestions:
-                lines.append(f"\n**改进建议：**")
-                for s in report.suggestions:
-                    lines.append(f"- {s}")
-            return "\n".join(lines)
-        except Exception as e:
-            return f"⚠️ 审核失败：{e}"
-
-    def _delegate_write_and_review(self, chapter: int, word_target: int = 3000) -> str:
-        """委托 NovelWorkflow 执行完整写审流水线（写→审→自修复→润色→保存）"""
-        from core.workflow import load_novel
-        wf = None
-        try:
-            wf = load_novel(self.novel_id)
-            result = wf.write_and_review_chapter(
-                chapter_number=chapter,
-                word_target=word_target,
-                auto_polish=True
-            )
-            wf.close()
-            wf = None
-            if result.success:
-                report_text = ""
-                if result.data.get("review_report"):
-                    r = result.data["review_report"]
-                    score = getattr(r, 'overall_score', '?') if hasattr(r, 'overall_score') else '?'
-                    report_text = f"\n\n## 📋 审核报告\n**综合评分**：{score}/10"
-                    if hasattr(r, 'conflicts') and r.conflicts:
-                        report_text += f"\n自动修复了 {len(r.conflicts)} 个冲突"
-                return f"```chapter\n{result.data.get('content', '')}\n```{report_text}"
-            else:
-                return f"⚠️ 生成失败：{result.message}"
-        except Exception as e:
-            return f"⚠️ 写审流水线失败：{e}"
-        finally:
-            if wf is not None:
-                try:
-                    wf.close()
-                except Exception:
-                    pass
-
-    # ── 页面上下文构建 ───────────────────────────────────────────
-    @staticmethod
-    def _build_page_context(page: str, chapter: int = None, selected_text: str = "") -> str:
-        """构建页面感知的上下文说明"""
-        parts = []
-        if page:
-            parts.append(f"用户当前在【{page}】页面")
-        if chapter:
-            parts.append(f"正在查看【第{chapter}章】")
-        if selected_text.strip():
-            parts.append(f"用户选中了以下文字：\n```\n{selected_text[:500]}\n```")
-        return "；".join(parts) if parts else ""
-
-    def chat(self, messages: list, document_content: str = "",
-             page: str = "", chapter_number: int = None,
-             selected_text: str = "") -> str:
+    def chat(self, messages: list, document_content: str = "") -> str:
         """
-        多轮对话（支持页面感知 + 意图委托）。
-        page: 当前页面名（"写作"/"大纲管理"/"设定管理"等）
-        chapter_number: 当前章节号（在写作页时传入）
-        selected_text: 用户选中的文本片段
+        多轮对话。
+        document_content: 当前文档内容（注入 system prompt）
+        messages: [{"role": "user"/"assistant", "content": "..."}]
         """
-        user_msg = messages[-1]["content"].strip() if messages else ""
-        page_context = self._build_page_context(page, chapter_number, selected_text)
-
-        # ── 意图识别与委托 ──
-        intent = self._recognize_intent(user_msg, page, chapter_number)
-        if intent == "write_review_chapter":
-            return self._delegate_write_and_review(chapter_number)
-        elif intent == "write_chapter":
-            return self._delegate_write(chapter_number)
-        elif intent == "modify_chapter":
-            return self._delegate_modify(chapter_number, user_msg, document_content)
-        elif intent == "polish_chapter":
-            return self._delegate_polish(chapter_number, document_content)
-        elif intent == "review_chapter":
-            return self._delegate_review(chapter_number, document_content)
-        # outline_op / character_op 走通用对话（AI 会输出对应代码块）
-
-        # ── 通用对话 ──
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
         global_ctx = self.memory.global_mem.build_global_context()
 
-        # 注入风格档案和平台约束（与 WriterAgent 对齐）
-        style_block = ""
-        platform_block = ""
-        novel = self.memory.global_mem.get_novel()
-        if novel:
-            style_profile = novel.get_style_profile()
-            if style_profile:
-                _labels = {
-                    "overall_style": "总体风格", "sentence_patterns": "句式", "vocabulary": "词汇",
-                    "narrative_voice": "叙述视角", "dialogue_style": "对话", "description_style": "描写",
-                    "rhythm_pacing": "节奏", "emotion_expression": "情感表达",
-                    "signature_techniques": "标志手法", "polish_instructions": "核心指令",
-                }
-                sl = [f"- {lbl}：{style_profile[k]}" for k, lbl in _labels.items() if style_profile.get(k)]
-                if sl:
-                    style_block = "\n【全书写作风格档案（严格遵循）】\n" + "\n".join(sl)
-            pt = novel.target_platform or ""
-            tg = novel.get_target_tags()
-            from core.platform_styles import get_style_description
-            ps = get_style_description(pt, tg)
-            if ps:
-                platform_block = f"\n【目标平台风格要求】\n{ps}\n"
-
-        system_parts = [role_prompt]
-        if page_context:
-            system_parts += ["", f"【当前页面】{page_context}"]
-        system_parts += ["", "---", "【小说上下文】", global_ctx]
-        if style_block:
-            system_parts.append(style_block)
-        if platform_block:
-            system_parts.append(platform_block)
-        # 项目自定义去AI味规则
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            system_parts.append(f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}")
+        system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
         if document_content.strip():
             system_parts += [
                 "", "---",
@@ -1771,16 +1530,7 @@ class CanvasAgent:
             ]
 
         system_prompt = "\n".join(system_parts)
-        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096, temperature=self.temperature)
+        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096)
 
     def close(self):
-        """释放所有 Agent 的资源"""
-        for attr in ("_outline_agent", "_character_agent", "_writer_agent",
-                     "_reviewer_agent", "_polisher_agent"):
-            agent = getattr(self, attr, None)
-            if agent:
-                try:
-                    agent.close()
-                except Exception:
-                    pass
         self.memory.close()
