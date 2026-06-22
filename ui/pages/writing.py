@@ -307,64 +307,74 @@ def page_writing():
         if write_btn or rewrite_btn:
             st.session_state.is_writing = True
 
-            with st.spinner(f"正在生成第{selected_ch_num}章…"):
-                output_area.text_area("生成内容（实时显示）", value="", height=500, key="stream_display")
+            def stream_cb(chunk: str):
+                nonlocal streaming_text
+                streaming_text += chunk
+                output_area.markdown(
+                    f"> **第{selected_ch_num}章 正在生成中…**\n\n{streaming_text}",
+                )
 
-                def progress_cb(msg: str):
-                    status_area.info(msg)
+            def progress_cb(msg: str):
+                status_area.info(msg)
 
-                try:
-                    workflow = load_novel(novel_id)
-                    result = workflow.write_and_review_chapter(
-                        chapter_number=selected_ch_num,
-                        word_target=word_target,
-                        word_count_tolerance=word_tolerance,
-                        auto_polish=auto_polish,
-                        progress_callback=progress_cb,
-                    )
-                    workflow.close()
-                    st.session_state.is_writing = False
+            streaming_text = ""
+            try:
+                status_area.info(f"✍️ 正在生成第{selected_ch_num}章…")
+                workflow = load_novel(novel_id)
+                result = workflow.write_and_review_chapter(
+                    chapter_number=selected_ch_num,
+                    word_target=word_target,
+                    word_count_tolerance=word_tolerance,
+                    auto_polish=auto_polish,
+                    progress_callback=progress_cb,
+                    stream_callback=stream_cb,
+                )
+                workflow.close()
+                st.session_state.is_writing = False
 
-                    if result.success:
-                        status_area.empty()
-                        score  = result.data.get("overall_score", 0)
-                        passed = result.data.get("review_passed", True)
-                        if passed:
-                            st.success(f"✅ 第{selected_ch_num}章生成完成！评分：{score:.1f}/10")
-                        else:
-                            st.warning(f"⚠️ 章节生成完成，存在问题。评分：{score:.1f}/10")
-
-                        report = result.data.get("review_report", {})
-                        if report.get("conflicts"):
-                            with st.expander(f"📋 审核报告（{len(report['conflicts'])}个问题）"):
-                                st.markdown(f"**摘要：** {report.get('summary', '')}")
-                                for c in report["conflicts"]:
-                                    sev  = c.get("severity", 0)
-                                    icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
-                                    st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
-                                    st.markdown(f"- {c.get('description', '')}")
-
-                        # 自动同步检测结果写入 session state → 用户无需手动触发
-                        sync_checks = result.data.get("sync_checks", {})
-                        if sync_checks:
-                            sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
-                            st.session_state[sync_key] = sync_checks
-                            total = (len(sync_checks.get("new_characters", [])) +
-                                     len(sync_checks.get("character_updates", [])) +
-                                     len(sync_checks.get("outline_updates", [])) +
-                                     len(sync_checks.get("world_setting_updates", [])))
-                            if total:
-                                st.info(f"🔄 发现 {total} 条同步建议（含人物状态），已在「审核」标签页等待确认")
-
-                        # 清除编辑区缓存，确保显示新生成的内容
-                        st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
-                        st.rerun()
+                if result.success:
+                    status_area.empty()
+                    output_area.empty()
+                    score  = result.data.get("overall_score", 0)
+                    passed = result.data.get("review_passed", True)
+                    if passed:
+                        st.success(f"✅ 第{selected_ch_num}章生成完成！评分：{score:.1f}/10")
                     else:
-                        st.session_state.is_writing = False
-                        st.error(f"生成失败：{result.message}")
-                except Exception as e:
+                        st.warning(f"⚠️ 章节生成完成，存在问题。评分：{score:.1f}/10")
+
+                    report = result.data.get("review_report", {})
+                    if report.get("conflicts"):
+                        with st.expander(f"📋 审核报告（{len(report['conflicts'])}个问题）"):
+                            st.markdown(f"**摘要：** {report.get('summary', '')}")
+                            for c in report["conflicts"]:
+                                sev  = c.get("severity", 0)
+                                icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
+                                st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
+                                st.markdown(f"- {c.get('description', '')}")
+
+                    # 自动同步检测结果写入 session state → 用户无需手动触发
+                    sync_checks = result.data.get("sync_checks", {})
+                    if sync_checks:
+                        sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
+                        st.session_state[sync_key] = sync_checks
+                        total = (len(sync_checks.get("new_characters", [])) +
+                                 len(sync_checks.get("character_updates", [])) +
+                                 len(sync_checks.get("outline_updates", [])) +
+                                 len(sync_checks.get("world_setting_updates", [])))
+                        if total:
+                            st.info(f"🔄 发现 {total} 条同步建议（含人物状态），已在「审核」标签页等待确认")
+
+                    # 清除编辑区缓存，确保显示新生成的内容
+                    st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
+                    st.rerun()
+                else:
+                    output_area.empty()
                     st.session_state.is_writing = False
-                    st.error(f"生成出错：{e}")
+                    st.error(f"生成失败：{result.message}")
+            except Exception as e:
+                output_area.empty()
+                st.session_state.is_writing = False
+                st.error(f"生成出错：{e}")
 
         # 章节内容区（tabs）
         pending = st.session_state.get(pending_key)
