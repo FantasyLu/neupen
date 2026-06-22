@@ -359,25 +359,28 @@ class NovelLLM:
 
     def generate(self, system_prompt: str, user_prompt: str,
                  max_tokens: int = 8192,
-                 cache_system: bool = True) -> str:
+                 cache_system: bool = True,
+                 temperature: float = None) -> str:
         """
         非流式生成
         Anthropic 模型在 system_prompt > 1000 字符时自动启用 prompt caching
         """
         if self.provider == "anthropic":
-            return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system)
-        return self._generate_openai(system_prompt, user_prompt, max_tokens)
+            return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system, temperature)
+        return self._generate_openai(system_prompt, user_prompt, max_tokens, temperature)
 
     def generate_stream(self, system_prompt: str, user_prompt: str,
-                        max_tokens: int = 8192) -> Generator[str, None, None]:
+                        max_tokens: int = 8192,
+                        temperature: float = None) -> Generator[str, None, None]:
         """流式生成，逐 token yield"""
         if self.provider == "anthropic":
-            yield from self._stream_anthropic(system_prompt, user_prompt, max_tokens)
+            yield from self._stream_anthropic(system_prompt, user_prompt, max_tokens, temperature)
         else:
-            yield from self._stream_openai(system_prompt, user_prompt, max_tokens)
+            yield from self._stream_openai(system_prompt, user_prompt, max_tokens, temperature)
 
     def generate_chat(self, system_prompt: str, messages: list,
-                      max_tokens: int = 4096) -> str:
+                      max_tokens: int = 4096,
+                      temperature: float = None) -> str:
         """
         多轮对话接口
         messages 格式: [{"role": "user"/"assistant", "content": "..."}]
@@ -389,12 +392,15 @@ class NovelLLM:
         if self.provider == "anthropic":
             try:
                 import anthropic as _anthropic
-                response = self.client.messages.create(
+                kwargs = dict(
                     model=self.model_id,
                     max_tokens=max_tokens,
                     system=system_prompt,
                     messages=messages,
                 )
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                response = self.client.messages.create(**kwargs)
                 return response.content[0].text
             except _anthropic.RateLimitError:
                 raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -437,7 +443,8 @@ class NovelLLM:
     # ── Anthropic 后端 ──────────────────────────────────────────────
 
     def _generate_anthropic(self, system_prompt: str, user_prompt: str,
-                             max_tokens: int, cache_system: bool) -> str:
+                             max_tokens: int, cache_system: bool,
+                             temperature: float = None) -> str:
         import anthropic as _anthropic
 
         # 对长系统提示词启用 prompt caching
@@ -451,12 +458,15 @@ class NovelLLM:
             system_content = system_prompt
 
         try:
-            response = self.client.messages.create(
+            kwargs = dict(
                 model=self.model_id,
                 max_tokens=max_tokens,
                 system=system_content,
                 messages=[{"role": "user", "content": user_prompt}]
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = self.client.messages.create(**kwargs)
             return response.content[0].text
         except _anthropic.RateLimitError:
             raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -466,22 +476,25 @@ class NovelLLM:
             raise RuntimeError(f"Anthropic API 调用失败：{e}")
 
     def _stream_anthropic(self, system_prompt: str, user_prompt: str,
-                          max_tokens: int) -> Generator[str, None, None]:
-        with self.client.messages.stream(
+                           max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
-        ) as stream:
+        )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        with self.client.messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield text
 
     # ── OpenAI-compatible 后端 ──────────────────────────────────────
 
     def _generate_openai(self, system_prompt: str, user_prompt: str,
-                         max_tokens: int) -> str:
+                          max_tokens: int, temperature: float = None) -> str:
         try:
-            response = self.client.chat.completions.create(
+            kwargs = dict(
                 model=self.model_id,
                 max_tokens=max_tokens,
                 messages=[
@@ -489,6 +502,9 @@ class NovelLLM:
                     {"role": "user", "content": user_prompt}
                 ]
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = self.client.chat.completions.create(**kwargs)
             return response.choices[0].message.content or ""
         except Exception as e:
             err = str(e)
@@ -502,8 +518,8 @@ class NovelLLM:
             raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
 
     def _stream_openai(self, system_prompt: str, user_prompt: str,
-                       max_tokens: int) -> Generator[str, None, None]:
-        stream = self.client.chat.completions.create(
+                        max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
             messages=[
@@ -512,6 +528,9 @@ class NovelLLM:
             ],
             stream=True
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        stream = self.client.chat.completions.create(**kwargs)
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content

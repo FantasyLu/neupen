@@ -67,6 +67,13 @@ class Novel(Base):
     target_platform = Column(String(100), nullable=True, comment="目标发布平台（如：起点中文网）")
     target_tags = Column(Text, nullable=True, comment="目标标签（JSON数组，如：[\"玄幻\",\"都市\"]）")
     deai_rules = Column(Text, nullable=True, comment="去AI味写作规则（多行文本，为空时使用系统默认）")
+    temp_outline   = Column(Float, nullable=True, comment="大纲师 temperature")
+    temp_character = Column(Float, nullable=True, comment="人设师 temperature")
+    temp_writer    = Column(Float, nullable=True, comment="写手部 temperature")
+    temp_reviewer  = Column(Float, nullable=True, comment="审核师 temperature")
+    temp_polisher  = Column(Float, nullable=True, comment="润色师 temperature")
+    temp_reader    = Column(Float, nullable=True, comment="读者模拟 temperature")
+    temp_canvas    = Column(Float, nullable=True, comment="全局助手 temperature")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

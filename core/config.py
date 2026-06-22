@@ -68,6 +68,15 @@ DEFAULT_DEAI_RULES = """- 坚决使用主观视角描写：不要以上帝视角
 - 严禁收尾综合征：每一章、每一段的结尾，绝对不要出现"这意味着……"、"他不知道的是，更大的危机正在逼近……"、"这就是命运的安排"等总结性发言
 - 增强潜台词：人类很少直接说出心里话。想表达愤怒时，写他捏碎了纸杯；想表达关心时，写他把烟头掐灭"""
 
+# ── Temperature 默认值（按 Agent 角色）──────────────────────
+TEMPERATURE_OUTLINE = float(os.getenv("TEMPERATURE_OUTLINE", "0.6"))
+TEMPERATURE_CHARACTER = float(os.getenv("TEMPERATURE_CHARACTER", "0.7"))
+TEMPERATURE_WRITER = float(os.getenv("TEMPERATURE_WRITER", "0.8"))
+TEMPERATURE_REVIEWER = float(os.getenv("TEMPERATURE_REVIEWER", "0.2"))
+TEMPERATURE_POLISHER = float(os.getenv("TEMPERATURE_POLISHER", "0.5"))
+TEMPERATURE_READER = float(os.getenv("TEMPERATURE_READER", "0.5"))
+TEMPERATURE_CANVAS = float(os.getenv("TEMPERATURE_CANVAS", "0.7"))
+
 # 审核通过的最高冲突等级（0-10，超过此值需要人工确认）
 AUTO_APPROVE_THRESHOLD = 6
 

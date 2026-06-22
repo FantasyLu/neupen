@@ -454,7 +454,19 @@ def render_global_chat(novel_id: int):
 
         with st.spinner("思考中…"):
             try:
-                agent = CanvasAgent(novel_id=novel_id, role="global")
+                # 读取项目级 Canvas 温度
+                canvas_temp = None
+                try:
+                    db = get_db()
+                    n = db.query(Novel).filter(Novel.id == novel_id).first()
+                    db.close()
+                    if n:
+                        canvas_temp = n.temp_canvas
+                except Exception:
+                    pass
+                from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
+                agent = CanvasAgent(novel_id=novel_id, role="global",
+                                     temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP)
                 reply = agent.chat(history, document_content=doc_ctx)
                 agent.close()
             except Exception as e:
