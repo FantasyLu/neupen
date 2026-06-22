@@ -442,14 +442,14 @@ def render_global_chat(novel_id: int):
     if user_input := st.chat_input("和 AI 讨论…", key="global_chat_input"):
         history.append({"role": "user", "content": user_input})
 
-        # 构建当前上下文
+        # 构建当前上下文 + 页面感知信息
         doc_ctx = _build_doc_context(novel_id)
         page = st.session_state.get("page", "")
+        ch_num = st.session_state.get("writing_chapter") or 1
         if not doc_ctx or not doc_ctx.strip():
             if page == "大纲管理":
                 doc_ctx = st.session_state.get(f"outline_textarea_{novel_id}", "")
             elif page == "写作":
-                ch_num = st.session_state.get("writing_chapter") or 1
                 doc_ctx = st.session_state.get(f"edit_content_{novel_id}_{ch_num}", "")
 
         with st.spinner("思考中…"):
@@ -467,7 +467,8 @@ def render_global_chat(novel_id: int):
                 from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
                 agent = CanvasAgent(novel_id=novel_id, role="global",
                                      temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP)
-                reply = agent.chat(history, document_content=doc_ctx)
+                reply = agent.chat(history, document_content=doc_ctx,
+                                   page=page, chapter_number=ch_num if page == "写作" else None)
                 agent.close()
             except Exception as e:
                 history.pop()

@@ -1437,9 +1437,19 @@ class IdeaAgent:
 class CanvasAgent:
     """
     通用 Canvas AI 协作 Agent。
-    注入当前文档内容 + 小说全局上下文，支持多轮对话。
-    当 AI 建议修改文档时，以 ```markdown ... ``` 代码块输出新版本。
+    页面感知 + 意图识别 + 委托执行：将用户意图路由到对应专职 Agent，
+    确保大纲生成、人物设计、章节写作、润色审核等操作与主工作流一致。
+    一般性讨论和轻量建议仍由 CanvasAgent 自身 LLM 处理。
     """
+
+    # ── 意图关键词 ──────────────────────────────────────────────
+    _INTENT_WRITE        = {"写", "生成", "创作", "开始写", "写一下"}
+    _INTENT_MODIFY       = {"修改", "改", "调整", "优化", "重写"}
+    _INTENT_POLISH       = {"润色", "润饰", "打磨", "提升文笔"}
+    _INTENT_REVIEW       = {"审核", "审阅", "检查", "冲突检测"}
+    _INTENT_WRITE_REVIEW  = {"写并审", "写然后审", "写并审核", "写完审核", "写后审核", "写加审", "生成并审核"}
+    _INTENT_OUTLINE      = {"大纲", "章纲", "卷纲"}
+    _INTENT_CHARACTER    = {"人物", "角色", "人设", "主角", "配角", "反派"}
 
     _ROLE_PROMPTS = {
         "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。
@@ -1528,13 +1538,194 @@ class CanvasAgent:
         _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
         self.llm = NovelLLM(_model)
         self.temperature = temperature
+        # 懒加载的专职 Agent 引用
+        self._outline_agent = None
+        self._character_agent = None
+        self._writer_agent = None
+        self._reviewer_agent = None
+        self._polisher_agent = None
 
-    def chat(self, messages: list, document_content: str = "") -> str:
+    # ── 懒加载 Agent 属性 ────────────────────────────────────────
+    @property
+    def outline_agent(self):
+        if not self._outline_agent:
+            self._outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
+        return self._outline_agent
+
+    @property
+    def character_agent(self):
+        if not self._character_agent:
+            self._character_agent = CharacterAgent(self.novel_id, temperature=self.temperature)
+        return self._character_agent
+
+    @property
+    def writer_agent(self):
+        if not self._writer_agent:
+            self._writer_agent = WriterAgent(self.novel_id, temperature=self.temperature)
+        return self._writer_agent
+
+    @property
+    def reviewer_agent(self):
+        if not self._reviewer_agent:
+            self._reviewer_agent = ReviewerAgent(self.novel_id, temperature=self.temperature)
+        return self._reviewer_agent
+
+    @property
+    def polisher_agent(self):
+        if not self._polisher_agent:
+            self._polisher_agent = PolisherAgent(self.novel_id, temperature=self.temperature)
+        return self._polisher_agent
+
+    # ── 意图识别 ─────────────────────────────────────────────────
+    def _recognize_intent(self, user_msg: str, page: str, chapter: int = None) -> str:
+        """从用户消息 + 页面上下文识别意图，返回 intent 字符串"""
+        msg = user_msg
+        # 章节操作（需在写作页）
+        if page == "写作" and chapter:
+            if any(kw in msg for kw in self._INTENT_WRITE_REVIEW):
+                return "write_review_chapter"
+            if any(kw in msg for kw in self._INTENT_WRITE):
+                return "write_chapter"
+            if any(kw in msg for kw in self._INTENT_POLISH):
+                return "polish_chapter"
+            if any(kw in msg for kw in self._INTENT_REVIEW):
+                return "review_chapter"
+            if any(kw in msg for kw in self._INTENT_MODIFY):
+                return "modify_chapter"
+        # 大纲操作
+        if any(kw in msg for kw in self._INTENT_OUTLINE):
+            return "outline_op"
+        # 人物操作
+        if any(kw in msg for kw in self._INTENT_CHARACTER):
+            return "character_op"
+        return "general"
+
+    # ── 委托处理器 ───────────────────────────────────────────────
+    def _delegate_write(self, chapter: int) -> str:
+        """委托 WriterAgent 写新章节"""
+        try:
+            result = self.writer_agent.write_chapter(chapter)
+            return f"```chapter\n{result}\n```"
+        except ValueError as e:
+            return f"⚠️ 无法生成第{chapter}章：{e}"
+
+    def _delegate_modify(self, chapter: int, instruction: str, current_content: str) -> str:
+        """委托 WriterAgent 修改指定章节"""
+        section = current_content or ""
+        try:
+            result = self.writer_agent.rewrite_section(chapter, section, instruction)
+            return f"```chapter\n{result}\n```"
+        except Exception as e:
+            return f"⚠️ 修改失败：{e}\n\n将使用对话模式提供建议。"
+
+    def _delegate_polish(self, chapter: int, current_content: str) -> str:
+        """委托 PolisherAgent 润色章节"""
+        if not current_content.strip():
+            return "⚠️ 当前没有章节内容可供润色，请先生成或编辑章节。"
+        try:
+            result = self.polisher_agent.polish_chapter(current_content)
+            return f"```chapter\n{result}\n```"
+        except Exception as e:
+            return f"⚠️ 润色失败：{e}"
+
+    def _delegate_review(self, chapter: int, current_content: str) -> str:
+        """委托 ReviewerAgent 审核章节"""
+        if not current_content.strip():
+            return "⚠️ 当前没有章节内容可供审核。"
+        try:
+            report = self.reviewer_agent.review_chapter(chapter, current_content)
+            lines = ["## 📋 章节审核报告", ""]
+            if hasattr(report, 'overall_score'):
+                lines.append(f"**综合评分**：{report.overall_score}/10")
+            if hasattr(report, 'conflicts') and report.conflicts:
+                lines.append(f"\n**发现 {len(report.conflicts)} 个冲突：**")
+                for c in report.conflicts:
+                    sev = getattr(c, 'severity', '?')
+                    desc = getattr(c, 'description', str(c))
+                    lines.append(f"- 🔴 严重度 {sev}：{desc}")
+            else:
+                lines.append("\n✅ 未发现明显冲突。")
+            if hasattr(report, 'suggestions') and report.suggestions:
+                lines.append(f"\n**改进建议：**")
+                for s in report.suggestions:
+                    lines.append(f"- {s}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"⚠️ 审核失败：{e}"
+
+    def _delegate_write_and_review(self, chapter: int, word_target: int = 3000) -> str:
+        """委托 NovelWorkflow 执行完整写审流水线（写→审→自修复→润色→保存）"""
+        from core.workflow import load_novel
+        wf = None
+        try:
+            wf = load_novel(self.novel_id)
+            result = wf.write_and_review_chapter(
+                chapter_number=chapter,
+                word_target=word_target,
+                auto_polish=True
+            )
+            wf.close()
+            wf = None
+            if result.success:
+                report_text = ""
+                if result.data.get("review_report"):
+                    r = result.data["review_report"]
+                    score = getattr(r, 'overall_score', '?') if hasattr(r, 'overall_score') else '?'
+                    report_text = f"\n\n## 📋 审核报告\n**综合评分**：{score}/10"
+                    if hasattr(r, 'conflicts') and r.conflicts:
+                        report_text += f"\n自动修复了 {len(r.conflicts)} 个冲突"
+                return f"```chapter\n{result.data.get('content', '')}\n```{report_text}"
+            else:
+                return f"⚠️ 生成失败：{result.message}"
+        except Exception as e:
+            return f"⚠️ 写审流水线失败：{e}"
+        finally:
+            if wf is not None:
+                try:
+                    wf.close()
+                except Exception:
+                    pass
+
+    # ── 页面上下文构建 ───────────────────────────────────────────
+    @staticmethod
+    def _build_page_context(page: str, chapter: int = None, selected_text: str = "") -> str:
+        """构建页面感知的上下文说明"""
+        parts = []
+        if page:
+            parts.append(f"用户当前在【{page}】页面")
+        if chapter:
+            parts.append(f"正在查看【第{chapter}章】")
+        if selected_text.strip():
+            parts.append(f"用户选中了以下文字：\n```\n{selected_text[:500]}\n```")
+        return "；".join(parts) if parts else ""
+
+    def chat(self, messages: list, document_content: str = "",
+             page: str = "", chapter_number: int = None,
+             selected_text: str = "") -> str:
         """
-        多轮对话。
-        document_content: 当前文档内容（注入 system prompt）
-        messages: [{"role": "user"/"assistant", "content": "..."}]
+        多轮对话（支持页面感知 + 意图委托）。
+        page: 当前页面名（"写作"/"大纲管理"/"设定管理"等）
+        chapter_number: 当前章节号（在写作页时传入）
+        selected_text: 用户选中的文本片段
         """
+        user_msg = messages[-1]["content"].strip() if messages else ""
+        page_context = self._build_page_context(page, chapter_number, selected_text)
+
+        # ── 意图识别与委托 ──
+        intent = self._recognize_intent(user_msg, page, chapter_number)
+        if intent == "write_review_chapter":
+            return self._delegate_write_and_review(chapter_number)
+        elif intent == "write_chapter":
+            return self._delegate_write(chapter_number)
+        elif intent == "modify_chapter":
+            return self._delegate_modify(chapter_number, user_msg, document_content)
+        elif intent == "polish_chapter":
+            return self._delegate_polish(chapter_number, document_content)
+        elif intent == "review_chapter":
+            return self._delegate_review(chapter_number, document_content)
+        # outline_op / character_op 走通用对话（AI 会输出对应代码块）
+
+        # ── 通用对话 ──
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
         global_ctx = self.memory.global_mem.build_global_context()
 
@@ -1561,7 +1752,10 @@ class CanvasAgent:
             if ps:
                 platform_block = f"\n【目标平台风格要求】\n{ps}\n"
 
-        system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
+        system_parts = [role_prompt]
+        if page_context:
+            system_parts += ["", f"【当前页面】{page_context}"]
+        system_parts += ["", "---", "【小说上下文】", global_ctx]
         if style_block:
             system_parts.append(style_block)
         if platform_block:
@@ -1580,4 +1774,13 @@ class CanvasAgent:
         return self.llm.generate_chat(system_prompt, messages, max_tokens=4096, temperature=self.temperature)
 
     def close(self):
+        """释放所有 Agent 的资源"""
+        for attr in ("_outline_agent", "_character_agent", "_writer_agent",
+                     "_reviewer_agent", "_polisher_agent"):
+            agent = getattr(self, attr, None)
+            if agent:
+                try:
+                    agent.close()
+                except Exception:
+                    pass
         self.memory.close()
