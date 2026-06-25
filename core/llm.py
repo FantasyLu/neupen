@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 from typing import Generator
 
 # ======================================
@@ -355,6 +356,33 @@ class NovelLLM:
 
         raise RuntimeError(f"不支持的提供商类型：{self.provider}")
 
+    # ── 调试辅助 ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _log_prompt(method: str, model_id: str, system_prompt: str, user_content: str):
+        """将 prompt 打印到 stderr。由 DEBUG_PROMPTS 环境变量控制。"""
+        from core.config import DEBUG_PROMPTS
+        if not DEBUG_PROMPTS:
+            return
+
+        def _trunc(s: str, head: int = 2000, tail: int = 500) -> str:
+            total = head + tail
+            if len(s) <= total:
+                return s
+            skipped = len(s) - total
+            return s[:head] + f"\n... [省略 {skipped} 字符] ...\n" + s[-tail:]
+
+        sep = "=" * 80
+        sys.stderr.write(f"\n{sep}\n")
+        sys.stderr.write(f"[LLM] {method} | model={model_id}\n")
+        sys.stderr.write(f"{sep}\n")
+        sys.stderr.write(f"--- SYSTEM ({len(system_prompt)} chars) ---\n")
+        sys.stderr.write(_trunc(system_prompt) + "\n")
+        sys.stderr.write(f"--- USER ({len(user_content)} chars) ---\n")
+        sys.stderr.write(_trunc(user_content) + "\n")
+        sys.stderr.write(f"{sep}\n\n")
+        sys.stderr.flush()
+
     # ── 对外统一接口 ────────────────────────────────────────────────
 
     def generate(self, system_prompt: str, user_prompt: str,
@@ -365,22 +393,24 @@ class NovelLLM:
         非流式生成
         Anthropic 模型在 system_prompt > 1000 字符时自动启用 prompt caching
         """
+        self._log_prompt("generate", self.model_id, system_prompt, user_prompt)
         if self.provider == "anthropic":
             return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system, temperature)
         return self._generate_openai(system_prompt, user_prompt, max_tokens, temperature)
 
     def generate_stream(self, system_prompt: str, user_prompt: str,
-                        max_tokens: int = 8192,
-                        temperature: float = None) -> Generator[str, None, None]:
+                         max_tokens: int = 8192,
+                         temperature: float = None) -> Generator[str, None, None]:
         """流式生成，逐 token yield"""
+        self._log_prompt("generate_stream", self.model_id, system_prompt, user_prompt)
         if self.provider == "anthropic":
             yield from self._stream_anthropic(system_prompt, user_prompt, max_tokens, temperature)
         else:
             yield from self._stream_openai(system_prompt, user_prompt, max_tokens, temperature)
 
     def generate_chat(self, system_prompt: str, messages: list,
-                      max_tokens: int = 4096,
-                      temperature: float = None) -> str:
+                       max_tokens: int = 4096,
+                       temperature: float = None) -> str:
         """
         多轮对话接口
         messages 格式: [{"role": "user"/"assistant", "content": "..."}]
@@ -389,6 +419,11 @@ class NovelLLM:
         自动将系统提示词中的动态上下文（--- 之后的部分）移到最后一条用户消息前缀，
         使 system message 保持字节级稳定以命中服务端磁盘缓存。
         """
+        chat_digest = "\n".join(
+            f"[{m['role']}] {m.get('content', '')[:300]}{'...' if len(m.get('content', '')) > 300 else ''}"
+            for m in messages
+        )
+        self._log_prompt("generate_chat", self.model_id, system_prompt, chat_digest)
         if self.provider == "anthropic":
             try:
                 import anthropic as _anthropic

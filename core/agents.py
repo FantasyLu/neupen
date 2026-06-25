@@ -65,8 +65,9 @@ class OutlineAgent:
 
 输出格式：必须是合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
@@ -166,7 +167,7 @@ class OutlineAgent:
 - 确保每章字数在2000-4000字能写完的量
 - 生成至少前20章的详细章纲，其余章节可以简略"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000, temperature=self.temperature)
 
         # 提取 JSON
         json_start = response.find("{")
@@ -209,7 +210,7 @@ class OutlineAgent:
   ...其他需要修改的字段
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -280,7 +281,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.PARSE_DOCUMENT_PROMPT, user_prompt,
-            max_tokens=8192, cache_system=False
+            max_tokens=8192, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -337,7 +338,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=min(4000 + ch_count * 600, 32000)
+            max_tokens=min(4000 + ch_count * 600, 32000), temperature=self.temperature
         )
 
         arr_start = response.find("[")
@@ -449,7 +450,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 重要约束：outline_updates 的 merged_content 必须是一段完整的、连贯的文本，将大纲中原有的内容与本章新增的信息有机融合。禁止只写"新增：xxx"这样拆成两段的格式。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -511,7 +512,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 只返回 JSON 数组，不包含其他文字。如果本章没有体现任何人物关系，返回空数组 []。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
         arr_start = response.find("[")
         arr_end = response.rfind("]") + 1
         if arr_start >= 0 and arr_end > arr_start:
@@ -554,8 +555,9 @@ class CharacterAgent:
 
 输出格式：合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
@@ -598,7 +600,7 @@ class CharacterAgent:
   ]
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -630,7 +632,7 @@ class CharacterAgent:
 
 以列表形式输出所有问题（每个问题一行），没有问题则输出"无明显矛盾"。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
         problems = [line.strip() for line in response.split("\n") if line.strip() and line.strip() != "无明显矛盾"]
         return problems
 
@@ -699,8 +701,9 @@ class WriterAgent:
 - 字数控制在章纲要求的范围内（一般2000-4000字）
 - 分段合理，对话独占一行"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
@@ -795,7 +798,7 @@ class WriterAgent:
             # 流式生成
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
@@ -803,7 +806,7 @@ class WriterAgent:
         else:
             # 非流式生成
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             )
 
     def summarize_chapter(self, chapter_number: int, title: str,
@@ -830,7 +833,7 @@ class WriterAgent:
 
         system = "你是一位专业的小说编辑，擅长提炼章节核心内容。输出合法JSON，不要有其他文字。"
         try:
-            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False)
+            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False, temperature=self.temperature)
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
@@ -862,7 +865,7 @@ class WriterAgent:
 
 请重写这段内容，保持故事连贯性："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
 
     def close(self):
         self.memory.close()
@@ -893,14 +896,15 @@ class ReviewerAgent:
 - 明确说明与哪条设定冲突
 - 提供至少2个可行的修改方案"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.model_id = model_id
-        self.detector = ConflictDetector(novel_id, model_id)
+        self.detector = ConflictDetector(novel_id, model_id, temperature)
 
     def review_chapter(self, chapter_number: int, content: str) -> ReviewReport:
         """
@@ -938,7 +942,7 @@ class ReviewerAgent:
 
 请输出修复后的完整正文："""
 
-        return llm.generate(system_prompt, user_prompt, max_tokens=12000)
+        return llm.generate(system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature)
 
     def fix_all_issues(self, content: str,
                         report: "ReviewReport",
@@ -996,7 +1000,7 @@ class ReviewerAgent:
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
             "请修复以上所有问题并确保章纲目标得以实现，直接输出完整修改后正文："
         )
-        return llm.generate(system_prompt, user_prompt, max_tokens=12000)
+        return llm.generate(system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature)
 
     def close(self):
         self.memory.close()
@@ -1051,8 +1055,9 @@ class PolisherAgent:
 
 输出格式：合法的JSON，不含其他文字。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
@@ -1097,14 +1102,14 @@ class PolisherAgent:
         if stream_callback:
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
             return "".join(content_parts)
         else:
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             )
 
     def apply_style_to_selection(self, selected_text: str,
@@ -1122,7 +1127,7 @@ class PolisherAgent:
 
 请直接输出修改后的内容："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
 
     def _format_style_profile(self, profile: dict) -> str:
         """将风格档案转为多行文本，供注入润色提示词"""
@@ -1177,7 +1182,7 @@ class PolisherAgent:
 
         response = self.llm.generate(
             self.STYLE_ANALYSIS_PROMPT, user_prompt,
-            max_tokens=4096, cache_system=False
+            max_tokens=4096, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -1246,8 +1251,9 @@ class ReaderAgent:
         },
     }
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
@@ -1330,7 +1336,7 @@ class ReaderAgent:
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=4096, cache_system=False
+            max_tokens=4096, cache_system=False, temperature=self.temperature
         )
 
         json_start = response.find("{")
@@ -1388,7 +1394,8 @@ class IdeaAgent:
   "total_chapters": 100
 }"""
 
-    def __init__(self, model_id: str = None):
+    def __init__(self, model_id: str = None, temperature: float = None):
+        self.temperature = temperature
         self.llm = NovelLLM(model_id)
 
     def chat(self, messages: list) -> str:
@@ -1397,7 +1404,7 @@ class IdeaAgent:
         messages: [{"role": "user"/"assistant", "content": "..."}]
         返回 AI 回复文本
         """
-        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024)
+        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024, temperature=self.temperature)
 
     def extract_project_config(self, messages: list) -> dict:
         """
@@ -1411,7 +1418,7 @@ class IdeaAgent:
         user_prompt = f"【对话记录】\n{history_text}"
         response = self.llm.generate(
             self.EXTRACT_PROMPT, user_prompt,
-            max_tokens=1024, cache_system=False
+            max_tokens=1024, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -1503,19 +1510,23 @@ class CanvasAgent:
 用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
     }
 
-    def __init__(self, novel_id: int, model_id: str = None, role: str = "global"):
+    def __init__(self, novel_id: int, model_id: str = None, role: str = "global", temperature: float = None):
         from core.memory import MemoryManager
         from core.llm import DEFAULT_MODEL_ID
         self.novel_id = novel_id
         self.role = role
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
         self.llm = NovelLLM(_model)
 
-    def chat(self, messages: list, document_content: str = "") -> str:
+    def chat(self, messages: list, document_content: str = "",
+             page: str = None, chapter_number: int = None) -> str:
         """
         多轮对话。
         document_content: 当前文档内容（注入 system prompt）
+        page: 当前所在页面（用于上下文感知，预留）
+        chapter_number: 当前章节号（用于上下文感知，预留）
         messages: [{"role": "user"/"assistant", "content": "..."}]
         """
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
@@ -1530,7 +1541,7 @@ class CanvasAgent:
             ]
 
         system_prompt = "\n".join(system_parts)
-        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096)
+        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096, temperature=self.temperature)
 
     def close(self):
         self.memory.close()

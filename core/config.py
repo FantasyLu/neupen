@@ -104,6 +104,9 @@ MAX_VERSIONS = 10
 # ======================================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# 调试模式：设为 1 则在每次 LLM 调用时将 system prompt 和 user prompt 打印到 stderr
+DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "0") == "1"
+
 
 # ======================================
 # 应用内 API Key 持久化
