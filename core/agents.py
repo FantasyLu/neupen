@@ -854,17 +854,50 @@ class WriterAgent:
 
         try:
             response = self.llm.generate(system, user_prompt, max_tokens=1024, cache_system=False, temperature=self.temperature)
+
+            # 尝试从响应中提取 JSON
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
-                data = _safe_json_loads(response[json_start:json_end])
-                if isinstance(data, dict):
-                    return data.get("summary", ""), data.get("key_events", [])
-                # LLM 可能返回数组或纯字符串，尝试从数组第一个元素提取
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    return data[0].get("summary", ""), data[0].get("key_events", [])
+                try:
+                    data = _safe_json_loads(response[json_start:json_end])
+                    if isinstance(data, dict):
+                        summary = data.get("summary", "")
+                        events = data.get("key_events", [])
+                        if summary and len(summary.strip()) >= 50:
+                            return summary, events
+                    elif isinstance(data, list) and data and isinstance(data[0], dict):
+                        summary = data[0].get("summary", "")
+                        events = data[0].get("key_events", [])
+                        if summary and len(summary.strip()) >= 50:
+                            return summary, events
+                except Exception as json_err:
+                    print(f"⚠️ 第{chapter_number}章 JSON 解析失败：{json_err}，将使用全文作为摘要")
+
+            # JSON 解析失败或 summary 为空时的 fallback：
+            # 从响应中提取纯文本摘要（去掉 JSON 标记、代码块等）
+            fallback = response.strip()
+            # 去掉常见的 LLM 前缀/后缀
+            for prefix in ["```json", "```", "好的", "以下是"]:
+                if fallback.startswith(prefix):
+                    fallback = fallback[len(prefix):].strip()
+            # 如果包含 JSON 结构但解析失败，取前 500 字作为摘要
+            if "{" in fallback and "}" in fallback:
+                # 尝试提取 summary 字段的文本值
+                import re as _re
+                m = _re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', fallback)
+                if m:
+                    fallback = m.group(1).replace("\\n", "\n").replace('\\"', '"')
+                else:
+                    fallback = fallback[:500]
+            elif len(fallback) > 800:
+                fallback = fallback[:800]
+            if fallback and len(fallback.strip()) >= 30:
+                print(f"⚠️ 第{chapter_number}章使用 fallback 摘要（{len(fallback)}字）")
+                return fallback.strip(), []
+
         except Exception as e:
-            print(f"⚠️ 章节摘要生成失败：{e}")
+            print(f"⚠️ 第{chapter_number}章摘要生成失败：{e}")
         return "", []
 
     def regenerate_chapter_summary(self, chapter_number: int) -> tuple[str, list[str]]:
