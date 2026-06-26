@@ -74,6 +74,8 @@ class Novel(Base):
     temp_polisher  = Column(Float, nullable=True, comment="润色师 temperature")
     temp_reader    = Column(Float, nullable=True, comment="读者模拟 temperature")
     temp_canvas    = Column(Float, nullable=True, comment="全局助手 temperature")
+    total_input_tokens = Column(Integer, default=0, comment="累计输入 token 数（估值，仅供参考）")
+    total_output_tokens = Column(Integer, default=0, comment="累计输出 token 数（估值，仅供参考）")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

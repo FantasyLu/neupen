@@ -317,11 +317,12 @@ class NovelLLM:
     - 其他模型：使用 openai SDK（OpenAI-compatible API）
     """
 
-    def __init__(self, model_id: str = None):
+    def __init__(self, model_id: str = None, novel_id: int = None):
         self.model_id = model_id or DEFAULT_MODEL_ID
         self.info = get_model_info(self.model_id)
         self.provider = self.info["provider"]
         self._client = None
+        self.novel_id = novel_id
 
     @property
     def client(self):
@@ -383,6 +384,24 @@ class NovelLLM:
         sys.stderr.write(f"{sep}\n\n")
         sys.stderr.flush()
 
+    # ── Token 统计 ─────────────────────────────────────────────────
+
+    def _record_tokens(self, input_tokens: int, output_tokens: int):
+        """记录 token 消耗到关联的小说项目数据库。"""
+        if not self.novel_id:
+            return
+        try:
+            from core.models import get_db, Novel
+            db = get_db()
+            novel = db.query(Novel).filter(Novel.id == self.novel_id).first()
+            if novel:
+                novel.total_input_tokens = (novel.total_input_tokens or 0) + input_tokens
+                novel.total_output_tokens = (novel.total_output_tokens or 0) + output_tokens
+                db.commit()
+            db.close()
+        except Exception:
+            pass  # token 统计失败不应影响主流程
+
     # ── 对外统一接口 ────────────────────────────────────────────────
 
     def generate(self, system_prompt: str, user_prompt: str,
@@ -404,9 +423,20 @@ class NovelLLM:
         """流式生成，逐 token yield"""
         self._log_prompt("generate_stream", self.model_id, system_prompt, user_prompt)
         if self.provider == "anthropic":
-            yield from self._stream_anthropic(system_prompt, user_prompt, max_tokens, temperature)
+            gen = self._stream_anthropic(system_prompt, user_prompt, max_tokens, temperature)
         else:
-            yield from self._stream_openai(system_prompt, user_prompt, max_tokens, temperature)
+            gen = self._stream_openai(system_prompt, user_prompt, max_tokens, temperature)
+
+        # 包装生成器，流结束后估算 token 消耗
+        collected = []
+        for chunk in gen:
+            collected.append(chunk)
+            yield chunk
+        # 流结束后估算（中文约 1 token / 1.5 字符，保守按 2 字符 = 1 token）
+        if collected:
+            input_est = max(1, (len(system_prompt) + len(user_prompt)) // 2)
+            output_est = max(1, len("".join(collected)) // 2)
+            self._record_tokens(input_est, output_est)
 
     def generate_chat(self, system_prompt: str, messages: list,
                        max_tokens: int = 4096,
@@ -436,6 +466,12 @@ class NovelLLM:
                 if temperature is not None:
                     kwargs["temperature"] = temperature
                 response = self.client.messages.create(**kwargs)
+                # 记录 token 消耗
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'input_tokens', 0),
+                        getattr(response.usage, 'output_tokens', 0)
+                    )
                 return response.content[0].text
             except _anthropic.RateLimitError:
                 raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -471,6 +507,12 @@ class NovelLLM:
                     max_tokens=max_tokens,
                     messages=api_messages,
                 )
+                # 记录 token 消耗
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'prompt_tokens', 0),
+                        getattr(response.usage, 'completion_tokens', 0)
+                    )
                 return response.choices[0].message.content or ""
             except Exception as e:
                 raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
@@ -502,6 +544,12 @@ class NovelLLM:
             if temperature is not None:
                 kwargs["temperature"] = temperature
             response = self.client.messages.create(**kwargs)
+            # 记录 token 消耗
+            if hasattr(response, 'usage'):
+                self._record_tokens(
+                    getattr(response.usage, 'input_tokens', 0),
+                    getattr(response.usage, 'output_tokens', 0)
+                )
             return response.content[0].text
         except _anthropic.RateLimitError:
             raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -540,6 +588,12 @@ class NovelLLM:
             if temperature is not None:
                 kwargs["temperature"] = temperature
             response = self.client.chat.completions.create(**kwargs)
+            # 记录 token 消耗
+            if hasattr(response, 'usage'):
+                self._record_tokens(
+                    getattr(response.usage, 'prompt_tokens', 0),
+                    getattr(response.usage, 'completion_tokens', 0)
+                )
             return response.choices[0].message.content or ""
         except Exception as e:
             err = str(e)

@@ -105,7 +105,7 @@ class ConflictDetector:
 
     def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
         self.memory = MemoryManager(novel_id)
         self.temperature = temperature
 

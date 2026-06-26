@@ -72,7 +72,7 @@ class OutlineAgent:
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     @staticmethod
     def _build_foreshadowing_schedule_prompt(active_fs: list) -> str:
@@ -562,7 +562,7 @@ class CharacterAgent:
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def generate_characters(self, outline_text: str) -> list[dict]:
         """
@@ -708,7 +708,7 @@ class WriterAgent:
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
@@ -812,28 +812,48 @@ class WriterAgent:
     def summarize_chapter(self, chapter_number: int, title: str,
                            content: str) -> tuple[str, list[str]]:
         """
-        为已写完的章节生成摘要和关键事件列表
-        摘要用于后续章节的 recent_context 注入，减少 token 消耗
+        为已写完的章节生成详细摘要和关键事件列表。
+        摘要用于后续章节的写作上下文注入 —— 写手Agent不会看到原始正文，
+        只会看到这里的摘要，因此必须足够详细和具体。
 
         Returns:
             (summary: str, key_events: list[str])
         """
-        user_prompt = f"""请为以下小说章节生成简短摘要和关键事件列表：
+        user_prompt = f"""请为以下小说章节生成详细摘要和关键事件列表。
+
+⚠️ 重要：这份摘要是后续章节写作时唯一的前情参考。写手Agent不会看到原始正文，只能通过你的摘要了解之前发生了什么。
+因此摘要必须足够详细、具体、可操作 —— 写手需要知道的不只是"发生了什么"，更是"怎么发生的"和"留下了什么"。
 
 第{chapter_number}章《{title}》
 
 【章节正文】
-{content[:4000]}{"...(已截断)" if len(content) > 4000 else ""}
+{content[:5000]}{"...(已截断)" if len(content) > 5000 else ""}
 
-请输出JSON格式：
+请按以下结构输出JSON格式：
 {{
-  "summary": "100-150字的章节摘要，概括核心事件、人物状态变化、结尾钩子",
-  "key_events": ["关键事件1", "关键事件2", "关键事件3"]
-}}"""
+  "summary": "300-800字的详细章节摘要，必须包含：\\n"
+            "1. 本章发生的所有重要情节事件（按时间顺序，写清楚起因-经过-结果）\\n"
+            "2. 每个出场人物的关键行动、决策和对话要点（具体做了什么、说了什么）\\n"
+            "3. 人物关系和状态的重要变化（谁的态度变了、谁获得了新能力/新信息）\\n"
+            "4. 重要的场景/环境变化（地点转移、氛围转变）\\n"
+            "5. 本章埋下的伏笔和悬而未决的问题\\n"
+            "6. 本章回收的伏笔（如有）\\n"
+            "7. 章节结尾的悬念或钩子（下一章写作需要接住什么）",
+  "key_events": [
+    "关键事件1：具体描述（谁+做了什么+结果如何）",
+    "关键事件2：...",
+    ...
+  ]
+}}
 
-        system = "你是一位专业的小说编辑，擅长提炼章节核心内容。输出合法JSON，不要有其他文字。"
+注意：
+- 摘要不要写成章纲的复述，要写实际正文中发生的具体内容
+- key_events 每一条都应该是可独立理解的动作描述，不要含糊
+- 如果你看到的内容被截断了，请基于可见部分尽力提炼"""
+        system = "你是一位专业的小说编辑，擅长从正文中提炼结构化的情节摘要。输出合法JSON，不要有其他文字。"
+
         try:
-            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False, temperature=self.temperature)
+            response = self.llm.generate(system, user_prompt, max_tokens=1024, cache_system=False, temperature=self.temperature)
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
@@ -846,6 +866,70 @@ class WriterAgent:
         except Exception as e:
             print(f"⚠️ 章节摘要生成失败：{e}")
         return "", []
+
+    def regenerate_chapter_summary(self, chapter_number: int) -> tuple[str, list[str]]:
+        """
+        为已有章节重新生成详细摘要并持久化到数据库。
+        用于回填旧章节（之前可能只有简短摘要或没有摘要）。
+
+        Args:
+            chapter_number: 章节序号
+
+        Returns:
+            (summary: str, key_events: list[str])
+        """
+        chapter = self.memory.chapter_mem.get_chapter(chapter_number)
+        if not chapter:
+            raise ValueError(f"第{chapter_number}章不存在")
+        if not chapter.content:
+            raise ValueError(f"第{chapter_number}章尚未写入正文，无法生成摘要")
+
+        summary_text, key_events = self.summarize_chapter(
+            chapter_number, chapter.title or "", chapter.content
+        )
+        if summary_text:
+            self.memory.chapter_mem.save_chapter_summary(
+                chapter_number, summary_text, key_events
+            )
+        return summary_text, key_events
+
+    def regenerate_all_summaries(self, progress_callback=None) -> dict:
+        """
+        为当前小说的所有已有正文的章节批量重新生成详细摘要。
+
+        Args:
+            progress_callback: 可选的回调函数，接收进度描述字符串
+
+        Returns:
+            {"success": N, "failed": M, "skipped": K}
+        """
+        from core.models import Chapter
+        chapters = self.memory.chapter_mem.db.query(Chapter).filter(
+            Chapter.novel_id == self.novel_id,
+            Chapter.content.isnot(None),
+            Chapter.content != ""
+        ).order_by(Chapter.chapter_number).all()
+
+        success, failed, skipped = 0, 0, 0
+        for ch in chapters:
+            try:
+                if progress_callback:
+                    progress_callback(f"📝 正在为第{ch.chapter_number}章生成摘要...")
+                summary_text, key_events = self.summarize_chapter(
+                    ch.chapter_number, ch.title or "", ch.content
+                )
+                if summary_text:
+                    self.memory.chapter_mem.save_chapter_summary(
+                        ch.chapter_number, summary_text, key_events
+                    )
+                    success += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                print(f"⚠️ 第{ch.chapter_number}章摘要回填失败：{e}")
+                failed += 1
+
+        return {"success": success, "failed": failed, "skipped": skipped}
 
     def regenerate_section(self, chapter_number: int, section_text: str,
                              instruction: str) -> str:
@@ -924,7 +1008,7 @@ class ReviewerAgent:
         if not minor_conflicts:
             return content
 
-        llm = NovelLLM(self.model_id)
+        llm = NovelLLM(self.model_id, novel_id=self.novel_id)
         conflicts_desc = "\n".join([
             f"- {c.conflict_type}（位置：{c.location[:100]}）：{c.description}。建议：{c.solutions[0] if c.solutions else ''}"
             for c in minor_conflicts
@@ -955,7 +1039,7 @@ class ReviewerAgent:
         if not report.conflicts:
             return content
 
-        llm = NovelLLM(self.model_id)
+        llm = NovelLLM(self.model_id, novel_id=self.novel_id)
         conflicts_desc = "\n".join([
             f"- [{c.severity}级] {c.conflict_type}"
             f"（位置：{c.location[:80]}）：{c.description}"
@@ -1062,7 +1146,7 @@ class PolisherAgent:
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def polish_chapter(self, content: str,
                          style_reference: str = "",
@@ -1258,7 +1342,7 @@ class ReaderAgent:
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def evaluate_chapter(self, chapter_number: int, content: str,
                           reader_types: list[str] = None) -> dict:
@@ -1518,7 +1602,7 @@ class CanvasAgent:
         self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
-        self.llm = NovelLLM(_model)
+        self.llm = NovelLLM(_model, novel_id=self.novel_id)
 
     def chat(self, messages: list, document_content: str = "",
              page: str = None, chapter_number: int = None) -> str:

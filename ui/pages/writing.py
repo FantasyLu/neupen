@@ -166,6 +166,19 @@ def page_writing():
                 if meta:
                     st.caption(" · ".join(meta))
 
+        # Token 消耗统计
+        db = get_db()
+        novel_obj = db.query(Novel).filter(Novel.id == novel_id).first()
+        db.close()
+        if novel_obj and (novel_obj.total_input_tokens or novel_obj.total_output_tokens):
+            input_t  = novel_obj.total_input_tokens or 0
+            output_t = novel_obj.total_output_tokens or 0
+            total_t  = input_t + output_t
+            with st.container(border=True):
+                st.caption("📊 Token 消耗统计")
+                st.caption(f"输入 {input_t:,} · 输出 {output_t:,} · 合计 {total_t:,}")
+                st.caption("⚠️ 流式生成部分为估算值，统计仅供参考，非精确计费数据")
+
         st.divider()
         st.markdown("#### 写作参数")
         word_target = st.slider("目标字数", 1000, 6000, 3000, step=500)
@@ -297,6 +310,58 @@ def page_writing():
                     db.close()
                     st.success(f"✅ 已回退 {len(rv_range)} 章")
                     st.rerun()
+
+        with st.expander("📝 重新生成章节摘要", expanded=False):
+            st.caption(
+                "为所有已有正文的章节重新生成详细摘要（300-800字）。"
+                "新摘要将用于后续章节写作时的前情参考，替代原始正文注入，显著节省 token 消耗。"
+            )
+            st.warning(
+                "⚠️ **请谨慎使用**\n\n"
+                "此操作会为每章调用一次 LLM 生成摘要，**消耗 API 额度**。"
+                "如果你的小说已完成很多章（如 50+ 章），总 token 消耗将相当可观。\n\n"
+                "**建议**：仅在首次升级时执行一次，或当你发现摘要质量不佳时重新生成。"
+                "正常情况下，每章写完时已自动生成详细摘要，无需频繁手动操作。"
+            )
+            need_summary_chs = [c for c in chapters if c.content and (not c.summary or len(c.summary) < 150)]
+            has_summary_chs = [c for c in chapters if c.content and c.summary and len(c.summary) >= 150]
+            if need_summary_chs:
+                st.caption(
+                    f"共 **{len(need_summary_chs) + len(has_summary_chs)}** 个已完成章节，"
+                    f"其中 **{len(need_summary_chs)}** 个章节缺少/偏短摘要，"
+                    f"**{len(has_summary_chs)}** 个章节已有较详细摘要（也会重新生成）"
+                )
+            else:
+                existing = [c for c in chapters if c.content]
+                if existing:
+                    st.caption(
+                        f"共 **{len(existing)}** 个已完成章节，均已有摘要。"
+                        f"仍可重新生成（会覆盖现有摘要）。"
+                    )
+                else:
+                    st.info("没有需要生成摘要的章节")
+            is_busy = (
+                st.session_state.is_writing or
+                st.session_state.batch_writing or
+                not can_edit(novel_id)
+            )
+            if st.button("🔄 重新生成全部摘要", use_container_width=True, type="secondary",
+                         disabled=is_busy):
+                workflow = load_novel(novel_id)
+                try:
+                    with st.status("正在生成章节摘要…", expanded=True) as summary_status:
+                        def summary_progress(msg):
+                            st.write(msg)
+                        result = workflow.writer_agent.regenerate_all_summaries(
+                            progress_callback=summary_progress
+                        )
+                        summary_status.update(
+                            label=f"摘要生成完成：成功 {result['success']}，失败 {result['failed']}，跳过 {result['skipped']}",
+                            state="complete" if result['failed'] == 0 else "error"
+                        )
+                finally:
+                    workflow.close()
+                st.rerun()
 
     # ─── 右栏：章节内容 ──────────────────────────────────
     with col_content:

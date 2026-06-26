@@ -1221,7 +1221,7 @@ class NovelWorkflow:
 
         try:
             from core.llm import NovelLLM
-            llm = NovelLLM(self.model_outline)
+            llm = NovelLLM(self.model_outline, novel_id=self.novel_id)
             response = llm.generate(system_prompt, user_prompt, max_tokens=2048, cache_system=False)
 
             json_start = response.find("{")
