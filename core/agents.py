@@ -893,22 +893,28 @@ class WriterAgent:
             )
         return summary_text, key_events
 
-    def regenerate_all_summaries(self, progress_callback=None) -> dict:
+    def regenerate_all_summaries(self, progress_callback=None,
+                                   chapter_numbers: list[int] = None) -> dict:
         """
-        为当前小说的所有已有正文的章节批量重新生成详细摘要。
+        为当前小说的已有正文章节批量重新生成详细摘要。
 
         Args:
             progress_callback: 可选的回调函数，接收进度描述字符串
+            chapter_numbers: 可选，指定要重新生成的章节号列表。
+                             传 None 则处理所有已有正文的章节。
 
         Returns:
             {"success": N, "failed": M, "skipped": K}
         """
         from core.models import Chapter
-        chapters = self.memory.chapter_mem.db.query(Chapter).filter(
+        q = self.memory.chapter_mem.db.query(Chapter).filter(
             Chapter.novel_id == self.novel_id,
             Chapter.content.isnot(None),
             Chapter.content != ""
-        ).order_by(Chapter.chapter_number).all()
+        )
+        if chapter_numbers is not None:
+            q = q.filter(Chapter.chapter_number.in_(chapter_numbers))
+        chapters = q.order_by(Chapter.chapter_number).all()
 
         success, failed, skipped = 0, 0, 0
         for ch in chapters:

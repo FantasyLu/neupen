@@ -313,55 +313,88 @@ def page_writing():
 
         with st.expander("📝 重新生成章节摘要", expanded=False):
             st.caption(
-                "为所有已有正文的章节重新生成详细摘要（300-800字）。"
+                "为已有正文的章节重新生成详细摘要（300-800字）。"
                 "新摘要将用于后续章节写作时的前情参考，替代原始正文注入，显著节省 token 消耗。"
             )
             st.warning(
                 "⚠️ **请谨慎使用**\n\n"
                 "此操作会为每章调用一次 LLM 生成摘要，**消耗 API 额度**。"
                 "如果你的小说已完成很多章（如 50+ 章），总 token 消耗将相当可观。\n\n"
-                "**建议**：仅在首次升级时执行一次，或当你发现摘要质量不佳时重新生成。"
+                "**建议**：仅在首次升级时执行一次，或当你发现特定章节摘要质量不佳时选择性地重新生成。"
                 "正常情况下，每章写完时已自动生成详细摘要，无需频繁手动操作。"
             )
-            need_summary_chs = [c for c in chapters if c.content and (not c.summary or len(c.summary) < 150)]
-            has_summary_chs = [c for c in chapters if c.content and c.summary and len(c.summary) >= 150]
-            if need_summary_chs:
-                st.caption(
-                    f"共 **{len(need_summary_chs) + len(has_summary_chs)}** 个已完成章节，"
-                    f"其中 **{len(need_summary_chs)}** 个章节缺少/偏短摘要，"
-                    f"**{len(has_summary_chs)}** 个章节已有较详细摘要（也会重新生成）"
-                )
+            # 可选章节列表
+            eligible = [c for c in chapters if c.content]
+            if not eligible:
+                st.info("没有需要生成摘要的章节")
             else:
-                existing = [c for c in chapters if c.content]
-                if existing:
-                    st.caption(
-                        f"共 **{len(existing)}** 个已完成章节，均已有摘要。"
-                        f"仍可重新生成（会覆盖现有摘要）。"
-                    )
-                else:
-                    st.info("没有需要生成摘要的章节")
-            is_busy = (
-                st.session_state.is_writing or
-                st.session_state.batch_writing or
-                not can_edit(novel_id)
-            )
-            if st.button("🔄 重新生成全部摘要", use_container_width=True, type="secondary",
-                         disabled=is_busy):
-                workflow = load_novel(novel_id)
-                try:
-                    with st.status("正在生成章节摘要…", expanded=True) as summary_status:
-                        def summary_progress(msg):
-                            st.write(msg)
-                        result = workflow.writer_agent.regenerate_all_summaries(
-                            progress_callback=summary_progress
-                        )
-                        summary_status.update(
-                            label=f"摘要生成完成：成功 {result['success']}，失败 {result['failed']}，跳过 {result['skipped']}",
-                            state="complete" if result['failed'] == 0 else "error"
-                        )
-                finally:
-                    workflow.close()
-                st.rerun()
+                need_summary = [c for c in eligible if not c.summary or len(c.summary) < 150]
+                has_summary  = [c for c in eligible if c.summary and len(c.summary) >= 150]
+                st.caption(
+                    f"共 **{len(eligible)}** 个已完成章节"
+                    + (f"，其中 **{len(need_summary)}** 个缺少/偏短摘要" if need_summary else "")
+                )
+                # 多选：默认勾选缺少/偏短摘要的章节
+                ch_options = {
+                    f"第{c.chapter_number}章《{c.title or '未命名'}》"
+                    + (" ⚠️缺摘要" if not c.summary or len(c.summary) < 150 else ""): c.chapter_number
+                    for c in eligible
+                }
+                default_selected = [
+                    f"第{c.chapter_number}章《{c.title or '未命名'}》" + (" ⚠️缺摘要" if not c.summary or len(c.summary) < 150 else "")
+                    for c in (need_summary or eligible)  # 如果没有缺摘要的，默认全选
+                ]
+                selected_labels = st.multiselect(
+                    "选择要重新生成摘要的章节",
+                    options=list(ch_options.keys()),
+                    default=default_selected,
+                    label_visibility="collapsed"
+                )
+                selected_nums = [ch_options[l] for l in selected_labels]
+
+                is_busy = (
+                    st.session_state.is_writing or
+                    st.session_state.batch_writing or
+                    not can_edit(novel_id)
+                )
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("🔄 重新生成选中", use_container_width=True, type="secondary",
+                                 disabled=(is_busy or not selected_nums)):
+                        workflow = load_novel(novel_id)
+                        try:
+                            with st.status(f"正在生成 {len(selected_nums)} 章摘要…", expanded=True) as ss:
+                                def sp(msg):
+                                    st.write(msg)
+                                result = workflow.writer_agent.regenerate_all_summaries(
+                                    progress_callback=sp, chapter_numbers=selected_nums
+                                )
+                                ss.update(
+                                    label=f"完成：成功 {result['success']}，失败 {result['failed']}，跳过 {result['skipped']}",
+                                    state="complete" if result['failed'] == 0 else "error"
+                                )
+                        finally:
+                            workflow.close()
+                        st.rerun()
+                with c2:
+                    if st.button("🔄 全部重新生成", use_container_width=True, type="secondary",
+                                 disabled=is_busy):
+                        workflow = load_novel(novel_id)
+                        try:
+                            with st.status("正在生成全部章节摘要…", expanded=True) as ss:
+                                def sp(msg):
+                                    st.write(msg)
+                                result = workflow.writer_agent.regenerate_all_summaries(
+                                    progress_callback=sp
+                                )
+                                ss.update(
+                                    label=f"完成：成功 {result['success']}，失败 {result['failed']}，跳过 {result['skipped']}",
+                                    state="complete" if result['failed'] == 0 else "error"
+                                )
+                        finally:
+                            workflow.close()
+                        st.rerun()
 
     # ─── 右栏：章节内容 ──────────────────────────────────
     with col_content:
