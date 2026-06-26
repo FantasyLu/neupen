@@ -511,6 +511,16 @@ def _migrate_add_columns():
         ("novels",         "target_platform",      "VARCHAR(100)"),
         ("novels",         "target_tags",          "TEXT"),
         ("novels",         "author",               "VARCHAR(100) DEFAULT ''"),
+        ("novels",         "total_input_tokens",   "INTEGER DEFAULT 0"),
+        ("novels",         "total_output_tokens",  "INTEGER DEFAULT 0"),
+        ("novels",         "deai_rules",           "TEXT"),
+        ("novels",         "temp_outline",         "FLOAT"),
+        ("novels",         "temp_character",       "FLOAT"),
+        ("novels",         "temp_writer",          "FLOAT"),
+        ("novels",         "temp_reviewer",        "FLOAT"),
+        ("novels",         "temp_polisher",        "FLOAT"),
+        ("novels",         "temp_reader",          "FLOAT"),
+        ("novels",         "temp_canvas",          "FLOAT"),
     ]
 
     with engine.connect() as conn:
