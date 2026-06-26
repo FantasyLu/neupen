@@ -18,7 +18,7 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, Volume
 # ──────────────────────────────────────────────────────────────
 
 _TYPED_BLOCK_RE = re.compile(
-    r'```\s*(outline|settings|world|characters|chapter|volume|foreshadowing)\s*\r?\n(.*?)```',
+    r'```\s*(outline|settings|world|characters|chapter|volume|foreshadowing|style)\s*\r?\n(.*?)```',
     re.DOTALL
 )
 
@@ -30,6 +30,7 @@ _APPLY_LABELS = {
     "chapter":       ("✍️ 应用到章节",    "写作"),
     "volume":        ("📋 应用到卷大纲",   "大纲管理"),
     "foreshadowing": ("📌 应用到伏笔库",   "设定管理"),
+    "style":         ("🎨 应用到写作风格", "设定管理"),
 }
 
 # 兜底应用目标列表（用于未使用类型化代码块时）
@@ -489,6 +490,23 @@ def render_global_chat(novel_id: int):
                     wf.update_chapter_content(ch_num, part["content"], "AI 全局助手自动保存")
                     wf.close()
                     st.session_state[f"edit_content_{novel_id}_{ch_num}"] = part["content"]
+                except Exception:
+                    pass
+            elif part["type"] == "style":
+                # 自动合并 style 偏好到小说风格档案
+                try:
+                    style_update = json.loads(part["content"])
+                    if isinstance(style_update, dict) and style_update:
+                        db = get_db()
+                        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+                        if novel:
+                            current = novel.get_style_profile()
+                            for k, v in style_update.items():
+                                if v and isinstance(v, str) and v.strip():
+                                    current[k] = v.strip()
+                            novel.set_style_profile(current)
+                            db.commit()
+                        db.close()
                 except Exception:
                     pass
 
