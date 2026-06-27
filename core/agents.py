@@ -65,13 +65,14 @@ class OutlineAgent:
 
 输出格式：必须是合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     @staticmethod
     def _build_foreshadowing_schedule_prompt(active_fs: list) -> str:
@@ -166,7 +167,7 @@ class OutlineAgent:
 - 确保每章字数在2000-4000字能写完的量
 - 生成至少前20章的详细章纲，其余章节可以简略"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=32000, temperature=self.temperature)
 
         # 提取 JSON
         json_start = response.find("{")
@@ -209,7 +210,7 @@ class OutlineAgent:
   ...其他需要修改的字段
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -280,7 +281,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.PARSE_DOCUMENT_PROMPT, user_prompt,
-            max_tokens=8192, cache_system=False
+            max_tokens=8192, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -337,7 +338,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=min(4000 + ch_count * 600, 32000)
+            max_tokens=min(4000 + ch_count * 600, 32000), temperature=self.temperature
         )
 
         arr_start = response.find("[")
@@ -449,7 +450,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 重要约束：outline_updates 的 merged_content 必须是一段完整的、连贯的文本，将大纲中原有的内容与本章新增的信息有机融合。禁止只写"新增：xxx"这样拆成两段的格式。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -511,7 +512,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 只返回 JSON 数组，不包含其他文字。如果本章没有体现任何人物关系，返回空数组 []。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=self.temperature)
         arr_start = response.find("[")
         arr_end = response.rfind("]") + 1
         if arr_start >= 0 and arr_end > arr_start:
@@ -554,13 +555,14 @@ class CharacterAgent:
 
 输出格式：合法的JSON格式。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def generate_characters(self, outline_text: str) -> list[dict]:
         """
@@ -598,7 +600,7 @@ class CharacterAgent:
   ]
 }}"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=self.temperature)
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0:
@@ -630,7 +632,7 @@ class CharacterAgent:
 
 以列表形式输出所有问题（每个问题一行），没有问题则输出"无明显矛盾"。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
         problems = [line.strip() for line in response.split("\n") if line.strip() and line.strip() != "无明显矛盾"]
         return problems
 
@@ -678,23 +680,35 @@ class WriterAgent:
 - 避免大量重复使用同一个词或句式
 
 去AI味规则（必须严格遵守）：
-- 坚决使用主观视角描写：不要以上帝视角说"这个房间很冷"，而是写"陈默打了个冷颤，把领口往上拉了拉"
-- 拒绝大道理：角色不要发表长篇大论的演讲，人类说话是零碎的、有错漏的，允许出现半句话、结巴、或者口头禅
-- 严禁收尾综合征：每一章、每一段的结尾，绝对不要出现"这意味着……"、"他不知道的是，更大的危机正在逼近……"、"这就是命运的安排"等总结性发言
-- 增强潜台词：人类很少直接说出心里话。想表达愤怒时，写他捏碎了纸杯；想表达关心时，写他把烟头掐灭
+## 1. 视角与情感（Show, Don't Tell）
+- 【极致局部主观】严禁上帝视角。不用“房间很冷”，写“陈默打了个冷颤，把领口往上拉”；不用“张毅很恐慌”，写“张毅指节发白，死死抠在吧台边缘”。
+- 【台词留白错漏】严禁长篇大论的演讲和理智的“局势分析”。人类说话是零碎、自私、有错漏的，允许半句话、粗口、结巴或无效口头禅。
+- 【严禁动作套话】禁用“瞳孔骤缩、大脑空白、心跳漏一拍”等AI套话。改为真实的感官窄缩：视线发黑、耳鸣、手忙脚乱、连眨眼都忘了。
+- 【配角去神化】严禁刚出场的普通配角化身“设定百科全书”或“未卜先知”。医生也只能根据临床本能猜测，不能代替作者坐实世界观。
+## 2. 句式与字词封杀（Anti-AI Syntax）
+- 【根治碎句癌】严禁连续使用三、四个字的无主语超短碎句（如：开门。拔刀。血流。）。根据因果和生理逻辑，融成长短错落、有呼吸感的完整叙事句。
+- 【封杀对比解释句】坚决禁用“不是……而是……”、“与其说……不如说……”。AI喜欢用它纠正读者，必须直接砸出视觉事实。
+  * ❌ 错误：“那不是血，而是活的真菌。”
+  * ⭕ 正确：“流出来的已经没有红色的血了，是一股泛着暗金光的黏稠活体。”
+- 【动词瘦身】禁用“似乎、仿佛、宛如、隐约”等温吞词。大面积删减无意义的“着、地”和长副词。将“细得像蛇一样贴着地板缓缓地爬进来”精简为“一缕灰雾像蛇一样贴地滑了进来”。
+- 【切断收尾综合征】严禁在章尾、段尾出现“这意味着……”、“更大的危机正在逼近……”、“这就是命运的安排”等说书人式总结。在动作或死寂中直接断章。
+## 3. 战斗与异能（Hardcore Physics）
+- 【物理阻力与黏滞】严禁超能力/变异“魔法化、特效化”（禁用“金光大盛、残影、高压水枪般喷涌”）。
+- 【肉体代价】必须写出粗粝的生物质感。攻击要带痛感和阻力（如：砸进湿棉被的闷响、刀被纤维里的肉牙咬住）；异能暴长要写出肉体代价与微观异变（如：撕裂血痂、皮肤发烫蠕动、骨骼坚硬凸起、伴随蛋白质烧焦的恶臭）。
 
 输出要求：
 - 直接输出小说正文，不要加解释或注释
 - 字数控制在章纲要求的范围内（一般2000-4000字）
 - 分段合理，对话独占一行"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def write_chapter(self, chapter_number: int,
                        word_target: int = 3000,
@@ -765,16 +779,11 @@ class WriterAgent:
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
-        # 项目自定义去AI味规则（覆盖系统默认）
-        deai_block = ""
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            deai_block = f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}\n"
-
         user_prompt = f"""📏 字数硬性约束：本章必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字），不得超过上限。
 
 请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
 
-{writing_context}{style_block}{platform_block}{feedback_block}{deai_block}
+{writing_context}{style_block}{platform_block}{feedback_block}
 【写作要求】
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
@@ -789,7 +798,7 @@ class WriterAgent:
             # 流式生成
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
@@ -797,46 +806,169 @@ class WriterAgent:
         else:
             # 非流式生成
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             )
 
     def summarize_chapter(self, chapter_number: int, title: str,
                            content: str) -> tuple[str, list[str]]:
         """
-        为已写完的章节生成摘要和关键事件列表
-        摘要用于后续章节的 recent_context 注入，减少 token 消耗
+        为已写完的章节生成详细摘要和关键事件列表。
+        摘要用于后续章节的写作上下文注入 —— 写手Agent不会看到原始正文，
+        只会看到这里的摘要，因此必须足够详细和具体。
 
         Returns:
             (summary: str, key_events: list[str])
         """
-        user_prompt = f"""请为以下小说章节生成简短摘要和关键事件列表：
+        user_prompt = f"""请为以下小说章节生成详细摘要和关键事件列表。
+
+⚠️ 重要：这份摘要是后续章节写作时唯一的前情参考。写手Agent不会看到原始正文，只能通过你的摘要了解之前发生了什么。
+因此摘要必须足够详细、具体、可操作 —— 写手需要知道的不只是"发生了什么"，更是"怎么发生的"和"留下了什么"。
 
 第{chapter_number}章《{title}》
 
 【章节正文】
-{content[:4000]}{"...(已截断)" if len(content) > 4000 else ""}
+{content[:5000]}{"...(已截断)" if len(content) > 5000 else ""}
 
-请输出JSON格式：
+请按以下结构输出JSON格式：
 {{
-  "summary": "100-150字的章节摘要，概括核心事件、人物状态变化、结尾钩子",
-  "key_events": ["关键事件1", "关键事件2", "关键事件3"]
-}}"""
+  "summary": "300-800字的详细章节摘要，必须包含：\\n"
+            "1. 本章发生的所有重要情节事件（按时间顺序，写清楚起因-经过-结果）\\n"
+            "2. 每个出场人物的关键行动、决策和对话要点（具体做了什么、说了什么）\\n"
+            "3. 人物关系和状态的重要变化（谁的态度变了、谁获得了新能力/新信息）\\n"
+            "4. 重要的场景/环境变化（地点转移、氛围转变）\\n"
+            "5. 本章埋下的伏笔和悬而未决的问题\\n"
+            "6. 本章回收的伏笔（如有）\\n"
+            "7. 章节结尾的悬念或钩子（下一章写作需要接住什么）",
+  "key_events": [
+    "关键事件1：具体描述（谁+做了什么+结果如何）",
+    "关键事件2：...",
+    ...
+  ]
+}}
 
-        system = "你是一位专业的小说编辑，擅长提炼章节核心内容。输出合法JSON，不要有其他文字。"
+注意：
+- 摘要不要写成章纲的复述，要写实际正文中发生的具体内容
+- key_events 每一条都应该是可独立理解的动作描述，不要含糊
+- 如果你看到的内容被截断了，请基于可见部分尽力提炼"""
+        system = "你是一位专业的小说编辑，擅长从正文中提炼结构化的情节摘要。输出合法JSON，不要有其他文字。"
+
         try:
-            response = self.llm.generate(system, user_prompt, max_tokens=512, cache_system=False)
+            response = self.llm.generate(system, user_prompt, max_tokens=1024, cache_system=False, temperature=self.temperature)
+
+            # 尝试从响应中提取 JSON
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start >= 0:
-                data = _safe_json_loads(response[json_start:json_end])
-                if isinstance(data, dict):
-                    return data.get("summary", ""), data.get("key_events", [])
-                # LLM 可能返回数组或纯字符串，尝试从数组第一个元素提取
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    return data[0].get("summary", ""), data[0].get("key_events", [])
+                try:
+                    data = _safe_json_loads(response[json_start:json_end])
+                    if isinstance(data, dict):
+                        summary = data.get("summary", "")
+                        events = data.get("key_events", [])
+                        if summary and len(summary.strip()) >= 50:
+                            return summary, events
+                    elif isinstance(data, list) and data and isinstance(data[0], dict):
+                        summary = data[0].get("summary", "")
+                        events = data[0].get("key_events", [])
+                        if summary and len(summary.strip()) >= 50:
+                            return summary, events
+                except Exception as json_err:
+                    print(f"⚠️ 第{chapter_number}章 JSON 解析失败：{json_err}，将使用全文作为摘要")
+
+            # JSON 解析失败或 summary 为空时的 fallback：
+            # 从响应中提取纯文本摘要（去掉 JSON 标记、代码块等）
+            fallback = response.strip()
+            # 去掉常见的 LLM 前缀/后缀
+            for prefix in ["```json", "```", "好的", "以下是"]:
+                if fallback.startswith(prefix):
+                    fallback = fallback[len(prefix):].strip()
+            # 如果包含 JSON 结构但解析失败，取前 500 字作为摘要
+            if "{" in fallback and "}" in fallback:
+                # 尝试提取 summary 字段的文本值
+                import re as _re
+                m = _re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', fallback)
+                if m:
+                    fallback = m.group(1).replace("\\n", "\n").replace('\\"', '"')
+                else:
+                    fallback = fallback[:500]
+            elif len(fallback) > 800:
+                fallback = fallback[:800]
+            if fallback and len(fallback.strip()) >= 30:
+                print(f"⚠️ 第{chapter_number}章使用 fallback 摘要（{len(fallback)}字）")
+                return fallback.strip(), []
+
         except Exception as e:
-            print(f"⚠️ 章节摘要生成失败：{e}")
+            print(f"⚠️ 第{chapter_number}章摘要生成失败：{e}")
         return "", []
+
+    def regenerate_chapter_summary(self, chapter_number: int) -> tuple[str, list[str]]:
+        """
+        为已有章节重新生成详细摘要并持久化到数据库。
+        用于回填旧章节（之前可能只有简短摘要或没有摘要）。
+
+        Args:
+            chapter_number: 章节序号
+
+        Returns:
+            (summary: str, key_events: list[str])
+        """
+        chapter = self.memory.chapter_mem.get_chapter(chapter_number)
+        if not chapter:
+            raise ValueError(f"第{chapter_number}章不存在")
+        if not chapter.content:
+            raise ValueError(f"第{chapter_number}章尚未写入正文，无法生成摘要")
+
+        summary_text, key_events = self.summarize_chapter(
+            chapter_number, chapter.title or "", chapter.content
+        )
+        if summary_text:
+            self.memory.chapter_mem.save_chapter_summary(
+                chapter_number, summary_text, key_events
+            )
+        return summary_text, key_events
+
+    def regenerate_all_summaries(self, progress_callback=None,
+                                   chapter_numbers: list[int] = None) -> dict:
+        """
+        为当前小说的已有正文章节批量重新生成详细摘要。
+
+        Args:
+            progress_callback: 可选的回调函数，接收进度描述字符串
+            chapter_numbers: 可选，指定要重新生成的章节号列表。
+                             传 None 则处理所有已有正文的章节。
+
+        Returns:
+            {"success": N, "failed": M, "skipped": K}
+        """
+        from core.models import Chapter
+        q = self.memory.chapter_mem.db.query(Chapter).filter(
+            Chapter.novel_id == self.novel_id,
+            Chapter.content.isnot(None),
+            Chapter.content != ""
+        )
+        if chapter_numbers is not None:
+            q = q.filter(Chapter.chapter_number.in_(chapter_numbers))
+        chapters = q.order_by(Chapter.chapter_number).all()
+
+        success, failed, skipped = 0, 0, 0
+        for ch in chapters:
+            try:
+                if progress_callback:
+                    progress_callback(f"📝 正在为第{ch.chapter_number}章生成摘要...")
+                summary_text, key_events = self.summarize_chapter(
+                    ch.chapter_number, ch.title or "", ch.content
+                )
+                if summary_text:
+                    self.memory.chapter_mem.save_chapter_summary(
+                        ch.chapter_number, summary_text, key_events
+                    )
+                    success += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                print(f"⚠️ 第{ch.chapter_number}章摘要回填失败：{e}")
+                failed += 1
+
+        return {"success": success, "failed": failed, "skipped": skipped}
 
     def regenerate_section(self, chapter_number: int, section_text: str,
                              instruction: str) -> str:
@@ -856,7 +988,7 @@ class WriterAgent:
 
 请重写这段内容，保持故事连贯性："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
 
     def close(self):
         self.memory.close()
@@ -870,7 +1002,7 @@ class ReviewerAgent:
     """
     审核师 Agent（核心中的核心）
     职责：对每次生成的内容进行全面检测
-    检测维度：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞、AI痕迹
+    检测维度：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞
     """
 
     SYSTEM_PROMPT = """你是一位严格的小说质量审核专家，你的职责是守护故事的一致性和逻辑性。
@@ -881,21 +1013,21 @@ class ReviewerAgent:
 - **时间线侦探**：仔细追踪时间线，确保没有时间悖论
 - **逻辑探长**：每个情节都必须有合理的因果关系
 - **读者代理人**：从读者角度思考每个可能引发困惑的地方
-- **AI痕迹猎手**：逐条对照去AI味规则，标注每处机器人写作痕迹
 
 你的输出必须：
 - 精确引用冲突位置的原文
-- 明确说明与哪条设定冲突或违反哪条规则
+- 明确说明与哪条设定冲突
 - 提供至少2个可行的修改方案"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
         self.model_id = model_id
-        self.detector = ConflictDetector(novel_id, model_id)
+        self.detector = ConflictDetector(novel_id, model_id, temperature)
 
     def review_chapter(self, chapter_number: int, content: str) -> ReviewReport:
         """
@@ -915,7 +1047,7 @@ class ReviewerAgent:
         if not minor_conflicts:
             return content
 
-        llm = NovelLLM(self.model_id)
+        llm = NovelLLM(self.model_id, novel_id=self.novel_id)
         conflicts_desc = "\n".join([
             f"- {c.conflict_type}（位置：{c.location[:100]}）：{c.description}。建议：{c.solutions[0] if c.solutions else ''}"
             for c in minor_conflicts
@@ -933,7 +1065,7 @@ class ReviewerAgent:
 
 请输出修复后的完整正文："""
 
-        return llm.generate(system_prompt, user_prompt, max_tokens=12000)
+        return llm.generate(system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature)
 
     def fix_all_issues(self, content: str,
                         report: "ReviewReport",
@@ -946,7 +1078,7 @@ class ReviewerAgent:
         if not report.conflicts:
             return content
 
-        llm = NovelLLM(self.model_id)
+        llm = NovelLLM(self.model_id, novel_id=self.novel_id)
         conflicts_desc = "\n".join([
             f"- [{c.severity}级] {c.conflict_type}"
             f"（位置：{c.location[:80]}）：{c.description}"
@@ -991,7 +1123,7 @@ class ReviewerAgent:
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
             "请修复以上所有问题并确保章纲目标得以实现，直接输出完整修改后正文："
         )
-        return llm.generate(system_prompt, user_prompt, max_tokens=12000)
+        return llm.generate(system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature)
 
     def close(self):
         self.memory.close()
@@ -1046,13 +1178,14 @@ class PolisherAgent:
 
 输出格式：合法的JSON，不含其他文字。"""
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def polish_chapter(self, content: str,
                          style_reference: str = "",
@@ -1077,18 +1210,13 @@ class PolisherAgent:
             _tg = novel.get_target_tags()
             platform_style_text = get_style_description(_pt, _tg)
 
-        # 项目自定义去AI味规则
-        deai_block = ""
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            deai_block = f"\n【去AI味写作规则（项目自定义，润色时必须严格遵守）】\n{novel.deai_rules.strip()}\n"
-
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
 {f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference}" if style_reference else ""}
-{deai_block}
+
 【待润色内容】
 {content}
 
@@ -1097,14 +1225,14 @@ class PolisherAgent:
         if stream_callback:
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
             return "".join(content_parts)
         else:
             return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
             )
 
     def apply_style_to_selection(self, selected_text: str,
@@ -1122,7 +1250,7 @@ class PolisherAgent:
 
 请直接输出修改后的内容："""
 
-        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt)
+        return self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
 
     def _format_style_profile(self, profile: dict) -> str:
         """将风格档案转为多行文本，供注入润色提示词"""
@@ -1177,7 +1305,7 @@ class PolisherAgent:
 
         response = self.llm.generate(
             self.STYLE_ANALYSIS_PROMPT, user_prompt,
-            max_tokens=4096, cache_system=False
+            max_tokens=4096, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -1246,13 +1374,14 @@ class ReaderAgent:
         },
     }
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         if not model_id:
             _novel = self.memory.global_mem.get_novel()
             model_id = (_novel.llm_model or None) if _novel else None
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
     def evaluate_chapter(self, chapter_number: int, content: str,
                           reader_types: list[str] = None) -> dict:
@@ -1330,7 +1459,7 @@ class ReaderAgent:
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT, user_prompt,
-            max_tokens=4096, cache_system=False
+            max_tokens=4096, cache_system=False, temperature=self.temperature
         )
 
         json_start = response.find("{")
@@ -1388,7 +1517,8 @@ class IdeaAgent:
   "total_chapters": 100
 }"""
 
-    def __init__(self, model_id: str = None):
+    def __init__(self, model_id: str = None, temperature: float = None):
+        self.temperature = temperature
         self.llm = NovelLLM(model_id)
 
     def chat(self, messages: list) -> str:
@@ -1397,7 +1527,7 @@ class IdeaAgent:
         messages: [{"role": "user"/"assistant", "content": "..."}]
         返回 AI 回复文本
         """
-        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024)
+        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024, temperature=self.temperature)
 
     def extract_project_config(self, messages: list) -> dict:
         """
@@ -1411,7 +1541,7 @@ class IdeaAgent:
         user_prompt = f"【对话记录】\n{history_text}"
         response = self.llm.generate(
             self.EXTRACT_PROMPT, user_prompt,
-            max_tokens=1024, cache_system=False
+            max_tokens=1024, cache_system=False, temperature=self.temperature
         )
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
@@ -1500,64 +1630,55 @@ class CanvasAgent:
 ]
 ```
 
-用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。
+若要记录或更新写作风格偏好（当用户对文笔、节奏、对话、描写等提出具体意见时，自动提炼并输出）：
+```style
+{
+  "overall_style": "总体风格定位（如：冷峻硬核、温情治愈）",
+  "sentence_patterns": "句式特征（如：多用短句、长句铺陈）",
+  "vocabulary": "词汇风格（如：口语化、书面典雅）",
+  "narrative_voice": "叙述视角风格（如：第一人称内心独白、第三人称限知视角）",
+  "dialogue_style": "对话特点（如：简练有力、带方言口癖）",
+  "description_style": "描写特点（如：重感官细节、白描留白）",
+  "rhythm_pacing": "节奏与节拍（如：快节奏、张弛有度）",
+  "emotion_expression": "情感表达方式（如：克制含蓄、直抒胸臆）",
+  "signature_techniques": "标志性手法（如：多线叙事、倒叙插叙）",
+  "polish_instructions": "写作核心指令（最关键的几条规则，直接注入写作 prompt）"
+}
+```
 
-【去AI味写作规则（使用 chapter 或修改章节正文时必须严格遵守）】
-- 主观视角描写：不要以上帝视角说"这个房间很冷"，写"陈默打了个冷颤，把领口往上拉了拉"
-- 拒绝大道理：角色不说长篇大论，人类说话是零碎的、有错漏的，允许半句话、结巴、口头禅
-- 严禁收尾综合征：每章每段结尾，绝对不要出现"这意味着……"、"他不知道的是……"、"这就是命运的安排"等总结句
-- 增强潜台词：不直说心里话。表达愤怒→写捏碎纸杯；表达关心→写掐灭烟头""",
+style 块使用规则：
+- 只填用户明确提到或暗示的维度，未涉及的维度不要输出。
+- 用户在讨论中提出的「写得不好」「应该这样写」等批评意见，都应被提炼为正向的风格指令。
+- 例如用户说「对话太生硬了，应该更自然」，应输出 "dialogue_style": "对话要自然流畅，贴近日常口语，避免书面化"
+- 如果用户没有提出风格相关的意见，不要输出 style 块。
+- 每次只输出本次讨论中涉及的新增或修改项，不要重复已有的风格设定。
+
+用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
     }
 
-    def __init__(self, novel_id: int, model_id: str = None, role: str = "global"):
+    def __init__(self, novel_id: int, model_id: str = None, role: str = "global", temperature: float = None):
         from core.memory import MemoryManager
         from core.llm import DEFAULT_MODEL_ID
         self.novel_id = novel_id
         self.role = role
+        self.temperature = temperature
         self.memory = MemoryManager(novel_id)
         _model = model_id or self.memory.global_mem.get_novel().llm_model or DEFAULT_MODEL_ID
-        self.llm = NovelLLM(_model)
+        self.llm = NovelLLM(_model, novel_id=self.novel_id)
 
-    def chat(self, messages: list, document_content: str = "") -> str:
+    def chat(self, messages: list, document_content: str = "",
+             page: str = None, chapter_number: int = None) -> str:
         """
         多轮对话。
         document_content: 当前文档内容（注入 system prompt）
+        page: 当前所在页面（用于上下文感知，预留）
+        chapter_number: 当前章节号（用于上下文感知，预留）
         messages: [{"role": "user"/"assistant", "content": "..."}]
         """
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
         global_ctx = self.memory.global_mem.build_global_context()
 
-        # 注入风格档案和平台约束（与 WriterAgent 对齐）
-        style_block = ""
-        platform_block = ""
-        novel = self.memory.global_mem.get_novel()
-        if novel:
-            style_profile = novel.get_style_profile()
-            if style_profile:
-                _labels = {
-                    "overall_style": "总体风格", "sentence_patterns": "句式", "vocabulary": "词汇",
-                    "narrative_voice": "叙述视角", "dialogue_style": "对话", "description_style": "描写",
-                    "rhythm_pacing": "节奏", "emotion_expression": "情感表达",
-                    "signature_techniques": "标志手法", "polish_instructions": "核心指令",
-                }
-                sl = [f"- {lbl}：{style_profile[k]}" for k, lbl in _labels.items() if style_profile.get(k)]
-                if sl:
-                    style_block = "\n【全书写作风格档案（严格遵循）】\n" + "\n".join(sl)
-            pt = novel.target_platform or ""
-            tg = novel.get_target_tags()
-            from core.platform_styles import get_style_description
-            ps = get_style_description(pt, tg)
-            if ps:
-                platform_block = f"\n【目标平台风格要求】\n{ps}\n"
-
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
-        if style_block:
-            system_parts.append(style_block)
-        if platform_block:
-            system_parts.append(platform_block)
-        # 项目自定义去AI味规则
-        if novel and novel.deai_rules and novel.deai_rules.strip():
-            system_parts.append(f"\n【去AI味写作规则（项目自定义，必须严格遵守）】\n{novel.deai_rules.strip()}")
         if document_content.strip():
             system_parts += [
                 "", "---",
@@ -1566,7 +1687,7 @@ class CanvasAgent:
             ]
 
         system_prompt = "\n".join(system_parts)
-        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096)
+        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096, temperature=self.temperature)
 
     def close(self):
         self.memory.close()

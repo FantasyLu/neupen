@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 from typing import Generator
 
 # ======================================
@@ -316,11 +317,12 @@ class NovelLLM:
     - 其他模型：使用 openai SDK（OpenAI-compatible API）
     """
 
-    def __init__(self, model_id: str = None):
+    def __init__(self, model_id: str = None, novel_id: int = None):
         self.model_id = model_id or DEFAULT_MODEL_ID
         self.info = get_model_info(self.model_id)
         self.provider = self.info["provider"]
         self._client = None
+        self.novel_id = novel_id
 
     @property
     def client(self):
@@ -355,29 +357,90 @@ class NovelLLM:
 
         raise RuntimeError(f"不支持的提供商类型：{self.provider}")
 
+    # ── 调试辅助 ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _log_prompt(method: str, model_id: str, system_prompt: str, user_content: str):
+        """将 prompt 打印到 stderr。由 DEBUG_PROMPTS 环境变量控制。"""
+        from core.config import DEBUG_PROMPTS
+        if not DEBUG_PROMPTS:
+            return
+
+        def _trunc(s: str, head: int = 2000, tail: int = 500) -> str:
+            total = head + tail
+            if len(s) <= total:
+                return s
+            skipped = len(s) - total
+            return s[:head] + f"\n... [省略 {skipped} 字符] ...\n" + s[-tail:]
+
+        sep = "=" * 80
+        sys.stderr.write(f"\n{sep}\n")
+        sys.stderr.write(f"[LLM] {method} | model={model_id}\n")
+        sys.stderr.write(f"{sep}\n")
+        sys.stderr.write(f"--- SYSTEM ({len(system_prompt)} chars) ---\n")
+        sys.stderr.write(_trunc(system_prompt) + "\n")
+        sys.stderr.write(f"--- USER ({len(user_content)} chars) ---\n")
+        sys.stderr.write(_trunc(user_content) + "\n")
+        sys.stderr.write(f"{sep}\n\n")
+        sys.stderr.flush()
+
+    # ── Token 统计 ─────────────────────────────────────────────────
+
+    def _record_tokens(self, input_tokens: int, output_tokens: int):
+        """记录 token 消耗到关联的小说项目数据库。"""
+        if not self.novel_id:
+            return
+        try:
+            from core.models import get_db, Novel
+            db = get_db()
+            novel = db.query(Novel).filter(Novel.id == self.novel_id).first()
+            if novel:
+                novel.total_input_tokens = (novel.total_input_tokens or 0) + input_tokens
+                novel.total_output_tokens = (novel.total_output_tokens or 0) + output_tokens
+                db.commit()
+            db.close()
+        except Exception:
+            pass  # token 统计失败不应影响主流程
+
     # ── 对外统一接口 ────────────────────────────────────────────────
 
     def generate(self, system_prompt: str, user_prompt: str,
                  max_tokens: int = 8192,
-                 cache_system: bool = True) -> str:
+                 cache_system: bool = True,
+                 temperature: float = None) -> str:
         """
         非流式生成
         Anthropic 模型在 system_prompt > 1000 字符时自动启用 prompt caching
         """
+        self._log_prompt("generate", self.model_id, system_prompt, user_prompt)
         if self.provider == "anthropic":
-            return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system)
-        return self._generate_openai(system_prompt, user_prompt, max_tokens)
+            return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system, temperature)
+        return self._generate_openai(system_prompt, user_prompt, max_tokens, temperature)
 
     def generate_stream(self, system_prompt: str, user_prompt: str,
-                        max_tokens: int = 8192) -> Generator[str, None, None]:
+                         max_tokens: int = 8192,
+                         temperature: float = None) -> Generator[str, None, None]:
         """流式生成，逐 token yield"""
+        self._log_prompt("generate_stream", self.model_id, system_prompt, user_prompt)
         if self.provider == "anthropic":
-            yield from self._stream_anthropic(system_prompt, user_prompt, max_tokens)
+            gen = self._stream_anthropic(system_prompt, user_prompt, max_tokens, temperature)
         else:
-            yield from self._stream_openai(system_prompt, user_prompt, max_tokens)
+            gen = self._stream_openai(system_prompt, user_prompt, max_tokens, temperature)
+
+        # 包装生成器，流结束后估算 token 消耗
+        collected = []
+        for chunk in gen:
+            collected.append(chunk)
+            yield chunk
+        # 流结束后估算（中文约 1 token / 1.5 字符，保守按 2 字符 = 1 token）
+        if collected:
+            input_est = max(1, (len(system_prompt) + len(user_prompt)) // 2)
+            output_est = max(1, len("".join(collected)) // 2)
+            self._record_tokens(input_est, output_est)
 
     def generate_chat(self, system_prompt: str, messages: list,
-                      max_tokens: int = 4096) -> str:
+                       max_tokens: int = 4096,
+                       temperature: float = None) -> str:
         """
         多轮对话接口
         messages 格式: [{"role": "user"/"assistant", "content": "..."}]
@@ -386,15 +449,29 @@ class NovelLLM:
         自动将系统提示词中的动态上下文（--- 之后的部分）移到最后一条用户消息前缀，
         使 system message 保持字节级稳定以命中服务端磁盘缓存。
         """
+        chat_digest = "\n".join(
+            f"[{m['role']}] {m.get('content', '')[:300]}{'...' if len(m.get('content', '')) > 300 else ''}"
+            for m in messages
+        )
+        self._log_prompt("generate_chat", self.model_id, system_prompt, chat_digest)
         if self.provider == "anthropic":
             try:
                 import anthropic as _anthropic
-                response = self.client.messages.create(
+                kwargs = dict(
                     model=self.model_id,
                     max_tokens=max_tokens,
                     system=system_prompt,
                     messages=messages,
                 )
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                response = self.client.messages.create(**kwargs)
+                # 记录 token 消耗
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'input_tokens', 0),
+                        getattr(response.usage, 'output_tokens', 0)
+                    )
                 return response.content[0].text
             except _anthropic.RateLimitError:
                 raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -430,6 +507,12 @@ class NovelLLM:
                     max_tokens=max_tokens,
                     messages=api_messages,
                 )
+                # 记录 token 消耗
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'prompt_tokens', 0),
+                        getattr(response.usage, 'completion_tokens', 0)
+                    )
                 return response.choices[0].message.content or ""
             except Exception as e:
                 raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
@@ -437,7 +520,8 @@ class NovelLLM:
     # ── Anthropic 后端 ──────────────────────────────────────────────
 
     def _generate_anthropic(self, system_prompt: str, user_prompt: str,
-                             max_tokens: int, cache_system: bool) -> str:
+                             max_tokens: int, cache_system: bool,
+                             temperature: float = None) -> str:
         import anthropic as _anthropic
 
         # 对长系统提示词启用 prompt caching
@@ -451,12 +535,21 @@ class NovelLLM:
             system_content = system_prompt
 
         try:
-            response = self.client.messages.create(
+            kwargs = dict(
                 model=self.model_id,
                 max_tokens=max_tokens,
                 system=system_content,
                 messages=[{"role": "user", "content": user_prompt}]
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = self.client.messages.create(**kwargs)
+            # 记录 token 消耗
+            if hasattr(response, 'usage'):
+                self._record_tokens(
+                    getattr(response.usage, 'input_tokens', 0),
+                    getattr(response.usage, 'output_tokens', 0)
+                )
             return response.content[0].text
         except _anthropic.RateLimitError:
             raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
@@ -466,22 +559,25 @@ class NovelLLM:
             raise RuntimeError(f"Anthropic API 调用失败：{e}")
 
     def _stream_anthropic(self, system_prompt: str, user_prompt: str,
-                          max_tokens: int) -> Generator[str, None, None]:
-        with self.client.messages.stream(
+                           max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
-        ) as stream:
+        )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        with self.client.messages.stream(**kwargs) as stream:
             for text in stream.text_stream:
                 yield text
 
     # ── OpenAI-compatible 后端 ──────────────────────────────────────
 
     def _generate_openai(self, system_prompt: str, user_prompt: str,
-                         max_tokens: int) -> str:
+                          max_tokens: int, temperature: float = None) -> str:
         try:
-            response = self.client.chat.completions.create(
+            kwargs = dict(
                 model=self.model_id,
                 max_tokens=max_tokens,
                 messages=[
@@ -489,6 +585,15 @@ class NovelLLM:
                     {"role": "user", "content": user_prompt}
                 ]
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = self.client.chat.completions.create(**kwargs)
+            # 记录 token 消耗
+            if hasattr(response, 'usage'):
+                self._record_tokens(
+                    getattr(response.usage, 'prompt_tokens', 0),
+                    getattr(response.usage, 'completion_tokens', 0)
+                )
             return response.choices[0].message.content or ""
         except Exception as e:
             err = str(e)
@@ -502,8 +607,8 @@ class NovelLLM:
             raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
 
     def _stream_openai(self, system_prompt: str, user_prompt: str,
-                       max_tokens: int) -> Generator[str, None, None]:
-        stream = self.client.chat.completions.create(
+                        max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
             messages=[
@@ -512,6 +617,9 @@ class NovelLLM:
             ],
             stream=True
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        stream = self.client.chat.completions.create(**kwargs)
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content

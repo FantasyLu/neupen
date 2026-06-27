@@ -69,6 +69,18 @@ class NovelWorkflow:
             self.model_outline = self.model_character = self.model_writer = \
                 self.model_reviewer = self.model_polisher = self.model_reader = None
 
+        # 各 Agent 独立 Temperature（三级回退：per-agent Novel列 → config默认 → None/模型默认）
+        from core.config import (TEMPERATURE_OUTLINE, TEMPERATURE_CHARACTER, TEMPERATURE_WRITER,
+                                  TEMPERATURE_REVIEWER, TEMPERATURE_POLISHER, TEMPERATURE_READER,
+                                  TEMPERATURE_CANVAS)
+        self.temp_outline   = self._get_temp(novel, "temp_outline",   TEMPERATURE_OUTLINE)
+        self.temp_character = self._get_temp(novel, "temp_character", TEMPERATURE_CHARACTER)
+        self.temp_writer    = self._get_temp(novel, "temp_writer",    TEMPERATURE_WRITER)
+        self.temp_reviewer  = self._get_temp(novel, "temp_reviewer",  TEMPERATURE_REVIEWER)
+        self.temp_polisher  = self._get_temp(novel, "temp_polisher",  TEMPERATURE_POLISHER)
+        self.temp_reader    = self._get_temp(novel, "temp_reader",    TEMPERATURE_READER)
+        self.temp_canvas    = self._get_temp(novel, "temp_canvas",    TEMPERATURE_CANVAS)
+
         # 按需初始化 Agent（避免不必要的资源消耗）
         self._outline_agent = None
         self._character_agent = None
@@ -76,6 +88,15 @@ class NovelWorkflow:
         self._reviewer_agent = None
         self._polisher_agent = None
         self._reader_agent = None
+
+    @staticmethod
+    def _get_temp(novel, col: str, default: float) -> float:
+        """读取 Agent 的 temperature 配置（Novel列 → 全局默认 → None）"""
+        if novel and hasattr(novel, col):
+            val = getattr(novel, col, None)
+            if val is not None:
+                return float(val)
+        return default
 
     @property
     def db(self):
@@ -85,38 +106,38 @@ class NovelWorkflow:
     @property
     def outline_agent(self) -> OutlineAgent:
         if not self._outline_agent:
-            self._outline_agent = OutlineAgent(self.novel_id, self.model_outline)
+            self._outline_agent = OutlineAgent(self.novel_id, self.model_outline, temperature=self.temp_outline)
         return self._outline_agent
 
     @property
     def character_agent(self) -> CharacterAgent:
         if not self._character_agent:
-            self._character_agent = CharacterAgent(self.novel_id, self.model_character)
+            self._character_agent = CharacterAgent(self.novel_id, self.model_character, temperature=self.temp_character)
         return self._character_agent
 
     @property
     def writer_agent(self) -> WriterAgent:
         if not self._writer_agent:
-            self._writer_agent = WriterAgent(self.novel_id, self.model_writer)
+            self._writer_agent = WriterAgent(self.novel_id, self.model_writer, temperature=self.temp_writer)
         return self._writer_agent
 
     @property
     def reviewer_agent(self) -> ReviewerAgent:
         if not self._reviewer_agent:
-            self._reviewer_agent = ReviewerAgent(self.novel_id, self.model_reviewer)
+            self._reviewer_agent = ReviewerAgent(self.novel_id, self.model_reviewer, temperature=self.temp_reviewer)
         return self._reviewer_agent
 
     @property
     def polisher_agent(self) -> PolisherAgent:
         if not self._polisher_agent:
-            self._polisher_agent = PolisherAgent(self.novel_id, self.model_polisher)
+            self._polisher_agent = PolisherAgent(self.novel_id, self.model_polisher, temperature=self.temp_polisher)
         return self._polisher_agent
 
     @property
     def reader_agent(self):
         if not self._reader_agent:
             from core.agents import ReaderAgent
-            self._reader_agent = ReaderAgent(self.novel_id, self.model_reader)
+            self._reader_agent = ReaderAgent(self.novel_id, self.model_reader, temperature=self.temp_reader)
         return self._reader_agent
 
     # ======================================
@@ -1200,7 +1221,7 @@ class NovelWorkflow:
 
         try:
             from core.llm import NovelLLM
-            llm = NovelLLM(self.model_outline)
+            llm = NovelLLM(self.model_outline, novel_id=self.novel_id)
             response = llm.generate(system_prompt, user_prompt, max_tokens=2048, cache_system=False)
 
             json_start = response.find("{")

@@ -103,15 +103,16 @@ class ConflictDetector:
     通过调用 Claude API 进行智能冲突检测
     """
 
-    def __init__(self, novel_id: int, model_id: str = None):
+    def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
-        self.llm = NovelLLM(model_id)
+        self.llm = NovelLLM(model_id, novel_id=self.novel_id)
         self.memory = MemoryManager(novel_id)
+        self.temperature = temperature
 
     def _call_llm(self, system_prompt: str, user_prompt: str,
                    max_tokens: int = 4096) -> str:
         """调用 LLM（统一接口，支持多提供商）"""
-        return self.llm.generate(system_prompt, user_prompt, max_tokens=max_tokens)
+        return self.llm.generate(system_prompt, user_prompt, max_tokens=max_tokens, temperature=self.temperature)
 
     def detect_chapter_conflicts(self, chapter_number: int,
                                    content: str) -> ReviewReport:

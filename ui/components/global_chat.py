@@ -18,7 +18,7 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, Volume
 # ──────────────────────────────────────────────────────────────
 
 _TYPED_BLOCK_RE = re.compile(
-    r'```\s*(outline|settings|world|characters|chapter|volume|foreshadowing)\s*\r?\n(.*?)```',
+    r'```\s*(outline|settings|world|characters|chapter|volume|foreshadowing|style)\s*\r?\n(.*?)```',
     re.DOTALL
 )
 
@@ -30,6 +30,7 @@ _APPLY_LABELS = {
     "chapter":       ("✍️ 应用到章节",    "写作"),
     "volume":        ("📋 应用到卷大纲",   "大纲管理"),
     "foreshadowing": ("📌 应用到伏笔库",   "设定管理"),
+    "style":         ("🎨 应用到写作风格", "设定管理"),
 }
 
 # 兜底应用目标列表（用于未使用类型化代码块时）
@@ -442,20 +443,33 @@ def render_global_chat(novel_id: int):
     if user_input := st.chat_input("和 AI 讨论…", key="global_chat_input"):
         history.append({"role": "user", "content": user_input})
 
-        # 构建当前上下文
+        # 构建当前上下文 + 页面感知信息
         doc_ctx = _build_doc_context(novel_id)
         page = st.session_state.get("page", "")
+        ch_num = st.session_state.get("writing_chapter") or 1
         if not doc_ctx or not doc_ctx.strip():
             if page == "大纲管理":
                 doc_ctx = st.session_state.get(f"outline_textarea_{novel_id}", "")
             elif page == "写作":
-                ch_num = st.session_state.get("writing_chapter") or 1
                 doc_ctx = st.session_state.get(f"edit_content_{novel_id}_{ch_num}", "")
 
         with st.spinner("思考中…"):
             try:
-                agent = CanvasAgent(novel_id=novel_id, role="global")
-                reply = agent.chat(history, document_content=doc_ctx)
+                # 读取项目级 Canvas 温度
+                canvas_temp = None
+                try:
+                    db = get_db()
+                    n = db.query(Novel).filter(Novel.id == novel_id).first()
+                    db.close()
+                    if n:
+                        canvas_temp = n.temp_canvas
+                except Exception:
+                    pass
+                from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
+                agent = CanvasAgent(novel_id=novel_id, role="global",
+                                     temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP)
+                reply = agent.chat(history, document_content=doc_ctx,
+                                   page=page, chapter_number=ch_num if page == "写作" else None)
                 agent.close()
             except Exception as e:
                 history.pop()
@@ -476,6 +490,23 @@ def render_global_chat(novel_id: int):
                     wf.update_chapter_content(ch_num, part["content"], "AI 全局助手自动保存")
                     wf.close()
                     st.session_state[f"edit_content_{novel_id}_{ch_num}"] = part["content"]
+                except Exception:
+                    pass
+            elif part["type"] == "style":
+                # 自动合并 style 偏好到小说风格档案
+                try:
+                    style_update = json.loads(part["content"])
+                    if isinstance(style_update, dict) and style_update:
+                        db = get_db()
+                        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+                        if novel:
+                            current = novel.get_style_profile()
+                            for k, v in style_update.items():
+                                if v and isinstance(v, str) and v.strip():
+                                    current[k] = v.strip()
+                            novel.set_style_profile(current)
+                            db.commit()
+                        db.close()
                 except Exception:
                     pass
 

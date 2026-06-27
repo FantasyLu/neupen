@@ -67,6 +67,15 @@ class Novel(Base):
     target_platform = Column(String(100), nullable=True, comment="目标发布平台（如：起点中文网）")
     target_tags = Column(Text, nullable=True, comment="目标标签（JSON数组，如：[\"玄幻\",\"都市\"]）")
     deai_rules = Column(Text, nullable=True, comment="去AI味写作规则（多行文本，为空时使用系统默认）")
+    temp_outline   = Column(Float, nullable=True, comment="大纲师 temperature")
+    temp_character = Column(Float, nullable=True, comment="人设师 temperature")
+    temp_writer    = Column(Float, nullable=True, comment="写手部 temperature")
+    temp_reviewer  = Column(Float, nullable=True, comment="审核师 temperature")
+    temp_polisher  = Column(Float, nullable=True, comment="润色师 temperature")
+    temp_reader    = Column(Float, nullable=True, comment="读者模拟 temperature")
+    temp_canvas    = Column(Float, nullable=True, comment="全局助手 temperature")
+    total_input_tokens = Column(Integer, default=0, comment="累计输入 token 数（估值，仅供参考）")
+    total_output_tokens = Column(Integer, default=0, comment="累计输出 token 数（估值，仅供参考）")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -502,6 +511,16 @@ def _migrate_add_columns():
         ("novels",         "target_platform",      "VARCHAR(100)"),
         ("novels",         "target_tags",          "TEXT"),
         ("novels",         "author",               "VARCHAR(100) DEFAULT ''"),
+        ("novels",         "total_input_tokens",   "INTEGER DEFAULT 0"),
+        ("novels",         "total_output_tokens",  "INTEGER DEFAULT 0"),
+        ("novels",         "deai_rules",           "TEXT"),
+        ("novels",         "temp_outline",         "FLOAT"),
+        ("novels",         "temp_character",       "FLOAT"),
+        ("novels",         "temp_writer",          "FLOAT"),
+        ("novels",         "temp_reviewer",        "FLOAT"),
+        ("novels",         "temp_polisher",        "FLOAT"),
+        ("novels",         "temp_reader",          "FLOAT"),
+        ("novels",         "temp_canvas",          "FLOAT"),
     ]
 
     with engine.connect() as conn:

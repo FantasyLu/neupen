@@ -454,25 +454,44 @@ class ChapterMemory:
 
     def build_recent_context(self, current_chapter: int) -> str:
         """
-        构建最近N章的上下文字符串
-        包含完整内容 + 摘要，注入到写手Agent提示词
+        构建最近N章的上下文摘要，注入到写手Agent提示词。
+
+        只使用每章的详细摘要和关键事件列表，不再注入原始正文。
+        摘要需要在章节保存时由 WriterAgent.summarize_chapter() 生成。
+        如果某章缺失摘要，会使用正文前300字作为临时标记并提示用户回填。
         """
         recent = self.get_recent_chapters(current_chapter)
         if not recent:
             return "（这是第一章，没有前情）"
 
-        parts = [f"=== 最近{len(recent)}章内容（前情提要）==="]
+        parts = [f"=== 前{len(recent)}章情节摘要（写手请仔细阅读，确保剧情连贯）==="]
+        missing_summary = False
         for ch in recent:
             parts.append(f"\n--- 第{ch.chapter_number}章《{ch.title or ''}》---")
             if ch.summary:
-                parts.append(f"[摘要] {ch.summary}")
-            if ch.content:
-                # 取正文前1500字作为上下文（节省token）
-                preview = ch.content[:1500]
-                if len(ch.content) > 1500:
-                    preview += "...（正文已截取）"
-                parts.append(preview)
+                parts.append(f"📖 {ch.summary}")
+                if ch.key_events:
+                    try:
+                        events = json.loads(ch.key_events)
+                        if events:
+                            parts.append(f"🔑 关键事件：")
+                            for ev in events:
+                                parts.append(f"  • {ev}")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            elif ch.content:
+                # 无摘要时用正文前300字作为临时标记
+                preview = ch.content[:300]
+                if len(ch.content) > 300:
+                    preview += "..."
+                parts.append(f"⚠️ [本章缺失详细摘要，以下为正文片段仅供参考] {preview}")
+                missing_summary = True
 
+        if missing_summary:
+            parts.append(
+                "\n⚠️ 以上标记的章节缺少详细摘要。"
+                "建议在写作前先为这些章节生成摘要，以获得更好的上下文质量。"
+            )
         return "\n".join(parts)
 
     def save_version(self, chapter_id: int, content: str,
