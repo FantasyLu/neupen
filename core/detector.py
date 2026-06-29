@@ -94,6 +94,31 @@ class ReviewReport:
 
 
 # ======================================
+# 流水线关卡结果
+# ======================================
+
+@dataclass
+class GateResult:
+    """单关卡审核结果（三关卡漏斗式流水线）"""
+    gate_name: str           # 关卡标识: context_sentry / global_continuity_judge / stylistic_refiner
+    total_score: float       # 总分 0-10
+    breakdown: dict          # 各子维度得分，如 {"outline_alignment": 10.0, "character_consistency": 7.0}
+    action: str              # "PASS" 或 "REJECT"
+    feedback: str            # 精准修改批注（REJECT 时传递给写作 Agent）
+    passed: bool = True      # 是否通过（total_score >= threshold）
+
+    def to_dict(self) -> dict:
+        return {
+            "gate_name": self.gate_name,
+            "total_score": self.total_score,
+            "breakdown": self.breakdown,
+            "action": self.action,
+            "feedback": self.feedback,
+            "passed": self.passed,
+        }
+
+
+# ======================================
 # 冲突检测器核心类
 # ======================================
 
@@ -454,6 +479,251 @@ class ConflictDetector:
             print(f"⚠️ 大纲影响分析失败：{e}")
 
         return []
+
+    # ======================================
+    # 流水线三关卡检测方法
+    # ======================================
+
+    def _parse_gate_response(self, response_text: str, gate_name: str,
+                              default_score: float = 5.0) -> GateResult:
+        """解析关卡 LLM 响应为标准 GateResult"""
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            try:
+                data = json.loads(response_text[json_start:json_end])
+            except json.JSONDecodeError:
+                from json_repair import repair_json
+                try:
+                    data = json.loads(repair_json(response_text[json_start:json_end]))
+                except Exception:
+                    return GateResult(
+                        gate_name=gate_name, total_score=default_score,
+                        breakdown={}, action="PASS",
+                        feedback="JSON 解析失败，自动放行",
+                        passed=True
+                    )
+        else:
+            return GateResult(
+                gate_name=gate_name, total_score=default_score,
+                breakdown={}, action="PASS",
+                feedback="未找到 JSON 响应，自动放行",
+                passed=True
+            )
+
+        return GateResult(
+            gate_name=data.get("gate_name", gate_name),
+            total_score=float(data.get("total_score", default_score)),
+            breakdown=data.get("breakdown", {}),
+            action=data.get("action", "PASS"),
+            feedback=data.get("feedback", ""),
+            passed=data.get("action", "PASS") == "PASS",
+        )
+
+    def run_context_sentry(self, chapter_number: int, content: str) -> GateResult:
+        """
+        关卡1：局部章纲与人设校对官 (Context Sentry)
+        熔断阈值 8.5，检查本章剧情是否跑偏、人设是否崩坏。
+        """
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+        if not chapter:
+            return GateResult(
+                gate_name="context_sentry", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback="无章纲，跳过校对", passed=True
+            )
+
+        # 构建章纲 + 人物上下文
+        outline_text = chapter.to_outline_text()
+        chars = self.memory.global_mem.get_all_characters()
+        char_text = "\n".join([c.to_profile_text() for c in chars[:20]])
+
+        # 前情摘要
+        recent = self.memory.chapter_mem.get_recent_chapters(chapter_number)
+        recent_text = ""
+        if recent:
+            recent_text = "\n".join([
+                f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.summary or '(无摘要)'}"
+                for ch in recent[-3:]
+            ])
+
+        system_prompt = """你是一位严格的小说局部校对官（Context Sentry）。
+你的唯一职责：对比章纲和正文，检测本章剧情是否跑偏、人物是否 OOC。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 大纲偏离：章纲规定的核心事件未发生或漏写，一次扣 3.0 分；恶性剧情跑偏，直接扣 5.0 分
+- 人设崩坏 (OOC)：主角或核心配角说话方式、核心性格特征明显不符，发现一处扣 1.5 分
+
+你必须输出严格 JSON，不要有任何其他文字：
+{
+  "gate_name": "context_sentry",
+  "total_score": 8.5,
+  "breakdown": {
+    "outline_alignment": 10.0,
+    "character_consistency": 7.0
+  },
+  "action": "PASS",
+  "feedback": "精确说明扣分原因。PASS 时也要指出瑕疵；REJECT 时必须给出具体修改方案。"
+}
+action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【本章章纲】
+{outline_text}
+
+【主要人物档案】
+{char_text}
+
+【前情摘要】
+{recent_text or '(无)'}
+
+【待审核正文】
+{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+
+请严格对照章纲和人物档案，逐条检查本章正文。"""
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "context_sentry")
+        except Exception as e:
+            return GateResult(
+                gate_name="context_sentry", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"校对官调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_continuity_judge(self, chapter_number: int, content: str) -> GateResult:
+        """
+        关卡2：全局时空与设定场记 (Global Continuity Judge)
+        熔断阈值 9.0，揪出状态冲突、世界观冲突、时空硬伤。
+        """
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+        global_ctx = self.memory.global_mem.build_global_context()
+
+        # 收集前文章节的状态信息（人物 current_state + 关键事件）
+        from core.models import Chapter
+        prev_chapters = (
+            self.memory.chapter_mem.db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.chapter_number < chapter_number,
+                Chapter.content.isnot(None)
+            )
+            .order_by(Chapter.chapter_number.desc())
+            .limit(10).all()[::-1]
+        )
+        state_parts = []
+        for pc in prev_chapters:
+            if pc.summary:
+                state_parts.append(f"第{pc.chapter_number}章《{pc.title or ''}》：{pc.summary}")
+        # 人物当前状态
+        chars = self.memory.global_mem.get_all_characters()
+        char_states = "\n".join([
+            f"{c.name}({c.role or '配角'})：{c.current_state or '状态未知'}"
+            for c in chars[:15] if c.current_state
+        ])
+
+        system_prompt = """你是一位严苛的全局场记（Global Continuity Judge）。
+你的唯一职责：对照角色/道具状态面板和世界观设定，揪出时空硬伤和设定冲突。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 状态冲突（物理断言）：违背状态面板（如上一章左臂废了这一章用左手攀爬；凭空使用未持有的道具），一处扣 2.0 分
+- 世界观冲突：违背底层异变/科技/魔法设定，一处扣 3.0 分
+- 空间瞬移/时空硬伤：地理位置、时间线前后矛盾，一处扣 2.0 分
+
+你必须输出严格 JSON：
+{
+  "gate_name": "global_continuity_judge",
+  "total_score": 7.0,
+  "breakdown": {
+    "state_matrix_match": 6.0,
+    "world_setting_logic": 10.0,
+    "spatiotemporal_logic": 8.0
+  },
+  "action": "REJECT",
+  "feedback": "精确指出哪一章哪一段出现了什么物理矛盾，附原文引用。"
+}
+action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【全局设定】
+{global_ctx[:2000]}
+
+【人物当前状态面板】
+{char_states}
+
+【前情摘要】
+{chr(10).join(state_parts) if state_parts else '(无)'}
+
+【本章章纲】
+{chapter.to_outline_text() if chapter else '(无)'}
+
+【待审核正文】
+{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+
+请严格对照状态面板和世界观，逐条检查物理矛盾。"""
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "global_continuity_judge")
+        except Exception as e:
+            return GateResult(
+                gate_name="global_continuity_judge", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"场记调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_stylistic_refiner(self, chapter_number: int, content: str) -> GateResult:
+        """
+        关卡3：去AI痕迹与文风打磨官 (Stylistic Refiner)
+        熔断阈值 8.0，剜掉 AI 味，进行文风润色。上下文极小。
+        """
+        novel = self.memory.global_mem.get_novel()
+        deai_rules = ""
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            deai_rules = novel.deai_rules.strip()
+        else:
+            from core.config import DEFAULT_DEAI_RULES
+            deai_rules = DEFAULT_DEAI_RULES
+
+        system_prompt = """你是一位犀利的文风打磨官（Stylistic Refiner）。
+你的唯一职责：用文字激光手术剜掉所有"AI 味"，进行脏现实主义文风检查。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 违禁句式：每出现一处"不是……而是……"或"与其说……不如说……"，直接扣 1.5 分
+- 说书人腔调/上帝视角：段尾/章尾出现总结性、预言性发言（如"这意味着…""更大的危机正在逼近""他不知道的是"），一处扣 1.5 分
+- 机械连接词堆砌：过度使用"突然、竟然、然而、不得不"，每处扣 0.5 分
+- 直说情绪：未做到"Show, Don't Tell"（直写"他很恐慌"而非通过生理细节表现），一处扣 1.0 分
+
+你必须输出严格 JSON：
+{
+  "gate_name": "stylistic_refiner",
+  "total_score": 7.5,
+  "breakdown": {
+    "forbidden_syntax_penalty": 8.5,
+    "perspective_summary_penalty": 7.0,
+    "dirty_realism_texture": 9.0
+  },
+  "action": "REJECT",
+  "feedback": "逐条列出违规位置原文、违规类型、修改建议。PASS 时也要指出可优化的细节。"
+}
+action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【去AI味规则（逐条对照检测）】
+{deai_rules[:3000]}
+
+【待审核正文】
+{content[:5000]}{'...(已截断)' if len(content) > 5000 else ''}
+
+请逐条对照规则检查正文，不要放过任何违规。"""
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "stylistic_refiner")
+        except Exception as e:
+            return GateResult(
+                gate_name="stylistic_refiner", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"打磨官调用失败：{e}，自动放行", passed=True
+            )
 
     def close(self):
         self.memory.close()

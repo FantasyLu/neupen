@@ -1031,10 +1031,89 @@ class ReviewerAgent:
 
     def review_chapter(self, chapter_number: int, content: str) -> ReviewReport:
         """
-        对章节内容进行全面审核
+        对章节内容进行全面审核（旧版，保留兼容）
         返回详细的审核报告
         """
         return self.detector.detect_chapter_conflicts(chapter_number, content)
+
+    def pipeline_review(self, chapter_number: int, content: str,
+                         progress_callback=None) -> dict:
+        """
+        三关卡漏斗式流水线审核（新版）。
+
+        依次通过三个独立关卡，任一关 REJECT 则立即返回 feedback 供写作 Agent 修正。
+        三关全 PASS 则计算最终加权得分。
+
+        Returns:
+            {
+                "passed": bool,
+                "final_score": float,
+                "gates": [GateResult, ...],   # 已执行关卡的结果
+                "reject_gate": str | None,    # 触发熔断的关卡名
+                "reject_feedback": str | None, # 精准修改批注
+            }
+        """
+        from core.config import (
+            GATE_CONTEXT_THRESHOLD,
+            GATE_CONTINUITY_THRESHOLD,
+            GATE_STYLISTIC_THRESHOLD,
+            FINAL_SCORE_WEIGHTS,
+        )
+        from core.detector import GateResult
+
+        gates_config = [
+            ("context_sentry", self.detector.run_context_sentry, GATE_CONTEXT_THRESHOLD),
+            ("global_continuity_judge", self.detector.run_continuity_judge, GATE_CONTINUITY_THRESHOLD),
+            ("stylistic_refiner", self.detector.run_stylistic_refiner, GATE_STYLISTIC_THRESHOLD),
+        ]
+
+        gate_results = []
+        for gate_name, gate_fn, threshold in gates_config:
+            if progress_callback:
+                label_map = {
+                    "context_sentry": "🎯 关卡1：局部校对（大纲+人设）",
+                    "global_continuity_judge": "🌐 关卡2：全局场记（状态+时空）",
+                    "stylistic_refiner": "✨ 关卡3：文风打磨（去AI痕迹）",
+                }
+                progress_callback(f"{label_map.get(gate_name, gate_name)}（阈值 {threshold}）...")
+
+            result = gate_fn(chapter_number, content)
+            result.passed = result.total_score >= threshold
+
+            if result.action == "PASS" and not result.passed:
+                result.action = "REJECT"
+
+            gate_results.append(result)
+            if progress_callback:
+                action_icon = "✅" if result.passed else "❌"
+                progress_callback(
+                    f"  {action_icon} {result.total_score:.1f}/10"
+                    + (f"（熔断！需 ≥{threshold}）" if not result.passed else "")
+                )
+
+            if not result.passed:
+                return {
+                    "passed": False,
+                    "final_score": result.total_score,
+                    "gates": gate_results,
+                    "reject_gate": gate_name,
+                    "reject_feedback": result.feedback,
+                }
+
+        # 全部通过：计算加权最终分数
+        scores = [g.total_score for g in gate_results]
+        final_score = (
+            scores[0] * FINAL_SCORE_WEIGHTS[0]
+            + scores[1] * FINAL_SCORE_WEIGHTS[1]
+            + scores[2] * FINAL_SCORE_WEIGHTS[2]
+        )
+        return {
+            "passed": True,
+            "final_score": round(final_score, 2),
+            "gates": gate_results,
+            "reject_gate": None,
+            "reject_feedback": None,
+        }
 
     def auto_fix_minor_issues(self, content: str,
                                report: ReviewReport,

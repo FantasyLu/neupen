@@ -305,219 +305,170 @@ class NovelWorkflow:
         stream_callback: Callable = None
     ) -> WorkflowResult:
         """
-        完整的章节生成流水线：
-        写作 → 审核 → 自动修复轻微问题 → 润色 → 保存
+        完整的章节生成流水线（三关卡漏斗式审核）：
+
+        写作 → 关卡1(局部校对) → 关卡2(全局场记) → 关卡3(文风打磨)
+        任一关卡 REJECT 即用 feedback 精准修正后重试，PASS 则进入下一关。
+        三关全通过后计算加权最终得分。
 
         Args:
             chapter_number: 章节序号
             word_target: 目标字数
-            auto_polish: 是否自动润色
+            auto_polish: 是否自动润色（已由关卡3覆盖，保留兼容）
             progress_callback: 进度回调 (message: str)
             stream_callback: 流式输出回调 (chunk: str)
 
         Returns:
             WorkflowResult，包含最终内容和审核报告
         """
+        from core.config import MAX_GATE_RETRIES
+        import json as json_module
+
         try:
-            # 加载每本小说的质量配置（覆盖全局默认）
             _novel = self.memory.global_mem.get_novel()
-            _q = _novel.get_quality_config() if _novel else {}
-            _auto_approve     = int(_q.get("auto_approve_threshold",    AUTO_APPROVE_THRESHOLD))
-            _review_score     = float(_q.get("review_score_threshold",  REVIEW_SCORE_THRESHOLD))
-            _rewrite_thr      = float(_q.get("low_score_rewrite_threshold", LOW_SCORE_REWRITE_THRESHOLD))
-            _max_iter         = int(_q.get("max_review_iterations",     MAX_REVIEW_ITERATIONS))
-            _max_total        = int(_q.get("max_total_attempts",        MAX_TOTAL_ATTEMPTS))
             # 字数容差：UI 传入 > quality_config > 全局默认
-            _tolerance        = word_count_tolerance if word_count_tolerance is not None \
-                                else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
+            _q = _novel.get_quality_config() if _novel else {}
+            _tolerance = word_count_tolerance if word_count_tolerance is not None \
+                         else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
 
             # Step 1: 生成章节草稿
             if progress_callback:
                 progress_callback(f"✍️ 正在写作第{chapter_number}章...")
 
-            draft_content = self.writer_agent.write_chapter(
+            current_content = self.writer_agent.write_chapter(
                 chapter_number=chapter_number,
                 word_target=word_target,
                 word_count_tolerance=_tolerance,
                 stream_callback=stream_callback
             )
-
-            # 保存草稿
+            draft_content = current_content
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
-            # Step 2-3: 审核 → 修改 → 重写循环（全局上限 MAX_TOTAL_ATTEMPTS 次审核）
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
-            import json as json_module
 
-            current_content = draft_content
-            best_content    = draft_content   # 历史最高分对应内容
-            best_score      = 0.0
-            report          = None
-            total_reviews   = 0               # 已消耗的审核次数
+            # Step 2: 三关卡流水线审核
+            gate_labels = {
+                "context_sentry": ("关卡1", "局部校对（大纲+人设）", "大纲+人设修正"),
+                "global_continuity_judge": ("关卡2", "全局场记（状态+时空）", "状态+逻辑修正"),
+                "stylistic_refiner": ("关卡3", "文风打磨（去AI痕迹）", "文风修正"),
+            }
 
-            # Phase 1: fix-review 循环
-            for iteration in range(_max_iter):
-                if total_reviews >= _max_total:
-                    break
-                round_label = "" if iteration == 0 else f"（第{iteration + 1}轮）"
-                if progress_callback:
-                    progress_callback(f"🔍 AI 审核{round_label}...")
+            all_gate_results = []
+            final_passed = False
+            final_score = 0.0
 
-                report = self.reviewer_agent.review_chapter(chapter_number, current_content)
-                total_reviews += 1
-
-                # 追踪历史最高分
-                if report.overall_score > best_score:
-                    best_score   = report.overall_score
-                    best_content = current_content
-
-                # 保存本轮审核报告
-                if chapter:
-                    chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                    chapter.review_score  = report.overall_score
-                    chapter.status = "review_pending" if not report.passed else "reviewed"
-                    self.db.commit()
-
-                # 判断是否达标
-                has_major = any(c.severity >= _auto_approve for c in report.conflicts)
-                if report.overall_score >= _review_score and not has_major:
-                    if progress_callback:
-                        progress_callback(
-                            f"✅ 审核通过（第{iteration + 1}轮）"
-                            f"，评分：{report.overall_score:.1f}/10"
-                        )
-                    break
-
-                # 还有修改次数且未达全局上限 → 修复
-                if iteration < _max_iter - 1 and total_reviews < _max_total:
-                    if progress_callback:
-                        progress_callback(
-                            f"🔧 修改中（当前评分 {report.overall_score:.1f}/10，"
-                            f"第{iteration + 1}/{_max_iter}轮）..."
-                        )
-                    current_content = self.reviewer_agent.fix_all_issues(
-                        current_content, report, self.novel_id, chapter_number
-                    )
-                else:
-                    if progress_callback:
-                        progress_callback(
-                            f"修改轮次结束，当前评分：{report.overall_score:.1f}/10"
-                        )
-
-            # Phase 2: 低分/有严重冲突重写循环（与 Phase 1 退出条件对齐）
-            # 退出条件：score >= 7 且无 severity≥3 冲突，或全局审核次数耗尽
-            has_major_last = (
-                any(c.severity >= _auto_approve for c in report.conflicts)
-                if report else False
-            )
-            rewrite_count = 0
-            while (report and _rewrite_thr > 0
-                   and (report.overall_score < _rewrite_thr or has_major_last)
-                   and total_reviews < _max_total):
-                rewrite_count += 1
-                reason = []
-                if report.overall_score < _rewrite_thr:
-                    reason.append(f"评分 {report.overall_score:.1f}")
-                if has_major_last:
-                    reason.append("含严重冲突")
-                if progress_callback:
-                    progress_callback(
-                        f"🔄 第{rewrite_count}次重写（{'、'.join(reason)}，"
-                        f"已用 {total_reviews}/{_max_total} 次审核）..."
-                    )
-                feedback_lines = [
-                    f"- [{c.severity}级] {c.conflict_type}：{c.description}"
-                    + (f"。建议：{c.solutions[0]}" if c.solutions else "")
-                    for c in report.conflicts
-                ]
-                review_feedback = (
-                    f"上一稿评分 {report.overall_score:.1f}/10，主要问题：\n"
-                    + "\n".join(feedback_lines)
+            for attempt in range(MAX_GATE_RETRIES + 1):
+                pipeline_result = self.reviewer_agent.pipeline_review(
+                    chapter_number, current_content,
+                    progress_callback=progress_callback
                 )
-                try:
-                    current_content = self.writer_agent.write_chapter(
-                        chapter_number=chapter_number,
-                        word_target=word_target,
-                        word_count_tolerance=_tolerance,
-                        review_feedback=review_feedback,
-                    )
+
+                # 收集已执行的全部关卡结果
+                all_gate_results = pipeline_result["gates"]
+
+                if pipeline_result["passed"]:
+                    final_passed = True
+                    final_score = pipeline_result["final_score"]
                     if progress_callback:
-                        progress_callback("🔍 重写后审核...")
-                    report = self.reviewer_agent.review_chapter(chapter_number, current_content)
-                    total_reviews += 1
-                    has_major_last = any(
-                        c.severity >= _auto_approve for c in report.conflicts
-                    )
+                        progress_callback(
+                            f"✅ 三关全通过！最终加权得分：{final_score:.1f}/10"
+                            f"（= 校对{all_gate_results[0].total_score:.1f}×0.3"
+                            f" + 场记{all_gate_results[1].total_score:.1f}×0.4"
+                            f" + 文风{all_gate_results[2].total_score:.1f}×0.3）"
+                        )
+                    break
 
-                    if report.overall_score > best_score:
-                        best_score   = report.overall_score
-                        best_content = current_content
+                # 有关卡熔断
+                reject_gate = pipeline_result["reject_gate"]
+                reject_feedback = pipeline_result["reject_feedback"]
+                gate_info = gate_labels.get(reject_gate, ("", "", ""))
 
-                    if chapter:
-                        chapter.review_report = json_module.dumps(report.to_dict(), ensure_ascii=False)
-                        chapter.review_score  = report.overall_score
-                        self.db.commit()
+                if attempt < MAX_GATE_RETRIES:
                     if progress_callback:
-                        status = "✅ 通过" if (report.overall_score >= _rewrite_thr and not has_major_last) else "继续迭代"
-                        progress_callback(f"📊 重写后评分：{report.overall_score:.1f}/10（{status}）")
-                except Exception:
-                    break  # 重写失败退出，用已有最佳版本
+                        progress_callback(
+                            f"❌ {gate_info[0]}熔断！正在根据反馈进行{gate_info[2]}（第{attempt + 1}/{MAX_GATE_RETRIES}次）..."
+                        )
 
-            # Phase 3: 选稿 — 预算耗尽仍未通过（score < 阈值 或有严重冲突），选历史最高分版本
-            not_passed = report and (
-                report.overall_score < _rewrite_thr or has_major_last
-            )
-            if not_passed:
-                if progress_callback:
-                    progress_callback(
-                        f"⚠️ 已用 {total_reviews}/{_max_total} 次审核，"
-                        f"选用历史最高分版本（{best_score:.1f}/10）作为终稿"
+                    fix_prompt = (
+                        f"【审核关卡：{gate_info[1]}】\n"
+                        f"【精准修改批注（请仅针对以下问题进行修改，保留其他内容不变）】\n"
+                        f"{reject_feedback}\n\n"
+                        f"请根据上述批注修改章节正文，只修改问题涉及的部分，其他内容保持不变。"
+                        f"直接输出修改后的完整正文。"
                     )
-                current_content = best_content
-                if chapter and chapter.review_score != best_score:
-                    chapter.review_score = best_score
-                    self.db.commit()
+                    try:
+                        current_content = self.writer_agent.write_chapter(
+                            chapter_number=chapter_number,
+                            word_target=word_target,
+                            word_count_tolerance=_tolerance,
+                            review_feedback=fix_prompt,
+                        )
+                    except Exception:
+                        # 修正失败，继续下一轮尝试
+                        pass
+                else:
+                    # 重试耗尽
+                    final_score = pipeline_result["final_score"]
+                    if progress_callback:
+                        progress_callback(
+                            f"⚠️ {gate_info[0]}重试{MAX_GATE_RETRIES}次仍未通过"
+                            f"（{final_score:.1f}/10），使用当前版本继续"
+                        )
+                    break
 
-            # Step 4: 润色
+            # 保存审核结果到数据库
+            if chapter:
+                # 构建兼容旧格式的审核报告
+                all_gates_dict = [g.to_dict() for g in all_gate_results]
+                pipeline_report = {
+                    "pipeline": True,
+                    "passed": final_passed,
+                    "final_score": final_score,
+                    "gates": all_gates_dict,
+                }
+                chapter.review_report = json_module.dumps(pipeline_report, ensure_ascii=False)
+                chapter.review_score = final_score
+                chapter.status = "reviewed" if final_passed else "review_pending"
+                self.db.commit()
+
+            # Step 3: 润色（由关卡3已做文风打磨，此处轻量兜底）
             final_content = current_content
-            if auto_polish:
+            if auto_polish and final_passed:
+                # 只有三关全通过才额外润色，否则保持修正后版本
                 if progress_callback:
-                    progress_callback(f"✨ 正在润色第{chapter_number}章...")
-                final_content = self.polisher_agent.polish_chapter(current_content)
-
-            # Step 5: 保存最终内容（SQLite 同步，向量索引异步）
-            self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
-            import threading
-            from core.memory import FragmentMemory
-            _novel_id_wc = self.novel_id
-            _ch_num_wc   = chapter_number
-            _title_wc    = chapter.title if chapter else ""
-            _content_wc  = final_content
-
-            def _rebuild_vectors_wc():
+                    progress_callback(f"✨ 润色收尾...")
                 try:
-                    FragmentMemory(_novel_id_wc).add_chapter(_ch_num_wc, _title_wc, _content_wc)
+                    final_content = self.polisher_agent.polish_chapter(current_content)
                 except Exception:
                     pass
 
-            threading.Thread(target=_rebuild_vectors_wc, daemon=True).start()
+            # Step 4: 保存最终内容
+            self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
+            import threading
+            from core.memory import FragmentMemory
+            _nid, _cnum, _ctitle, _ccontent = self.novel_id, chapter_number, \
+                (chapter.title if chapter else ""), final_content
 
-            # 保存版本历史
+            def _rebuild_vectors():
+                try:
+                    FragmentMemory(_nid).add_chapter(_cnum, title=_ctitle, content=_ccontent)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_rebuild_vectors, daemon=True).start()
+
             if chapter:
+                self.memory.chapter_mem.save_version(chapter.id, draft_content, "draft", "AI初稿")
                 self.memory.chapter_mem.save_version(
-                    chapter.id, draft_content, "draft", "AI初稿"
+                    chapter.id, final_content, "polished",
+                    f"流水线审核{'✅通过' if final_passed else '⚠️部分通过'}，得分 {final_score:.1f}"
                 )
-                self.memory.chapter_mem.save_version(
-                    chapter.id, final_content, "polished", "经审核润色后的版本"
-                )
-
-                # 更新章节状态
                 chapter.status = "published"
                 chapter.word_count = len(final_content)
                 chapter.approval_status = "pending"
                 self.db.commit()
 
-            # 生成章节摘要（供后续章节的 recent_context 使用）
+            # Step 5: 生成章节摘要
             if progress_callback:
                 progress_callback(f"📝 生成章节摘要...")
             try:
@@ -525,13 +476,11 @@ class NovelWorkflow:
                     chapter_number, chapter.title or "", final_content
                 )
                 if summary_text:
-                    self.memory.chapter_mem.save_chapter_summary(
-                        chapter_number, summary_text, key_events
-                    )
+                    self.memory.chapter_mem.save_chapter_summary(chapter_number, summary_text, key_events)
             except Exception:
-                pass  # 摘要生成失败不影响主流程
+                pass
 
-            # Step 6: 自动大纲 / 设定同步检测
+            # Step 6: 大纲/设定同步检测
             sync_checks = {}
             if progress_callback:
                 progress_callback(f"🔄 检测大纲/设定同步...")
@@ -540,10 +489,10 @@ class NovelWorkflow:
                     chapter_number, final_content
                 )
             except Exception:
-                pass  # 同步检测失败不影响主流程
+                pass
 
             if progress_callback:
-                progress_callback(f"✅ 第{chapter_number}章完成！字数：{len(final_content)}")
+                progress_callback(f"✅ 第{chapter_number}章完成！字数：{len(final_content)}，得分：{final_score:.1f}/10")
 
             return WorkflowResult(
                 success=True,
@@ -551,9 +500,14 @@ class NovelWorkflow:
                 data={
                     "content": final_content,
                     "word_count": len(final_content),
-                    "review_report": report.to_dict() if report else {},
-                    "review_passed": report.passed if report else True,
-                    "overall_score": report.overall_score if report else 0.0,
+                    "review_report": {
+                        "pipeline": True,
+                        "passed": final_passed,
+                        "overall_score": final_score,
+                        "gates": [g.to_dict() for g in all_gate_results],
+                    },
+                    "review_passed": final_passed,
+                    "overall_score": final_score,
                     "sync_checks": sync_checks,
                 }
             )
