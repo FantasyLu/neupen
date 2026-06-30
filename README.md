@@ -403,6 +403,9 @@ WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | 向量化使用的 Embedding 模型 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `DEBUG_PROMPTS` | `0` | 设为 `1` 时在每次 LLM 调用时将 system/user prompt 打印到 stderr |
+| `LLM_RETRY_MAX_ATTEMPTS` | `4` | LLM 请求失败后的最大重试次数（含首次），429/5xx/超时自动重试，401 不重试 |
+| `LLM_RETRY_BASE_DELAY` | `2.0` | 首次重试等待秒数（指数退避，每次翻倍） |
+| `LLM_RETRY_MAX_DELAY` | `60.0` | 单次重试等待上限（秒） |
 
 ### 记忆系统参数
 
@@ -411,6 +414,13 @@ WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 
 | `RECENT_CHAPTERS_COUNT` | `5` | Layer 2 记忆注入的近期章节数 |
 | `VECTOR_TOP_K` | `10` | Layer 3 语义检索返回的片段数 |
 | `CHUNK_SIZE` | `500` | 章节向量化分块大小（字符数） |
+| `COMPRESS_WORLD_THRESHOLD` | `300` | 世界观单条 value 超过此字符数时触发 LLM 压缩 |
+| `COMPRESS_WORLD_TARGET_MAX` | `400` | 世界观压缩后的目标字符上限（LLM 参考值，不硬截断） |
+| `COMPRESS_OUTLINE_THRESHOLD` | `150` | 大纲字段超过此字符数时触发 LLM 压缩 |
+| `COMPRESS_OUTLINE_THEME_TARGET` | `100` | 大纲「核心主题」字段压缩目标字符数 |
+| `COMPRESS_OUTLINE_CONFLICT_TARGET` | `300` | 大纲「主要矛盾」字段压缩目标字符数 |
+| `COMPRESS_OUTLINE_ARC_TARGET` | `500` | 大纲「主角弧光」字段压缩目标字符数 |
+| `COMPRESS_OUTLINE_ENDING_TARGET` | `500` | 大纲「结局概要」字段压缩目标字符数 |
 
 ### 写作质量参数
 
@@ -441,7 +451,7 @@ WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 
 
 **Q: 提示 "rate limit exceeded"？**
 
-触发了 API 频率限制。系统已对长系统提示词启用 prompt caching，但高频连续写作仍可能触发限额。稍等 1-2 分钟后重试。
+触发了 API 频率限制。系统已对长系统提示词启用 prompt caching，且内置指数退避重试（最多 4 次，首次等 2 秒，上限 60 秒），偶发性限流会自动恢复。持续触发说明调用频率过高，稍等 1-2 分钟后重试，或调低并发写作频率。
 
 **Q: 审核报告冲突太多？**
 
@@ -467,7 +477,7 @@ pip install python-docx EbookLib
 
 **Q: 小说写到后期（100 章以上），API 调用越来越慢或报 context limit 错误？**
 
-系统已内置多层上下文精简策略：世界观按本章关键词过滤、人物档案区分出场/未出场、审核正文截断至 6000 字、向量检索最多 3 片段。若仍超限，可检查世界观条目是否过于冗长（建议每条控制在 200 字以内），或将模型切换为 Qwen Turbo / Gemini 等 1M 长上下文模型。
+系统已内置多层上下文精简策略：世界观/大纲字段超长时由 LLM 自动压缩并缓存精简版（首次调用时压缩，后续直接读缓存）、世界观按本章关键词过滤、人物档案区分出场/未出场、审核正文截断至 6000 字、向量检索最多 3 片段。若仍超限，可将模型切换为 Qwen Turbo / Gemini 等 1M 长上下文模型。
 
 **Q: 审阅者看不到编辑按钮？**
 
@@ -656,7 +666,8 @@ neupen/
 | 位置 | 策略 |
 |------|------|
 | 人物档案 | 本章出场人物给完整档案，其余人物仅注入单行简介（姓名+角色+核心特征） |
-| 世界观设定 | 按章纲关键词过滤，只注入与本章相关的条目 |
+| 世界观设定 | 按章纲关键词过滤，只注入与本章相关的条目；超过 300 字的条目在首次读取时由 LLM 压缩为精简版并缓存，后续调用直接读缓存 |
+| 大纲字段 | theme/main_conflict/protagonist_arc/ending_summary 超过阈值时由 LLM 按字段语义压缩并缓存，后续调用直接读缓存 |
 | 章节摘要 | L2 层按总章数自适应：50 章以内取 5 章，50-100 章取 4 章，100 章以上取 3 章 |
 | 向量检索 | L3 层最多返回 3 个片段，相关度低于 0.5 自动丢弃 |
 | 待审正文 | 所有关卡截断至 6000 字 |
