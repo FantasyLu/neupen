@@ -823,12 +823,18 @@ class WriterAgent:
                        stream_callback=None,
                        review_feedback: str = "") -> str:
         """
-        生成指定章节的正文
+        生成指定章节的正文。
+
+        流式模式：直接生成并回调，不做字数重试（避免用户看到内容被清空重写）。
+        非流式模式：生成后检测字数，超出范围则最多重试 2 次，
+                    每次重试把实际字数和偏差告诉 LLM，引导精准修正。
 
         Args:
             chapter_number: 章节序号
             word_target: 目标字数
-            stream_callback: 流式输出回调函数（可选）
+            word_count_tolerance: 字数容差（默认 0.30 = ±30%）
+            stream_callback: 流式输出回调（提供时走流式路径，不重试）
+            review_feedback: 上轮审核反馈（用于针对性改写）
 
         Returns:
             生成的章节正文
@@ -882,10 +888,6 @@ class WriterAgent:
             if _ps:
                 platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
 
-        feedback_block = ""
-        if review_feedback:
-            feedback_block = f"\n【上一稿审核反馈（本次必须针对性改进，这些问题不能再出现）】\n{review_feedback}\n"
-
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
         deai_rules = (
@@ -898,7 +900,16 @@ class WriterAgent:
         word_min = int(word_target * (1 - word_count_tolerance))
         word_max = int(word_target * (1 + word_count_tolerance))
 
-        user_prompt = f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
+        def _build_prompt(extra_feedback: str = "") -> str:
+            """组装 user prompt，extra_feedback 用于重试时注入字数偏差提示。"""
+            fb = review_feedback
+            if extra_feedback:
+                fb = (fb + "\n" + extra_feedback) if fb else extra_feedback
+            feedback_block = (
+                f"\n【上一稿审核反馈（本次必须针对性改进，这些问题不能再出现）】\n{fb}\n"
+                if fb else ""
+            )
+            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
 
 【字数硬约束】
 - 最少：{word_min} 字（不足会显得情节仓促、铺垫缺失）
@@ -924,20 +935,64 @@ class WriterAgent:
 
 请直接输出正文，从标题开始："""
 
+        # ── 流式路径：直接生成，不做字数重试 ──────────────────────────────
         if stream_callback:
-            # 流式生成
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, _build_prompt(), max_tokens=12000,
+                temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
             return "".join(content_parts)
-        else:
-            # 非流式生成
-            return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+
+        # ── 非流式路径：生成后检测字数，超出范围最多重试 2 次 ──────────────
+        _MAX_WORD_RETRIES = 2
+        content = ""
+        for attempt in range(_MAX_WORD_RETRIES + 1):
+            extra_fb = ""
+            if attempt > 0:
+                actual = len(content)
+                if actual < word_min:
+                    deficit = word_min - actual
+                    extra_fb = (
+                        f"⚠️ 字数不足重试（第{attempt}次）：上次生成 {actual} 字，"
+                        f"距最低要求还差 {deficit} 字。请补充更多场景细节、对话过程或心理描写，"
+                        f"使总字数达到 {word_min} 字以上。保持已有内容的风格和情节，"
+                        f"直接输出完整的重写版本。"
+                    )
+                else:
+                    surplus = actual - word_max
+                    extra_fb = (
+                        f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，"
+                        f"超出上限 {surplus} 字。请精简重复描写、压缩过渡段落，"
+                        f"使总字数控制在 {word_max} 字以内。保持核心情节完整，"
+                        f"直接输出完整的重写版本。"
+                    )
+
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT, _build_prompt(extra_fb),
+                max_tokens=12000, temperature=self.temperature
             )
+            actual = len(content)
+            if word_min <= actual <= word_max:
+                break  # 字数达标，退出重试
+            if attempt < _MAX_WORD_RETRIES:
+                import sys
+                print(
+                    f"[WriterAgent] 第{chapter_number}章字数偏差（{actual}字，"
+                    f"目标 {word_min}~{word_max}），发起第{attempt + 1}次重试…",
+                    file=sys.stderr
+                )
+        else:
+            # 所有重试耗尽仍超范围，打印警告后返回最终结果
+            import sys
+            print(
+                f"[WriterAgent] 第{chapter_number}章重试{_MAX_WORD_RETRIES}次后"
+                f"字数仍为 {len(content)}（目标 {word_min}~{word_max}），使用当前版本。",
+                file=sys.stderr
+            )
+        return content
 
     def summarize_chapter(self, chapter_number: int, title: str,
                            content: str) -> tuple[str, list[str]]:
