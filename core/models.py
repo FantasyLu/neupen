@@ -203,6 +203,101 @@ class Character(Base):
         if self.speech_patterns: parts.append(f"说话风格：{self.speech_patterns}")
         return "\n".join(parts)
 
+    def to_chapter_relevant_profile(
+        self,
+        chapter_keywords: "set[str] | None" = None,
+        co_appearing_chars: "set[str] | None" = None,
+    ) -> str:
+        """
+        按本章相关性过滤的人物档案，用于出场人物的精准注入。
+
+        策略：核心字段无条件保留；其余字段按关键词命中决定是否注入。
+        这样既避免机械截断导致信息残缺，又防止无关大段背景浪费 context。
+
+        Args:
+            chapter_keywords: 来自章纲各字段提取的关键词集合（见 _extract_chapter_keywords）
+            co_appearing_chars: 本章同台出场的其他人物名集合，用于判断关系字段是否相关
+        """
+        kws = chapter_keywords or set()
+        co_chars = co_appearing_chars or set()
+
+        def _hit(text: str | None) -> bool:
+            """判断字段内容是否与本章关键词有交集"""
+            if not text:
+                return False
+            return any(kw in text for kw in kws) if kws else True
+
+        def _rel_hit(rel_text: str | None) -> bool:
+            """关系字段：检查同台人物名是否出现在关系描述中"""
+            if not rel_text:
+                return False
+            # 若无同台人物信息，退化为关键词命中
+            if not co_chars:
+                return _hit(rel_text)
+            return any(name in rel_text for name in co_chars) or _hit(rel_text)
+
+        # ── 分组关键词（用于语义分组判断）──────────────────────────
+        _combat_kws = {"战斗", "打斗", "能力", "技能", "异能", "战力", "攻击", "防御",
+                       "施法", "魔法", "武器", "修炼", "境界", "招式"}
+        _emotion_kws = {"情感", "感情", "爱", "恨", "内心", "心理", "成长", "转变",
+                        "觉醒", "崩溃", "释怀", "秘密", "揭露", "真相"}
+        _appear_kws  = {"外貌", "容颜", "初见", "描写", "样貌", "衣着", "穿着", "装扮"}
+
+        _is_combat  = bool(kws & _combat_kws) or any(k in kw or kw in k
+                          for kw in kws for k in _combat_kws)
+        _is_emotion = bool(kws & _emotion_kws) or any(k in kw or kw in k
+                          for kw in kws for k in _emotion_kws)
+        _is_appear  = bool(kws & _appear_kws) or any(k in kw or kw in k
+                          for kw in kws for k in _appear_kws)
+
+        parts = [f"【{self.name}】({self.role})"]
+
+        # ── 永远注入的核心字段 ───────────────────────────────────────
+        if self.age:             parts.append(f"年龄：{self.age}")
+        if self.personality:     parts.append(f"性格：{self.personality}")
+        if self.current_state:   parts.append(f"当前状态：{self.current_state}")
+        if self.speech_patterns: parts.append(f"说话风格：{self.speech_patterns}")
+
+        # ── 按相关性决定是否注入 ────────────────────────────────────
+        # 动机：本章有冲突/目标类关键词，或关键词命中动机内容
+        if self.motivations and (_hit(self.motivations) or bool(kws & {"目标", "动机", "冲突", "目的", "意图"})):
+            parts.append(f"动机：{self.motivations}")
+
+        # 背景故事：关键词命中背景内容（防止大量无关历史注入）
+        if self.background and _hit(self.background):
+            parts.append(f"背景：{self.background}")
+
+        # 能力：本章有战斗/技能类关键词
+        if self.abilities and _is_combat:
+            abilities_list = self.get_abilities()
+            if abilities_list:
+                parts.append(f"能力：{', '.join(str(a) for a in abilities_list)}")
+
+        # 人际关系：同台人物出现在关系描述中
+        if self.relationships and _rel_hit(self.relationships):
+            rels = self.get_relationships()
+            if rels:
+                rel_lines = [f"{k}：{v}" for k, v in rels.items()
+                             if k in co_chars or _hit(str(v))]
+                if rel_lines:
+                    parts.append("人际关系：\n  " + "\n  ".join(rel_lines))
+
+        # 成长弧光/秘密：本章有情感/揭秘类关键词
+        if self.growth_arc and (_is_emotion or _hit(self.growth_arc)):
+            parts.append(f"成长弧光：{self.growth_arc}")
+        if self.secrets and (_is_emotion or _hit(self.secrets)):
+            parts.append(f"秘密：{self.secrets}")
+
+        # 外貌：本章有初见/外貌描写类关键词
+        if self.appearance and _is_appear:
+            parts.append(f"外貌：{self.appearance}")
+
+        # 行为习惯：关键词命中
+        if self.behavioral_patterns and _hit(self.behavioral_patterns):
+            parts.append(f"行为习惯：{self.behavioral_patterns}")
+
+        return "\n".join(parts)
+
     def to_brief_text(self) -> str:
         """单行简介，用于非出场人物的存在感提示（仅姓名+角色+当前状态）"""
         state = f"，当前状态：{self.current_state}" if self.current_state else ""
@@ -345,6 +440,20 @@ class Foreshadowing(Base):
 
     # 关联
     novel = relationship("Novel", back_populates="foreshadowings")
+
+    def to_full_text(self) -> str:
+        """完整伏笔条目，用于关键词命中时的详细注入"""
+        deadline_str = f"  ⚠️ 最晚第{self.collect_by_chapter}章回收" if self.collect_by_chapter else ""
+        notes_str = f"  备注：{self.notes}" if self.notes else ""
+        return (
+            f"[{self.importance}] 第{self.set_chapter}章埋下《{self.name}》："
+            f"{self.description}{deadline_str}{notes_str}"
+        )
+
+    def to_brief_text(self) -> str:
+        """单行简介，用于无关键词命中时的存在感提示"""
+        deadline_str = f"(最晚第{self.collect_by_chapter}章)" if self.collect_by_chapter else ""
+        return f"《{self.name}》[{self.importance}]{deadline_str}"
 
     def __repr__(self):
         return f"<Foreshadowing id={self.id} name={self.name} status={self.status}>"

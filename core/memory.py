@@ -336,7 +336,8 @@ class GlobalMemory:
 
     def build_global_context(self, include_chapters: bool = False,
                               active_chars: list[str] | None = None,
-                              chapter_keywords: set[str] | None = None) -> str:
+                              chapter_keywords: set[str] | None = None,
+                              current_chapter: int | None = None) -> str:
         """
         构建全局上下文字符串，注入到 Agent 提示词中
         包含：世界观设定、主要人物、总大纲概要、未回收伏笔
@@ -344,12 +345,16 @@ class GlobalMemory:
         Args:
             include_chapters: 是否附加章节大纲列表
             active_chars: 本章出场人物姓名列表。
-                若提供，出场人物给完整档案，其余人物只给单行简介；
-                若为 None（默认），保持原有全量注入行为。
+                若提供，出场人物调用 to_chapter_relevant_profile() 按相关性过滤字段，
+                其余人物只给单行简介；
+                若为 None（默认），保持原有全量注入行为（to_profile_text）。
             chapter_keywords: 本章关键词集合（来自章纲字段）。
                 若提供，世界观条目只注入「key 或 value 中包含任一关键词」的条目，
-                其余条目跳过（避免注入与本章无关的大量背景设定）；
+                同时作为人物档案字段和伏笔相关性过滤依据；
                 若为 None（默认），保持原有全量注入行为。
+            current_chapter: 当前章节号。
+                若提供，用于判断伏笔是否即将到期（到期迫近的伏笔强制完整注入）；
+                若为 None，退化为仅按关键词过滤。
         """
         parts = []
         novel = self.get_novel()
@@ -394,33 +399,84 @@ class GlobalMemory:
         chars = self.get_all_characters()
         if chars:
             if active_chars is not None:
-                # 规范化：去空格、小写，方便宽松匹配
+                # 规范化出场人物集合
                 active_set = {n.strip() for n in active_chars if n.strip()}
                 appearing = [c for c in chars if c.name in active_set]
                 others = [c for c in chars if c.name not in active_set]
 
                 if appearing:
                     parts.append("\n=== 本章出场人物档案 ===")
+                    # 同台人物名集合，用于关系字段的相关性判断
+                    co_chars = {c.name for c in appearing}
                     for char in appearing:
-                        parts.append(char.to_profile_text())
+                        if chapter_keywords:
+                            # 按本章关键词做字段级相关性过滤（不截断，只取相关字段）
+                            parts.append(char.to_chapter_relevant_profile(
+                                chapter_keywords=chapter_keywords,
+                                co_appearing_chars=co_chars,
+                            ))
+                        else:
+                            # 无关键词时退化为全字段输出
+                            parts.append(char.to_profile_text())
                         parts.append("")
                 if others:
                     parts.append("=== 其他人物（本章未出场，仅供参考）===")
                     parts.append("  ".join(char.to_brief_text() for char in others))
             else:
-                # 默认行为：全量注入
+                # 默认行为：全量注入（无章节上下文时保持原行为）
                 parts.append("\n=== 人物档案 ===")
                 for char in chars:
                     parts.append(char.to_profile_text())
                     parts.append("")
 
-        # 未回收伏笔
+        # 未回收伏笔：按相关性分三级注入
         foreshadowings = self.get_active_foreshadowings()
         if foreshadowings:
-            parts.append("\n=== 待回收伏笔 ===")
-            for f in foreshadowings:
-                deadline_str = f"  ⚠️ 最晚第{f.collect_by_chapter}章回收" if f.collect_by_chapter else ""
-                parts.append(f"[{f.importance}] 第{f.set_chapter}章埋下《{f.name}》：{f.description}{deadline_str}")
+            if chapter_keywords:
+                # ── 有章节上下文时做相关性过滤 ──────────────────────
+                urgent    = []   # 级别1：到期迫近（≤5章），强制完整注入
+                relevant  = []   # 级别2：关键词命中，完整注入
+                others_fs = []   # 级别3：其余，仅单行汇总
+
+                _URGENT_WINDOW = 5
+                for f in foreshadowings:
+                    # 判断是否到期迫近
+                    is_urgent = (
+                        current_chapter is not None
+                        and f.collect_by_chapter is not None
+                        and f.collect_by_chapter <= current_chapter + _URGENT_WINDOW
+                    )
+                    if is_urgent:
+                        urgent.append(f)
+                        continue
+
+                    # 关键词命中：伏笔名 / 描述 / notes 中有章节关键词
+                    searchable = " ".join(filter(None, [f.name, f.description, f.notes]))
+                    if any(kw in searchable for kw in chapter_keywords):
+                        relevant.append(f)
+                    else:
+                        others_fs.append(f)
+
+                lines = []
+                if urgent:
+                    lines.append("【即将到期，必须处理】")
+                    for f in urgent:
+                        lines.append(f.to_full_text())
+                if relevant:
+                    lines.append("【与本章相关】")
+                    for f in relevant:
+                        lines.append(f.to_full_text())
+                if others_fs:
+                    brief_list = "、".join(f.to_brief_text() for f in others_fs)
+                    lines.append(f"【其余 {len(others_fs)} 条未列出】{brief_list}")
+
+                if lines:
+                    parts.append("\n=== 待回收伏笔 ===\n" + "\n".join(lines))
+            else:
+                # ── 无章节上下文时全量注入（保持原行为）──────────────
+                parts.append("\n=== 待回收伏笔 ===")
+                for f in foreshadowings:
+                    parts.append(f.to_full_text())
 
         # 可选：章节大纲列表
         if include_chapters:
@@ -889,10 +945,11 @@ class MemoryManager:
         # 构建章节关键词集（来自章纲各字段）用于世界观过滤
         chapter_keywords = _extract_chapter_keywords(chapter_outline)
 
-        # Layer 1: 全局记忆（按出场人物过滤档案，按关键词过滤世界观）
+        # Layer 1: 全局记忆（按出场人物过滤档案，按关键词过滤世界观和伏笔）
         global_ctx = self.global_mem.build_global_context(
             active_chars=active_chars or None,
             chapter_keywords=chapter_keywords or None,
+            current_chapter=chapter_number,
         )
         if global_ctx:
             parts.append(global_ctx)
@@ -940,10 +997,11 @@ class MemoryManager:
 
         parts = []
 
-        # 全局设定（按关键词过滤世界观；人物按出场过滤）
+        # 全局设定（按关键词过滤世界观；人物按出场过滤；伏笔按相关性过滤）
         global_ctx = self.global_mem.build_global_context(
             active_chars=active_chars if active_chars else None,
             chapter_keywords=chapter_keywords if chapter_keywords else None,
+            current_chapter=chapter.chapter_number,
         )
         if global_ctx:
             parts.append(global_ctx)
