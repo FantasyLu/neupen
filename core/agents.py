@@ -884,7 +884,7 @@ class WriterAgent:
 
         feedback_block = ""
         if review_feedback:
-            feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
+            feedback_block = f"\n【上一稿审核反馈（本次必须针对性改进，这些问题不能再出现）】\n{review_feedback}\n"
 
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
@@ -893,21 +893,36 @@ class WriterAgent:
             if novel and novel.deai_rules and novel.deai_rules.strip()
             else DEFAULT_DEAI_RULES
         )
-        deai_block = f"\n【去AI味规则（写作时必须严格遵守）】\n{deai_rules}\n"
+        deai_block = f"\n【去AI味规则】\n{deai_rules}\n"
+
+        word_min = int(word_target * (1 - word_count_tolerance))
+        word_max = int(word_target * (1 + word_count_tolerance))
 
         user_prompt = f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
-📏 字数约束：{int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字（目标 {word_target} 字），不得超过上限。
 
-{writing_context}{style_block}{platform_block}{deai_block}{feedback_block}
-【写作要求】
-- 必须完整呈现章纲中的核心事件
-- 人物对话和行为必须符合其设定
-- 注意与前几章的连贯性
-- 章节结尾需要有合适的收束或钩子
+【字数硬约束】
+- 最少：{word_min} 字（不足会显得情节仓促、铺垫缺失）
+- 最多：{word_max} 字（超过此上限属于硬性违规，系统会截断导致内容残缺）
+- 目标：{word_target} 字
+{deai_block}{feedback_block}
+【写作上下文（下方所有设定和前情均须遵守）】
+{writing_context}{style_block}{platform_block}
 
-⚠️ 再次强调：本章字数必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间，不得超过 {int(word_target * (1 + word_count_tolerance))} 字。
+【本章写作要求】
+1. 【核心事件完整性】章纲所述的核心事件必须在正文中有完整的"开始→过程→结果"三阶段。
+   不能只有结论句（如"他终于明白了"），要有完整经过（如"他翻开档案→逐行核对→手指停在那行字上"）。
 
-请直接开始写作正文，从标题开始："""
+2. 【人设一致性】每个出场人物的言行必须与其档案相符。
+   寡言的人物对白不能冗长；冷静的人物不能轻易崩溃；能力边界不得超出设定。
+
+3. 【叙事连贯】本章开头需自然衔接上章结尾的时间、地点与人物状态。
+   章内场景转换须给出合理的物理过渡（不能无缘由地"场景切换"）。
+
+4. 【章节收束】结尾需包含：
+   ✓ 一个向下一章延伸的悬念或情感落点
+   ✗ 说书人式总结（"这意味着……""命运的齿轮开始转动……"）
+
+请直接输出正文，从标题开始："""
 
         if stream_callback:
             # 流式生成
