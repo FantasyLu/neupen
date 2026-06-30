@@ -2192,11 +2192,23 @@ style 块使用规则：
 - 用户明确说"帮我改""修改一下""重写""生成" → 对应操作类 intent
 - 不确定时选 chat，confidence 填 0.5
 
+【重要】chapter_number 字段的含义：
+- 填用户想要【修改/操作】的目标章节号，不是参考章节
+- 例："根据第7-10章的摘要修改第11章章纲" → chapter_number = 11（11是目标，7-10是参考）
+- 例："重写第3章" → chapter_number = 3
+- 若用户提到多个章节，仔细区分"被修改的"和"作为参考的"
+
+【重要】reference_chapters 字段：
+- 用户明确提到要参考/基于某些章节的内容时填写，格式为 [start, end]（整数）
+- 例："根据第7-10章的摘要" → reference_chapters = [7, 10]
+- 没有明确提到参考章节时填 null
+
 输出严格 JSON，不含其他文字：
 {
   "intent": "chat",
   "params": {
     "chapter_number": null,
+    "reference_chapters": null,
     "character_name": null,
     "instruction": "用一句话描述用户想做什么（操作类 intent 必填）"
   },
@@ -2421,26 +2433,90 @@ style 块使用规则：
         elif intent == "expand_outline":
             instruction = params.get("instruction") or user_message
             ch_num = params.get("chapter_number") or chapter_number
-            _log("📖 正在调整大纲…")
-            try:
-                outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
-                ctx = self.memory.global_mem.build_global_context(current_chapter=ch_num)
-                expanded = outline_agent.expand_outline_section(
-                    context=ctx,
-                    instruction=instruction,
-                    chapter_number=ch_num,
-                )
-                outline_agent.close()
-                _log("✅ 大纲调整完成")
-                result_base["result_content"] = expanded
-                result_base["result_type"] = "outline"
-                result_base["reply"] = (
-                    "已根据你的要求调整了大纲内容，可点击下方按钮应用到大纲管理页。"
-                )
-                return result_base
-            except Exception as e:
-                _log(f"⚠️ 大纲扩写失败（{e}），切换为普通回复…")
+            ref_range = params.get("reference_chapters")  # [start, end] 或 null
+
+            if not ch_num:
+                # 连目标章节都无法确定，降级 chat
+                _log("⚠️ 无法确定要修改的章节号，切换为普通回复…")
                 result_base["degraded"] = True
+            else:
+                _log(f"📖 正在修改第{ch_num}章章纲…")
+                try:
+                    outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
+
+                    # ── 组装参考摘要 ──────────────────────────────────────
+                    # 将参考章节的摘要拼成一段文字，附加到用户指令里
+                    reference_block = ""
+                    if ref_range and isinstance(ref_range, list) and len(ref_range) == 2:
+                        ref_start, ref_end = int(ref_range[0]), int(ref_range[1])
+                        from core.memory import ChapterMemory
+                        ch_mem = ChapterMemory(self.novel_id)
+                        ref_chapters = ch_mem.get_chapters_by_range(ref_start, ref_end)
+                        ch_mem.db.close()
+                        if ref_chapters:
+                            ref_lines = [f"【第{ref_start}章至第{ref_end}章的摘要信息（请以此为基础修改章纲）】"]
+                            for rc in ref_chapters:
+                                ref_lines.append(f"\n第{rc.chapter_number}章《{rc.title or ''}》")
+                                if rc.summary:
+                                    ref_lines.append(f"摘要：{rc.summary}")
+                                    if rc.key_events:
+                                        try:
+                                            import json as _json
+                                            evs = _json.loads(rc.key_events)
+                                            if evs:
+                                                ref_lines.append("关键事件：" + "；".join(evs))
+                                        except Exception:
+                                            pass
+                                elif rc.content:
+                                    ref_lines.append(f"正文片段：{rc.content[:300]}…")
+                                else:
+                                    ref_lines.append("（暂无摘要或正文）")
+                            reference_block = "\n".join(ref_lines)
+                        else:
+                            reference_block = (
+                                f"（注：第{ref_start}-{ref_end}章暂无摘要数据，"
+                                f"请根据已有上下文推断修改方向）"
+                            )
+
+                    # 将参考摘要拼入修改指令
+                    full_instruction = instruction
+                    if reference_block:
+                        full_instruction = f"{reference_block}\n\n【修改指令】{instruction}"
+
+                    # ── 调用精准章纲修改（写回 DB 的 structured 路径） ──────
+                    updated_data = outline_agent.refine_chapter_outline(
+                        chapter_number=ch_num,
+                        user_feedback=full_instruction,
+                    )
+                    outline_agent.close()
+
+                    if updated_data and isinstance(updated_data, dict):
+                        # 确保 chapter_number 不被意外改掉
+                        updated_data["chapter_number"] = ch_num
+                        # 写回数据库
+                        self.memory.global_mem.save_chapter_outline(updated_data)
+                        # 构造展示用的摘要文本
+                        saved_ch = self.memory.global_mem.get_chapter_outline(ch_num)
+                        result_content = saved_ch.to_outline_text() if saved_ch else str(updated_data)
+                        _log(f"✅ 第{ch_num}章章纲已更新并写入数据库")
+                        result_base["result_content"] = result_content
+                        result_base["result_type"] = "outline"
+                        ref_hint = (
+                            f"（参考了第{ref_range[0]}-{ref_range[1]}章摘要）"
+                            if ref_range else ""
+                        )
+                        result_base["reply"] = (
+                            f"已根据你的要求修改第{ch_num}章章纲{ref_hint}，"
+                            f"结果已直接写入数据库，可前往章节大纲页查看。"
+                        )
+                    else:
+                        _log("⚠️ 章纲修改返回数据为空，切换为普通回复…")
+                        result_base["degraded"] = True
+
+                    return result_base
+                except Exception as e:
+                    _log(f"⚠️ 章纲修改失败（{e}），切换为普通回复…")
+                    result_base["degraded"] = True
 
         # ── Step 3: chat 路径（含降级） ───────────────────────────
         result_base["intent"] = "chat"

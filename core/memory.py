@@ -521,6 +521,17 @@ class ChapterMemory:
             Chapter.chapter_number == chapter_number
         ).first()
 
+    def get_chapters_by_range(self, start: int, end: int) -> list[Chapter]:
+        """
+        获取指定章节范围内的所有章节（含 start 和 end）。
+        按章节序号升序排列，只返回已有正文或摘要的章节。
+        """
+        return self.db.query(Chapter).filter(
+            Chapter.novel_id == self.novel_id,
+            Chapter.chapter_number >= start,
+            Chapter.chapter_number <= end,
+        ).order_by(Chapter.chapter_number).all()
+
     def save_chapter_content(self, chapter_number: int, content: str,
                               content_type: str = "content"):
         """保存章节内容，自动更新字数统计"""
