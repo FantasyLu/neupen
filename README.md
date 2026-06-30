@@ -190,10 +190,10 @@ streamlit run app.py
 ### 写作
 
 - **AI 写作助手**（左侧栏）：已整合至侧边栏全局 AI 创作助手，支持对话式辅助修改，输出的章节代码块可一键保存
-- **生成流水线**：写作 → 三关卡漏斗审核（局部校对→全局场记→文风打磨，每关最多重试 2 次）→ 可选润色 → 摘要，一键完成
+- **生成流水线**：写作 → 四审核**并行**（剧情对齐 / 人设世界观 / 时空状态 / 文风去AI，各权重 25%，已通过的关卡下轮跳过，最多 2 轮）→ 可选润色 → 摘要，一键完成
 - **正文编辑**：手动改正文，保存时触发同步检测（新人物/人物变化/大纲偏离/世界观变更），逐项确认或跳过
 - **章节摘要**：查看和编辑 AI 生成的摘要和关键事件
-- **审核报告**：三关卡得分及反馈逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
+- **审核报告**：四审核得分及反馈逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
 - **读者模拟**：三种读者视角评分卡片 + 亮点/建议，手动编辑读者评分
 - **审批状态**：通过 / 需修改 / 驳回，重新生成自动重置
 - **章节评论**：主笔和审阅者均可评论
@@ -619,11 +619,11 @@ neupen/
 | 大纲师 `OutlineAgent` | 生成结构化大纲 JSON（总纲 + 卷纲 + 章纲） | `generate_full_outline()`, `generate_chapter_range_outlines()`, `refine_chapter_outline()`, `analyze_chapter_consistency()`, `extract_relationships()`, `parse_document()` |
 | 人设师 `CharacterAgent` | 生成人物档案，检测人物矛盾（分批处理，每批最多 10 人） | `generate_characters()`, `check_character_consistency()`, `update_character_state()` |
 | 写手部 `WriterAgent` | 基于三层记忆 + 章纲生成正文，支持流式输出 | `write_chapter()`, `summarize_chapter()`, `regenerate_section()` |
-| 审核师 `ReviewerAgent` | 三关卡漏斗式流水线审核（局部校对→全局场记→文风打磨），任一关熔断即精准反馈重写；旧版单通道审核保留兼容 | `pipeline_review()`, `fix_all_issues()`, `auto_fix_minor_issues()`, `review_chapter()`（旧版兼容） |
+| 审核师 `ReviewerAgent` | 四审核**并行**流水线（剧情对齐 / 人设世界观 / 时空状态 / 文风去AI，各 25% 权重），并行执行后合并 REJECT feedback 由 WriterAgent 统一修正，已通过关卡下轮跳过（最多 2 轮）；旧版串行三关卡保留兼容 | `parallel_pipeline_review()`, `pipeline_review()`（旧版兼容）, `fix_all_issues()`, `auto_fix_minor_issues()`, `review_chapter()`（旧版兼容） |
 | 润色师 `PolisherAgent` | 消除 AI 痕迹、增强文学性，支持风格迁移 | `polish_chapter()`, `apply_style_to_selection()`, `analyze_style()` |
 | 读者模拟 `ReaderAgent` | 三种读者视角的体验评分 | `evaluate_chapter()` |
 | 灵感师 `IdeaAgent` | 多轮创意对话，提取项目配置 | `chat()`, `extract_project_config()` |
-| 画布助手 `CanvasAgent` | 侧边栏全局 AI 助手，感知小说上下文（按章节关键词过滤世界观，文档截断至 6000 字） | `chat()` — 输出 8 种类型化代码块，一键应用到对应位置 |
+| 画布助手 `CanvasAgent` | 侧边栏全局 AI 助手，感知小说上下文（按章节关键词过滤世界观，文档截断至 6000 字）；system prompt 按当前页面动态裁剪（只注入本页用得上的代码块模板）；意图分类器区分「目标章节」和「参考章节」，支持注入参考章节摘要后调用 `refine_chapter_outline()` 精准修改 | `chat()` — 输出 8 种类型化代码块，一键应用到对应位置 |
 
 ### 三层记忆系统
 
@@ -677,13 +677,18 @@ neupen/
 
 ### 冲突检测与变更同步
 
-**三关卡流水线**（主流程）每关独立聚焦一个维度：
+**四审核并行流水线**（主流程）四个 Reviewer 同时执行，每个专注单一维度：
 
-| 关卡 | 检测维度 | 示例 |
-|------|---------|------|
-| 关卡1 局部校对 | 大纲偏离、人物 OOC | 章纲要求决战，正文写的是郊游；冷漠型角色突然热情 |
-| 关卡2 全局场记 | 状态冲突、世界观冲突、时空矛盾 | 上章左臂废了这章用左手攀爬；角色无理由跨城瞬移 |
-| 关卡3 文风打磨 | 去 AI 痕迹、写作风格 | 连续碎句、总结式段尾、上帝视角滥用 |
+| Reviewer | 检测维度 | 示例 |
+|----------|---------|------|
+| `plot_aligner` 剧情对齐 | 大纲偏离、情节一致性 | 章纲要求决战，正文写的是郊游 |
+| `character_guard` 人设世界观 | 人物 OOC、世界观冲突 | 冷漠型角色突然热情；角色掌握了设定中不存在的能力 |
+| `continuity_tracker` 时空状态 | 状态连续性、时空矛盾 | 上章左臂废了这章用左手攀爬；角色无理由跨城瞬移 |
+| `style_refiner` 文风去AI | 去 AI 痕迹、写作风格 | 连续碎句、总结式段尾、上帝视角滥用 |
+
+四审全 PASS → 加权最终得分（各 25%）；有任意 REJECT → 合并所有 feedback 交 WriterAgent **一次性修正** → 仅未通过的关卡重审，已通过的跳过，最多 2 轮。
+
+**旧版串行三关卡**（`pipeline_review()`，保留兼容）依次通过局部校对 → 全局场记 → 文风打磨三关，任一关卡熔断即精准反馈重写。
 
 **旧版单通道审核**（`review_chapter()`，保留兼容）检测五类冲突：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞，每个冲突项含类型、严重度（1-10）、引用原文、修复方案列表。
 
@@ -691,21 +696,23 @@ neupen/
 
 ### 工作流编排
 
-采用三关卡漏斗式审核流水线，任一关卡熔断即用反馈精准修正后重试，三关全通过后计算加权最终得分：
+采用**四审核并行**流水线，四个 Reviewer 同时跑，合并 REJECT feedback 后 WriterAgent 一次性修正，已通过关卡下轮跳过：
 
 ```
 write_and_review_chapter(chapter_number, word_target, auto_polish)
 │
-├── 1. WriterAgent.write_chapter()           → 生成草稿（流式输出）
-├── 2. 三关卡流水线审核（最多 MAX_GATE_RETRIES 轮重试）
-│      ├── 关卡1：局部校对（大纲+人设一致性）   阈值 GATE_CONTEXT_THRESHOLD (8.5)
-│      ├── 关卡2：全局场记（状态+世界观+时空逻辑）阈值 GATE_CONTINUITY_THRESHOLD (9.0)
-│      └── 关卡3：文风打磨（去AI痕迹+写作风格）  阈值 GATE_STYLISTIC_THRESHOLD (8.0)
-│      任一关卡 REJECT → 用精准修改批注重写 → 重新过流水线
-│      三关全 PASS → 最终得分 = 校对×0.3 + 场记×0.4 + 文风×0.3
-├── 3. PolisherAgent.polish_chapter()        → 润色收尾（三关全通过后可选）
+├── 1. WriterAgent.write_chapter()            → 生成草稿（流式输出）
+├── 2. 四审核并行流水线（最多 2 轮）
+│      ├── plot_aligner       (25%) — 剧情对齐（大纲+情节一致性）
+│      ├── character_guard    (25%) — 人设/世界观守护
+│      ├── continuity_tracker (25%) — 时空状态连续性
+│      └── style_refiner      (25%) — 文风去AI痕迹
+│      ↓ 并行执行，合并所有 REJECT feedback
+│      有未通过 → WriterAgent 一次性统筹修正 → 仅未通过关卡重审（已通过跳过）
+│      全部通过 → 最终得分 = 各关卡得分 × 0.25 加权平均
+├── 3. PolisherAgent.polish_chapter()         → 润色收尾（全部通过后可选）
 ├── 4. save → SQLite + LanceDB + 版本历史
-├── 5. summarize_chapter()                   → 摘要供后续记忆注入
+├── 5. summarize_chapter()                    → 摘要供后续记忆注入
 └── 6. 返回同步检测结果（新人物/人物变化/大纲偏离/世界观变更）
 ```
 
