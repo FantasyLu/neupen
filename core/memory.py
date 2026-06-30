@@ -106,22 +106,13 @@ class GlobalMemory:
         return {}
 
     def save_world_setting(self, setting: dict):
-        """保存世界观设定，并在后台异步触发字段级压缩"""
+        """保存世界观设定，清空旧压缩缓存（压缩在 build_global_context 惰性触发）"""
         novel = self.get_novel()
         if novel:
             novel.set_world_setting(setting)
-            # 内容变更，清空旧压缩缓存（压缩完成前注入时会回退用原文）
+            # 内容变更，清空旧压缩缓存；下次 build_global_context 时惰性重建
             novel.world_setting_compressed = None
             self.db.commit()
-            # 异步触发压缩，不阻塞当前保存
-            import threading
-            novel_id = self.novel_id
-            model_id = novel.llm_model or None
-            threading.Thread(
-                target=_compress_world_setting_async,
-                args=(novel_id, model_id),
-                daemon=True
-            ).start()
 
     def get_all_characters(self) -> list[Character]:
         """获取所有人物档案"""
@@ -168,7 +159,7 @@ class GlobalMemory:
         ).first()
 
     def save_outline(self, data: dict) -> NovelOutline:
-        """保存总大纲，并在后台异步触发字段级压缩"""
+        """保存总大纲，清空旧压缩缓存（压缩在 build_global_context 惰性触发）"""
         # 将 dict/list 字段序列化为 JSON 字符串，避免 SQLite 类型错误
         serialized = {
             k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
@@ -190,16 +181,6 @@ class GlobalMemory:
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
-        # 异步触发大纲字段压缩
-        import threading
-        novel_id = self.novel_id
-        novel = self.get_novel()
-        model_id = novel.llm_model if novel else None
-        threading.Thread(
-            target=_compress_outline_async,
-            args=(novel_id, model_id),
-            daemon=True
-        ).start()
         return outline
 
     def get_volumes(self) -> list[Volume]:
@@ -391,18 +372,22 @@ class GlobalMemory:
         if novel.logline:
             parts.append(f"简介：{novel.logline}")
 
-        # 世界观设定：优先使用压缩版，回退到原文；按章节关键词过滤
+        # 世界观设定：优先使用压缩版；未压缩时惰性触发同步压缩并缓存
         world_raw = self.get_world_setting()
         if world_raw:
-            # 若压缩版已生成则使用，否则回退原文（压缩任务仍在后台运行）
-            novel_obj = self.get_novel()
+            novel_obj = novel  # 复用已查询的 novel 对象，避免多次 DB 查询
             if novel_obj and novel_obj.world_setting_compressed:
                 try:
                     world = json.loads(novel_obj.world_setting_compressed)
                 except Exception:
                     world = world_raw
             else:
-                world = world_raw
+                # 压缩缓存缺失，惰性同步压缩后写回 DB
+                world = _compress_world_setting_sync(
+                    novel_obj=novel_obj,
+                    world_raw=world_raw,
+                    db=self.db,
+                ) if novel_obj else world_raw
 
             if chapter_keywords:
                 matched = {
@@ -421,9 +406,18 @@ class GlobalMemory:
                 for k, v in world.items():
                     parts.append(f"{k}：{v}")
 
-        # 总大纲概要：优先使用各字段的压缩版，回退到原文
+        # 总大纲概要：优先使用各字段的压缩版；未压缩时惰性触发同步压缩并缓存
         outline = self.get_outline()
         if outline:
+            # 若任意字段压缩版缺失，惰性触发同步压缩
+            needs_compress = any(
+                getattr(outline, f"{f}_compressed", None) is None
+                for f in ("theme", "main_conflict", "protagonist_arc", "ending_summary")
+                if getattr(outline, f, None)
+            )
+            if needs_compress:
+                _compress_outline_sync(outline=outline, db=self.db, novel=novel)
+
             parts.append("\n=== 总大纲 ===")
             # 对每个字段：有压缩版用压缩版，否则用原文
             def _outline_val(field: str) -> str:
@@ -559,62 +553,51 @@ class GlobalMemory:
         self.db.close()
 
 
-# ── 异步压缩辅助函数（模块级，供 GlobalMemory save 方法调用）──────────────────
+# ── 惰性同步压缩辅助函数（模块级，供 build_global_context 调用）─────────────────
 
-def _compress_world_setting_async(novel_id: int, model_id: str | None):
+def _compress_world_setting_sync(novel_obj, world_raw: dict, db) -> dict:
     """
-    在独立线程中对世界观 value 逐条压缩，写回 novel.world_setting_compressed。
-    失败时静默忽略，不影响主流程。
+    同步压缩世界观设定，将结果写回 DB 并返回压缩后的 dict。
+    任何异常均打印警告后回退原文，不抛出。
     """
+    import sys
     try:
         from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_WORLD_TARGET_MAX
         from core.agents import FieldCompressor
 
-        db = get_db()
-        novel = db.query(Novel).filter(Novel.id == novel_id).first()
-        if not novel or not novel.world_setting:
-            db.close()
-            return
-
-        world = novel.get_world_setting()
-        # 如果所有 value 都不超阈值，直接复制原文作为压缩版
-        needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world.values())
+        needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world_raw.values())
         if not needs_compress:
-            novel.world_setting_compressed = novel.world_setting
+            # 所有条目都在阈值内，直接把原文当作压缩版缓存
+            novel_obj.world_setting_compressed = novel_obj.world_setting
             db.commit()
-            db.close()
-            return
+            return world_raw
 
-        compressor = FieldCompressor(novel_id=novel_id, model_id=model_id)
-        compressed_world = compressor.compress_world_setting(
-            world=world,
+        compressor = FieldCompressor(novel_id=novel_obj.id, model_id=novel_obj.llm_model or None)
+        compressed = compressor.compress_world_setting(
+            world=world_raw,
             threshold=COMPRESS_WORLD_THRESHOLD,
             target_max=COMPRESS_WORLD_TARGET_MAX,
         )
-        novel.world_setting_compressed = json.dumps(compressed_world, ensure_ascii=False)
+        novel_obj.world_setting_compressed = json.dumps(compressed, ensure_ascii=False)
         db.commit()
-        db.close()
-    except Exception:
-        pass  # 压缩失败不影响主流程
+        return compressed
+    except Exception as e:
+        print(f"[压缩警告] 世界观压缩失败，回退原文：{e}", file=sys.stderr)
+        return world_raw
 
 
-def _compress_outline_async(novel_id: int, model_id: str | None):
+def _compress_outline_sync(outline, db, novel) -> None:
     """
-    在独立线程中对 NovelOutline 的长字段逐条压缩，写回 *_compressed 列。
-    各字段按 COMPRESS_OUTLINE_TARGETS 中配置的目标字数分别压缩。
-    失败时静默忽略。
+    同步压缩大纲字段，将结果写回 outline.*_compressed 并 commit。
+    任何异常均打印警告，不抛出。
     """
+    import sys
     try:
         from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_OUTLINE_TARGETS
         from core.agents import FieldCompressor
 
-        db = get_db()
-        outline = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
-        if not outline:
-            db.close()
-            return
-
-        compressor = FieldCompressor(novel_id=novel_id, model_id=model_id)
+        model_id = novel.llm_model if novel else None
+        compressor = FieldCompressor(novel_id=outline.novel_id, model_id=model_id)
         compressed = compressor.compress_outline_fields(
             outline=outline,
             field_targets=COMPRESS_OUTLINE_TARGETS,
@@ -622,10 +605,15 @@ def _compress_outline_async(novel_id: int, model_id: str | None):
         )
         for field, value in compressed.items():
             setattr(outline, f"{field}_compressed", value)
+        # 对没有超过阈值、未被压缩器写入的字段，把原文当压缩版存入
+        for field in COMPRESS_OUTLINE_TARGETS:
+            if getattr(outline, f"{field}_compressed", None) is None:
+                orig = getattr(outline, field, None)
+                if orig:
+                    setattr(outline, f"{field}_compressed", orig)
         db.commit()
-        db.close()
-    except Exception:
-        pass  # 压缩失败不影响主流程
+    except Exception as e:
+        print(f"[压缩警告] 大纲压缩失败，回退原文：{e}", file=sys.stderr)
 
 
 # ======================================
