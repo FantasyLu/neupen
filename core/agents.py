@@ -567,6 +567,27 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                 return [r for r in result if r.get("character") in existing_names]
         return []
 
+    def expand_outline_section(self, context: str, instruction: str,
+                                chapter_number: int | None = None) -> str:
+        """
+        根据用户指令扩写/调整大纲内容，返回修改后的大纲 Markdown 文本。
+        由 CanvasAgent.dispatch() 调用。
+        """
+        chapter_hint = f"当前聚焦章节：第{chapter_number}章。\n" if chapter_number else ""
+        system_prompt = (
+            "你是一位经验丰富的小说大纲师。根据用户指令，对现有大纲进行扩写或调整。\n"
+            "保持大纲整体结构和风格，只修改用户明确要求的部分。\n"
+            "直接输出调整后的完整大纲 Markdown 文本，不加任何说明。"
+        )
+        user_prompt = (
+            f"{chapter_hint}"
+            f"【当前大纲上下文】\n{context[:3000]}\n\n"
+            f"【调整指令】\n{instruction}\n\n"
+            "请输出调整后的大纲内容："
+        )
+        return self.llm.generate(system_prompt, user_prompt,
+                                 max_tokens=4096, temperature=self.temperature)
+
     def close(self):
         self.memory.close()
 
@@ -717,6 +738,38 @@ class CharacterAgent:
         if char:
             char.current_state = f"（第{chapter_number}章后）{state_update}"
             self.memory.global_mem.db.commit()
+
+    def update_character_profile(self, char_name: str,
+                                  existing_profile: str,
+                                  instruction: str) -> dict | None:
+        """
+        根据用户指令定向更新人物档案，返回更新后的字段字典。
+        由 CanvasAgent.dispatch() 调用。
+        """
+        system_prompt = (
+            "你是一位专业的小说人物档案编辑。根据用户指令，对现有人物档案做定向修改。\n"
+            "只修改用户明确要求改动的字段，其余字段原样保留。\n"
+            "输出合法 JSON 对象，包含 name 字段及所有需要保留/修改的字段，不含其他文字。\n"
+            "可用字段：name, role, age, gender, personality, background, appearance, "
+            "growth_arc, current_state, motivations, speech_patterns, secrets, is_main, "
+            "abilities（JSON数组字符串）, relationships（JSON对象字符串）"
+        )
+        user_prompt = (
+            f"【人物姓名】{char_name}\n\n"
+            f"【现有档案】\n{existing_profile or '（暂无）'}\n\n"
+            f"【修改指令】\n{instruction}\n\n"
+            "请输出修改后的完整人物档案 JSON："
+        )
+        try:
+            raw = self.llm.generate(system_prompt, user_prompt,
+                                    max_tokens=2048, temperature=self.temperature)
+            js = raw[raw.find("{"):raw.rfind("}") + 1]
+            data = _safe_json_loads(js)
+            if isinstance(data, dict) and data.get("name"):
+                return data
+        except Exception:
+            pass
+        return None
 
     def close(self):
         self.memory.close()
@@ -2051,6 +2104,305 @@ style 块使用规则：
                 _msgs.append({"role": "user", "content": doc_block})
 
         return self.llm.generate_chat(system_prompt, _msgs, max_tokens=4096, temperature=self.temperature)
+
+    def _classify_intent(self, user_message: str, chapter_number: int | None,
+                          document_content: str) -> dict:
+        """
+        轻量意图分类：一次极短的 LLM 调用，返回 intent + params。
+
+        intent 枚举：
+          chat                    — 普通对话/讨论/建议，Canvas 自身回复
+          rewrite_chapter_section — 修改/改写本章某部分内容
+          rewrite_chapter_full    — 重写/重新生成整章
+          review_chapter          — 审核/检查/分析当前章节
+          update_character        — 修改/新增某人物属性/设定
+          expand_outline          — 扩写/调整章纲或大纲
+
+        返回格式：
+          {
+            "intent": "chat",
+            "params": {
+              "chapter_number": 3,       # 适用时
+              "character_name": "李明",  # 适用时
+              "instruction": "..."       # 用户意图的结构化描述
+            },
+            "confidence": 0.9            # 0~1，低于 0.6 降级为 chat
+          }
+        """
+        _INTENT_SYSTEM = """你是一个意图分类器。根据用户消息，判断其意图类型并输出 JSON。
+
+意图类型（只能选一个）：
+- chat：普通讨论、建议、提问、设定分析，不需要执行任何写作/修改操作
+- rewrite_chapter_section：明确要求修改/改写/调整当前章节的某个部分（非整章重写）
+- rewrite_chapter_full：明确要求重写整章或重新生成本章
+- review_chapter：明确要求检查/审核/分析当前章节的问题
+- update_character：明确要求修改、完善或新增某个人物的设定属性
+- expand_outline：明确要求扩写、修改或重新生成章纲/大纲内容
+
+判断原则：
+- 用户只是"讨论"或"建议"某件事 → chat
+- 用户明确说"帮我改""修改一下""重写""生成" → 对应操作类 intent
+- 不确定时选 chat，confidence 填 0.5
+
+输出严格 JSON，不含其他文字：
+{
+  "intent": "chat",
+  "params": {
+    "chapter_number": null,
+    "character_name": null,
+    "instruction": "用一句话描述用户想做什么（操作类 intent 必填）"
+  },
+  "confidence": 0.9
+}"""
+
+        ctx_hint = ""
+        if chapter_number:
+            ctx_hint += f"当前所在章节：第{chapter_number}章。"
+        if document_content and document_content.strip():
+            ctx_hint += f"当前文档有内容（{len(document_content)}字）。"
+
+        user_prompt = f"{ctx_hint}\n\n用户消息：{user_message[:500]}"
+
+        try:
+            raw = self.llm.generate(
+                _INTENT_SYSTEM, user_prompt,
+                max_tokens=256, cache_system=False, temperature=0.0
+            )
+            js = raw[raw.find("{"):raw.rfind("}") + 1]
+            data = json.loads(js)
+            if float(data.get("confidence", 1.0)) < 0.6:
+                data["intent"] = "chat"
+            return data
+        except Exception:
+            return {"intent": "chat", "params": {}, "confidence": 0.5}
+
+    def dispatch(
+        self,
+        messages: list,
+        document_content: str = "",
+        page: str = None,
+        chapter_number: int = None,
+        progress_callback=None,
+    ) -> dict:
+        """
+        Canvas 主入口：意图分类 → 路由执行 → 返回结果。
+
+        流程：
+          1. _classify_intent() 判断意图
+          2. 操作类 intent → 调用对应 Agent/workflow 执行，出错则降级 chat
+          3. chat intent → 直接调用 self.chat() 生成回复
+
+        progress_callback(message: str)：供 UI 追加进度消息（异步任务用）
+
+        返回：
+          {
+            "intent": str,
+            "reply": str,                  # 主回复文本
+            "progress_log": [str, ...],    # 执行过程日志（操作类路径）
+            "result_content": str | None,  # 操作类结果正文
+            "result_type": str | None,     # chapter / character / outline / None
+            "degraded": bool,              # 是否发生了降级
+          }
+        """
+        def _log(msg: str):
+            if progress_callback:
+                progress_callback(msg)
+
+        user_message = messages[-1]["content"] if messages else ""
+        result_base = {
+            "intent": "chat",
+            "reply": "",
+            "progress_log": [],
+            "result_content": None,
+            "result_type": None,
+            "degraded": False,
+        }
+
+        # ── Step 1: 意图分类 ──────────────────────────────────────
+        classified = self._classify_intent(user_message, chapter_number, document_content)
+        intent = classified.get("intent", "chat")
+        params = classified.get("params", {})
+        result_base["intent"] = intent
+
+        # ── Step 2: 操作类路由 ────────────────────────────────────
+        if intent == "rewrite_chapter_section":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            instruction = params.get("instruction") or user_message
+            _log(f"✍️ 正在改写第{ch_num}章相关段落…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                writer = wf.writer_agent
+                novel = self.memory.global_mem.get_novel()
+                _tol = float((novel.get_quality_config() if novel else {}).get(
+                    "word_count_tolerance", 0.2))
+                feedback_prompt = (
+                    f"【用户修改意图】\n{instruction}\n\n"
+                    f"【当前章节内容（在此基础上做定向修改）】\n"
+                    f"{document_content[:4000] if document_content else '（无）'}\n\n"
+                    f"请只修改用户指定的部分，保留其他内容不变，直接输出完整正文。"
+                )
+                revised = writer.write_chapter(
+                    chapter_number=ch_num,
+                    word_target=max(len(document_content), 1000) if document_content else 3000,
+                    word_count_tolerance=_tol,
+                    review_feedback=feedback_prompt,
+                )
+                wf.memory.chapter_mem.save_chapter_content(ch_num, revised, "content")
+                wf.close()
+                _log(f"✅ 改写完成（{len(revised)}字）")
+                result_base["result_content"] = revised
+                result_base["result_type"] = "chapter"
+                result_base["reply"] = (
+                    f"已根据你的要求完成改写（第{ch_num}章，共{len(revised)}字）。"
+                    f"内容已自动保存，可在写作页查看。"
+                )
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 改写失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "rewrite_chapter_full":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            _log(f"✍️ 正在重写第{ch_num}章（含完整审核流程）…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                novel = wf.memory.global_mem.get_novel()
+                qcfg = novel.get_quality_config() if novel else {}
+                _tol = float(qcfg.get("word_count_tolerance", 0.2))
+                word_target = int(qcfg.get("word_target", 3000))
+                wr = wf.write_and_review_chapter(
+                    chapter_number=ch_num,
+                    word_target=word_target,
+                    word_count_tolerance=_tol,
+                    auto_polish=True,
+                    progress_callback=_log,
+                )
+                wf.close()
+                if wr.success:
+                    content = wr.data.get("content", "")
+                    score = wr.data.get("overall_score", 0)
+                    result_base["result_content"] = content
+                    result_base["result_type"] = "chapter"
+                    result_base["reply"] = (
+                        f"第{ch_num}章已重写完成（{len(content)}字，得分 {score:.1f}/10）。"
+                        f"内容已保存，可在写作页查看。"
+                    )
+                else:
+                    result_base["reply"] = f"重写失败：{wr.message}"
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 重写失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "review_chapter":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            _log(f"🔍 正在并行审核第{ch_num}章…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                ch = wf.memory.chapter_mem.get_chapter(ch_num)
+                content = (ch.content if ch and ch.content else "") or document_content
+                if not content:
+                    raise ValueError("找不到章节内容")
+                parallel_result = wf.reviewer_agent.parallel_pipeline_review(
+                    ch_num, content, progress_callback=_log
+                )
+                wf.close()
+                gates = parallel_result.get("gates", [])
+                score = parallel_result.get("final_score", 0)
+                passed = parallel_result.get("passed", False)
+                label_map = {
+                    "plot_aligner": "剧情对齐",
+                    "character_guard": "人设/世界观",
+                    "continuity_tracker": "时空/状态",
+                    "style_refiner": "文风去AI",
+                }
+                lines = [
+                    f"**第{ch_num}章审核报告**（{'✅ 通过' if passed else '❌ 未通过'}，"
+                    f"综合得分 {score:.1f}/10）\n"
+                ]
+                for g in gates:
+                    icon = "✅" if g.passed else "❌"
+                    lbl = label_map.get(g.gate_name, g.gate_name)
+                    lines.append(f"{icon} **{lbl}**：{g.total_score:.1f}/10")
+                    if not g.passed and g.feedback:
+                        lines.append(f"  > {g.feedback[:200]}")
+                result_base["reply"] = "\n".join(lines)
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 审核失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "update_character":
+            char_name = params.get("character_name", "")
+            instruction = params.get("instruction") or user_message
+            _log(f"👤 正在更新人物「{char_name}」的设定…")
+            try:
+                if not char_name:
+                    raise ValueError("未识别到人物姓名")
+                char_agent = CharacterAgent(self.novel_id, temperature=self.temperature)
+                existing = self.memory.global_mem.get_character(char_name)
+                existing_text = (
+                    existing.to_chapter_relevant_profile(set(), set())
+                    if existing else ""
+                )
+                updated_data = char_agent.update_character_profile(
+                    char_name=char_name,
+                    existing_profile=existing_text,
+                    instruction=instruction,
+                )
+                char_agent.close()
+                if updated_data:
+                    self.memory.global_mem.save_character(updated_data)
+                    _log(f"✅ 人物「{char_name}」设定已更新")
+                    result_base["result_content"] = json.dumps(
+                        updated_data, ensure_ascii=False, indent=2)
+                    result_base["result_type"] = "character"
+                    result_base["reply"] = (
+                        f"已根据你的要求更新了「{char_name}」的设定，可在人物档案页查看。"
+                    )
+                else:
+                    result_base["reply"] = f"「{char_name}」设定处理完成，但未返回结构化数据。"
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 人物更新失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "expand_outline":
+            instruction = params.get("instruction") or user_message
+            ch_num = params.get("chapter_number") or chapter_number
+            _log("📖 正在调整大纲…")
+            try:
+                outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
+                ctx = self.memory.global_mem.build_global_context(current_chapter=ch_num)
+                expanded = outline_agent.expand_outline_section(
+                    context=ctx,
+                    instruction=instruction,
+                    chapter_number=ch_num,
+                )
+                outline_agent.close()
+                _log("✅ 大纲调整完成")
+                result_base["result_content"] = expanded
+                result_base["result_type"] = "outline"
+                result_base["reply"] = (
+                    "已根据你的要求调整了大纲内容，可点击下方按钮应用到大纲管理页。"
+                )
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 大纲扩写失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        # ── Step 3: chat 路径（含降级） ───────────────────────────
+        result_base["intent"] = "chat"
+        result_base["reply"] = self.chat(
+            messages=messages,
+            document_content=document_content,
+            page=page,
+            chapter_number=chapter_number,
+        )
+        return result_base
 
     def close(self):
         self.memory.close()
