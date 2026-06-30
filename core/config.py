@@ -138,12 +138,22 @@ FINAL_SCORE_WEIGHTS = (0.3, 0.4, 0.3)  # (局部校对, 全局场记, 文风打�
 # ======================================
 # 内容压缩配置
 # ======================================
-# 世界观单个 value 超过此字数时触发 LLM 字段级压缩，压缩目标为 COMPRESS_TARGET_CHARS
+# 世界观单个 value 超过此字数时触发 LLM 字段级压缩
+# 压缩目标由 LLM 根据 key 名自动判断（规则类多保留，背景描述类可压得更短）
 COMPRESS_WORLD_THRESHOLD = int(os.getenv("COMPRESS_WORLD_THRESHOLD", "300"))
-# 大纲单个字段（theme/main_conflict/protagonist_arc/ending_summary）超过此字数触发压缩
-COMPRESS_OUTLINE_THRESHOLD = int(os.getenv("COMPRESS_OUTLINE_THRESHOLD", "300"))
-# 压缩后目标字数（供 LLM 参考，非硬截断）
-COMPRESS_TARGET_CHARS = int(os.getenv("COMPRESS_TARGET_CHARS", "200"))
+# 世界观压缩时给 LLM 的参考上限（LLM 会根据 key 类型在此范围内自行决定保留多少）
+COMPRESS_WORLD_TARGET_MAX = int(os.getenv("COMPRESS_WORLD_TARGET_MAX", "400"))
+
+# 大纲各字段触发压缩的阈值（超过才调 LLM，不超过直接用原文）
+COMPRESS_OUTLINE_THRESHOLD = int(os.getenv("COMPRESS_OUTLINE_THRESHOLD", "150"))
+
+# 大纲各字段的压缩目标字数（分字段配置，供 LLM 参考，非硬截断）
+COMPRESS_OUTLINE_TARGETS: dict[str, int] = {
+    "theme":           int(os.getenv("COMPRESS_OUTLINE_THEME_TARGET",    "100")),
+    "main_conflict":   int(os.getenv("COMPRESS_OUTLINE_CONFLICT_TARGET", "300")),
+    "protagonist_arc": int(os.getenv("COMPRESS_OUTLINE_ARC_TARGET",      "500")),
+    "ending_summary":  int(os.getenv("COMPRESS_OUTLINE_ENDING_TARGET",   "500")),
+}
 
 # ======================================
 # 版本控制配置

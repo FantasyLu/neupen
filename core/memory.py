@@ -567,7 +567,7 @@ def _compress_world_setting_async(novel_id: int, model_id: str | None):
     失败时静默忽略，不影响主流程。
     """
     try:
-        from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_TARGET_CHARS
+        from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_WORLD_TARGET_MAX
         from core.agents import FieldCompressor
 
         db = get_db()
@@ -577,10 +577,10 @@ def _compress_world_setting_async(novel_id: int, model_id: str | None):
             return
 
         world = novel.get_world_setting()
-        # 如果所有 value 都不超阈值，直接标记为不需要压缩版
+        # 如果所有 value 都不超阈值，直接复制原文作为压缩版
         needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world.values())
         if not needs_compress:
-            novel.world_setting_compressed = novel.world_setting  # 原文即压缩版
+            novel.world_setting_compressed = novel.world_setting
             db.commit()
             db.close()
             return
@@ -589,7 +589,7 @@ def _compress_world_setting_async(novel_id: int, model_id: str | None):
         compressed_world = compressor.compress_world_setting(
             world=world,
             threshold=COMPRESS_WORLD_THRESHOLD,
-            target_chars=COMPRESS_TARGET_CHARS,
+            target_max=COMPRESS_WORLD_TARGET_MAX,
         )
         novel.world_setting_compressed = json.dumps(compressed_world, ensure_ascii=False)
         db.commit()
@@ -601,13 +601,12 @@ def _compress_world_setting_async(novel_id: int, model_id: str | None):
 def _compress_outline_async(novel_id: int, model_id: str | None):
     """
     在独立线程中对 NovelOutline 的长字段逐条压缩，写回 *_compressed 列。
+    各字段按 COMPRESS_OUTLINE_TARGETS 中配置的目标字数分别压缩。
     失败时静默忽略。
     """
     try:
-        from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_TARGET_CHARS
+        from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_OUTLINE_TARGETS
         from core.agents import FieldCompressor
-
-        _OUTLINE_FIELDS = ["theme", "main_conflict", "protagonist_arc", "ending_summary"]
 
         db = get_db()
         outline = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
@@ -618,9 +617,8 @@ def _compress_outline_async(novel_id: int, model_id: str | None):
         compressor = FieldCompressor(novel_id=novel_id, model_id=model_id)
         compressed = compressor.compress_outline_fields(
             outline=outline,
-            fields=_OUTLINE_FIELDS,
+            field_targets=COMPRESS_OUTLINE_TARGETS,
             threshold=COMPRESS_OUTLINE_THRESHOLD,
-            target_chars=COMPRESS_TARGET_CHARS,
         )
         for field, value in compressed.items():
             setattr(outline, f"{field}_compressed", value)

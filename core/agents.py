@@ -1964,19 +1964,19 @@ class FieldCompressor:
     用于把世界观 value / 大纲字段等长文本提炼为精简注入版本。
     压缩结果仅用于 prompt 注入，原始内容不受影响。
 
-    使用方式：
-        compressor = FieldCompressor(novel_id, model_id)
-        short = compressor.compress(label="力量体系", text=long_text, target_chars=200)
+    世界观：LLM 根据 key 名自动判断信息密度需求，在给定上限内自由决定保留多少。
+    大纲字段：按字段分别传入目标字数（theme≤100、conflict≤300、arc/ending≤500）。
     """
 
     _SYSTEM = (
         "你是一位专业的小说设定编辑。你的任务是将一段详细的设定文字提炼为精简版本，"
-        "供 AI 写作助手快速参考。\n"
-        "要求：\n"
-        "- 保留所有关键规则、核心矛盾、重要限制和独特概念\n"
-        "- 删除举例说明、重复表述、修辞性语言\n"
-        "- 以简洁的要点或短句输出，不加额外说明\n"
-        "- 直接输出压缩结果，不要说'以下是压缩版本'等引导语"
+        "供 AI 写作助手快速参考。\n\n"
+        "核心原则：\n"
+        "- 【必须保留】所有关键规则、核心矛盾、重要限制、独特概念、不可违反的设定约束\n"
+        "- 【可以删除】举例说明、重复表述、修辞性语言、背景铺垫\n"
+        "- 规则密集的内容（力量体系、世界规则、社会结构等）保留更多细节\n"
+        "- 背景描述类内容（历史事件、地理环境等）可以更大幅压缩\n"
+        "- 以简洁的要点或短句输出，直接输出结果，不加引导语"
     )
 
     def __init__(self, novel_id: int, model_id: str = None):
@@ -1984,68 +1984,88 @@ class FieldCompressor:
         _model = model_id or DEFAULT_MODEL_ID
         self.llm = NovelLLM(_model, novel_id=novel_id)
 
-    def compress(self, label: str, text: str, target_chars: int = 200) -> str:
+    def compress(self, label: str, text: str, target_chars: int,
+                 hint: str = "") -> str:
         """
         压缩单个字段文本。
 
         Args:
             label:        字段标签（如「力量体系」），帮助模型理解语境
             text:         原始文本
-            target_chars: 目标字数（仅供参考，非硬截断）
+            target_chars: 目标字数上限（供 LLM 参考，非硬截断）
+            hint:         额外提示（如「这是全书主要矛盾，需保留所有冲突层次」）
 
         Returns:
-            压缩后文本；若压缩失败则返回原文前 target_chars 字符。
+            压缩后文本；若压缩失败则返回原文。
         """
         user_prompt = (
-            f"【字段】{label}\n"
-            f"【目标字数】约 {target_chars} 字以内\n\n"
-            f"【原文】\n{text}"
+            f"【字段名】{label}\n"
+            f"【目标字数上限】{target_chars} 字\n"
         )
+        if hint:
+            user_prompt += f"【额外说明】{hint}\n"
+        user_prompt += f"\n【原文】\n{text}"
+
         try:
             result = self.llm.generate(
                 self._SYSTEM, user_prompt,
-                max_tokens=512, cache_system=False, temperature=0.0
+                max_tokens=1024, cache_system=False, temperature=0.0
             )
             return result.strip()
         except Exception:
-            # 压缩失败时回退到硬截断
-            return text[:target_chars] + "…（已截断）" if len(text) > target_chars else text
+            # 压缩失败时回退原文（不硬截断，保留完整内容）
+            return text
 
     def compress_world_setting(
         self,
         world: dict,
         threshold: int,
-        target_chars: int,
+        target_max: int,
     ) -> dict:
         """
-        对世界观 dict 中超过阈值的 value 逐条压缩，返回压缩版 dict。
+        对世界观 dict 中超过阈值的 value 逐条压缩。
+        target_max 是给 LLM 的参考上限，LLM 会根据 key 名（力量体系/地理/历史等）
+        自行判断应保留的密度，在上限内自由决定实际长度。
         短于阈值的条目直接保留原文。
         """
         compressed = {}
         for k, v in world.items():
             v_str = str(v)
             if len(v_str) > threshold:
-                compressed[k] = self.compress(label=k, text=v_str, target_chars=target_chars)
+                compressed[k] = self.compress(
+                    label=k, text=v_str, target_chars=target_max
+                )
             else:
                 compressed[k] = v_str
         return compressed
 
     def compress_outline_fields(
         self,
-        outline,          # NovelOutline ORM 对象
-        fields: list[str],
+        outline,                        # NovelOutline ORM 对象
+        field_targets: dict[str, int],  # {field_name: target_chars}
         threshold: int,
-        target_chars: int,
     ) -> dict:
         """
-        对 NovelOutline 指定字段中超过阈值的内容逐条压缩。
-        返回 {field_name: compressed_text} dict，未超阈值的字段不含在结果中。
+        对 NovelOutline 指定字段按各自目标字数压缩。
+        只处理超过 threshold 的字段，未超阈值的直接跳过（调用方读原文）。
+        返回 {field_name: compressed_text}。
         """
+        _FIELD_HINTS = {
+            "theme":           "这是全书核心主题，提炼为一句核心立意即可",
+            "main_conflict":   "这是全书主要矛盾，需保留所有冲突层次和对立关系",
+            "protagonist_arc": "这是主角成长弧光，需保留每个关键转折点和阶段变化",
+            "ending_summary":  "这是结局概要，需保留各条故事线的收束方式和最终走向",
+        }
         result = {}
-        for field in fields:
+        for field, target in field_targets.items():
             val = getattr(outline, field, None) or ""
             if len(val) > threshold:
-                result[field] = self.compress(label=field, text=val, target_chars=target_chars)
+                result[field] = self.compress(
+                    label=field,
+                    text=val,
+                    target_chars=target,
+                    hint=_FIELD_HINTS.get(field, ""),
+                )
         return result
 
 class CanvasAgent:
