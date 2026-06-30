@@ -1345,8 +1345,12 @@ class ReviewerAgent:
                                report: ReviewReport,
                                novel_id: int) -> str:
         """
-        自动修复轻微问题（严重程度 < 4 的问题）
-        返回修复后的内容
+        自动修复轻微问题（严重程度 < 4 的问题）。
+        返回修复后的内容。
+
+        .. deprecated::
+            主流程已切换至并行四审核架构（WriterAgent 直接改写），
+            此方法仅保留供外部兼容调用，不再由写作流水线内部使用。
         """
         minor_conflicts = [c for c in report.conflicts if c.severity < 4]
         if not minor_conflicts:
@@ -1375,8 +1379,12 @@ class ReviewerAgent:
             else DEFAULT_DEAI_RULES
         )
 
+        # 正文截断至 8000 字，防止超长章节撑爆 context
+        content_truncated = content[:8000]
+        truncate_note = "\n...(正文过长已截断，请仅修复可见部分)" if len(content) > 8000 else ""
+
         user_prompt = f"""原文：
-{content}
+{content_truncated}{truncate_note}
 
 需要修复的问题（只修复这些，其他不变）：
 {conflicts_desc}
@@ -1395,6 +1403,10 @@ class ReviewerAgent:
         """
         根据完整审核报告修复所有问题（不限严重程度）。
         用于审核-修改自动循环中的每次改写。
+
+        .. deprecated::
+            主流程已切换至并行四审核架构（WriterAgent 直接改写），
+            此方法仅保留供外部兼容调用，不再由写作流水线内部使用。
         """
         if not report.conflicts:
             return content
@@ -1448,8 +1460,12 @@ class ReviewerAgent:
             else DEFAULT_DEAI_RULES
         )
 
+        # 正文截断至 8000 字，防止超长章节撑爆 context
+        content_truncated = content[:8000]
+        truncate_note = "\n...(正文过长已截断，请仅修复可见部分)" if len(content) > 8000 else ""
+
         user_prompt = (
-            f"章节正文：\n{content}\n\n"
+            f"章节正文：\n{content_truncated}{truncate_note}\n\n"
             f"本次审核评分：{report.overall_score:.1f}/10\n"
             f"{chapter_goal_block}"
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
@@ -1874,11 +1890,43 @@ class IdeaAgent:
 
     def chat(self, messages: list) -> str:
         """
-        多轮对话，返回 AI 回复
+        多轮对话，返回 AI 回复。
         messages: [{"role": "user"/"assistant", "content": "..."}]
-        返回 AI 回复文本
+
+        历史压缩：超过 _MAX_ROUNDS 轮时，把早期消息压缩成一条摘要 assistant 消息，
+        只将最近 _RECENT_KEEP 轮原文传给 LLM，避免长对话撑爆 context window。
         """
-        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024, temperature=self.temperature)
+        _MAX_ROUNDS = 10
+        _RECENT_KEEP = 8
+        _MAX_SUMMARY_CHARS = 500
+
+        total_rounds = len(messages) // 2
+        if total_rounds > _MAX_ROUNDS:
+            keep_msgs = _RECENT_KEEP * 2
+            old_msgs = messages[:-keep_msgs]
+            recent_msgs = messages[-keep_msgs:]
+            # 把早期对话拼成纯文本摘要（不调用 LLM，直接截取前 150 字）
+            summary_lines = []
+            for m in old_msgs:
+                role_label = "用户" if m["role"] == "user" else "助手"
+                text = m["content"][:150].replace("\n", " ")
+                if len(m["content"]) > 150:
+                    text += "…"
+                summary_lines.append(f"{role_label}：{text}")
+            summary = (
+                f"[早期对话摘要（共{len(old_msgs) // 2}轮，已压缩）]\n"
+                + "\n".join(summary_lines)
+            )
+            if len(summary) > _MAX_SUMMARY_CHARS:
+                summary = summary[:_MAX_SUMMARY_CHARS] + "…（已截断）"
+            effective_msgs = [{"role": "assistant", "content": summary}] + recent_msgs
+        else:
+            effective_msgs = messages
+
+        return self.llm.generate_chat(
+            self.SYSTEM_PROMPT, effective_msgs,
+            max_tokens=1024, temperature=self.temperature
+        )
 
     def extract_project_config(self, messages: list) -> dict:
         """
