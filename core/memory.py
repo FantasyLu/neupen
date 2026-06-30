@@ -473,10 +473,32 @@ class GlobalMemory:
                 if lines:
                     parts.append("\n=== 待回收伏笔 ===\n" + "\n".join(lines))
             else:
-                # ── 无章节上下文时全量注入（保持原行为）──────────────
-                parts.append("\n=== 待回收伏笔 ===")
+                # ── 无章节关键词：仅按到期迫近过滤，其余给单行汇总 ──────
+                # 避免在没有章节上下文时把全部伏笔塞进 prompt
+                _URGENT_WINDOW = 5
+                urgent_fs = []
+                summary_fs = []
                 for f in foreshadowings:
-                    parts.append(f.to_full_text())
+                    is_urgent = (
+                        current_chapter is not None
+                        and f.collect_by_chapter is not None
+                        and f.collect_by_chapter <= current_chapter + _URGENT_WINDOW
+                    )
+                    if is_urgent:
+                        urgent_fs.append(f)
+                    else:
+                        summary_fs.append(f)
+
+                lines = []
+                if urgent_fs:
+                    lines.append("【即将到期，必须处理】")
+                    for f in urgent_fs:
+                        lines.append(f.to_full_text())
+                if summary_fs:
+                    brief_list = "、".join(f.to_brief_text() for f in summary_fs)
+                    lines.append(f"【其余 {len(summary_fs)} 条待回收伏笔】{brief_list}")
+                if lines:
+                    parts.append("\n=== 待回收伏笔 ===\n" + "\n".join(lines))
 
         # 可选：章节大纲列表
         if include_chapters:

@@ -1960,100 +1960,89 @@ class CanvasAgent:
     当 AI 建议修改文档时，以 ```markdown ... ``` 代码块输出新版本。
     """
 
-    _ROLE_PROMPTS = {
-        "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。
+    # ── 角色基础定位（不含代码块模板，保持简短）────────────────────────
+    _ROLE_BASE = "你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。"
 
-【输出规范】
-普通讨论、分析和建议直接用正常文字，不加代码块。
-当你需要提供可直接写入系统的结构化内容时，使用以下专属代码块格式（每种代码块对应一个明确的写入目标）：
-
+    # ── 代码块模板（按类型分组，按需拼入）────────────────────────────────
+    _BLOCK_TEMPLATES = {
+        "outline": """\
 若要更新整体大纲（包含前提设定、核心主题、主要矛盾等）：
 ```outline
 （完整大纲 Markdown，保留现有内容并补充修改）
-```
-
+```""",
+        "settings": """\
 若要更新世界观/背景/系统设定文档：
 ```settings
 （完整设定 Markdown 文档）
-```
-
+```""",
+        "world": """\
 若要对世界观做结构化键值更新（如"世界规则"、"力量体系"、"社会结构"等键）：
 ```world
 {"键名": "完整的设定内容", "另一个键": "完整内容"}
-```
-
+```""",
+        "characters": """\
 若要创建或更新人物档案（必须包含 name 字段，其余字段可选填）：
 ```characters
-[
-  {
-    "name": "人物姓名",
-    "role": "主角/配角/反派",
-    "age": "年龄",
-    "gender": "性别",
-    "personality": "性格特征",
-    "background": "背景故事",
-    "abilities": ["能力1", "能力2"],
-    "appearance": "外貌描述",
-    "growth_arc": "成长弧光",
-    "current_state": "当前状态",
-    "motivations": "动机",
-    "speech_patterns": "说话风格",
-    "secrets": "隐藏信息",
-    "is_main": true
-  }
-]
+[{"name": "姓名", "role": "主角/配角/反派", "personality": "性格", "background": "背景", "is_main": true}]
 ```
-
-若要删除人物档案，在 characters 块中传入 action 字段：
-```characters
-[
-  {"name": "要删除的人物姓名", "action": "delete"}
-]
-```
-增删可混在同一数组中。
-
+删除人物：`[{"name": "姓名", "action": "delete"}]`""",
+        "chapter": """\
 若要给出当前章节的正文或修改版本：
 ```chapter
 （完整章节正文）
-```
-
+```""",
+        "volume": """\
 若要创建或更新卷大纲：
 ```volume
-{"volume_number": 1, "title": "卷名", "summary": "卷简介", "main_conflict": "核心矛盾", "arc_goal": "目标主题", "start_chapter": 1, "end_chapter": 30}
-```
-
+{"volume_number": 1, "title": "卷名", "summary": "卷简介", "main_conflict": "核心矛盾", "start_chapter": 1, "end_chapter": 30}
+```""",
+        "foreshadowing": """\
 若要创建新的伏笔条目：
 ```foreshadowing
-[
-  {"name": "伏笔名", "description": "伏笔内容描述", "importance": "high/medium/low", "set_chapter": 1, "collect_by_chapter": 10}
-]
-```
-
-若要记录或更新写作风格偏好（当用户对文笔、节奏、对话、描写等提出具体意见时，自动提炼并输出）：
+[{"name": "伏笔名", "description": "描述", "importance": "high/medium/low", "set_chapter": 1, "collect_by_chapter": 10}]
+```""",
+        "style": """\
+若要记录写作风格偏好（用户对文笔/节奏/对话提出意见时输出）：
 ```style
-{
-  "overall_style": "总体风格定位（如：冷峻硬核、温情治愈）",
-  "sentence_patterns": "句式特征（如：多用短句、长句铺陈）",
-  "vocabulary": "词汇风格（如：口语化、书面典雅）",
-  "narrative_voice": "叙述视角风格（如：第一人称内心独白、第三人称限知视角）",
-  "dialogue_style": "对话特点（如：简练有力、带方言口癖）",
-  "description_style": "描写特点（如：重感官细节、白描留白）",
-  "rhythm_pacing": "节奏与节拍（如：快节奏、张弛有度）",
-  "emotion_expression": "情感表达方式（如：克制含蓄、直抒胸臆）",
-  "signature_techniques": "标志性手法（如：多线叙事、倒叙插叙）",
-  "polish_instructions": "写作核心指令（最关键的几条规则，直接注入写作 prompt）"
-}
+{"overall_style": "...", "dialogue_style": "...", "polish_instructions": "..."}
 ```
-
-style 块使用规则：
-- 只填用户明确提到或暗示的维度，未涉及的维度不要输出。
-- 用户在讨论中提出的「写得不好」「应该这样写」等批评意见，都应被提炼为正向的风格指令。
-- 例如用户说「对话太生硬了，应该更自然」，应输出 "dialogue_style": "对话要自然流畅，贴近日常口语，避免书面化"
-- 如果用户没有提出风格相关的意见，不要输出 style 块。
-- 每次只输出本次讨论中涉及的新增或修改项，不要重复已有的风格设定。
-
-用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
+只填本次涉及的维度，未提及的不输出。""",
     }
+
+    # ── 按页面决定需要哪些代码块 ──────────────────────────────────────────
+    # page 值对应 UI 路由（None = 通用/sidebar）
+    _PAGE_BLOCKS: dict[str | None, list[str]] = {
+        "outline":       ["outline", "volume", "foreshadowing", "world"],
+        "writing":       ["chapter", "style", "foreshadowing"],
+        "characters":    ["characters"],
+        "settings":      ["settings", "world"],
+        "visualization": ["foreshadowing"],
+        "export":        [],
+        None:            ["outline", "settings", "world", "characters", "chapter",
+                          "volume", "foreshadowing", "style"],   # sidebar/全局
+    }
+
+    _ROLE_PROMPTS = {
+        "global": None,  # 占位，实际由 _build_role_prompt() 动态生成
+    }
+
+    @classmethod
+    def _build_role_prompt(cls, page: str | None) -> str:
+        """根据当前页面动态拼装 role_prompt，只包含本页面可能用到的代码块模板。"""
+        block_keys = cls._PAGE_BLOCKS.get(page, cls._PAGE_BLOCKS[None])
+        if not block_keys:
+            return cls._ROLE_BASE
+
+        blocks_text = "\n\n".join(cls._BLOCK_TEMPLATES[k] for k in block_keys
+                                  if k in cls._BLOCK_TEMPLATES)
+        return (
+            f"{cls._ROLE_BASE}\n\n"
+            "【输出规范】\n"
+            "普通讨论、分析和建议直接用正常文字，不加代码块。\n"
+            "需要提供可写入系统的内容时，使用以下专属代码块格式：\n\n"
+            f"{blocks_text}\n\n"
+            "用户可一键将代码块内容应用到对应位置。"
+        )
 
     def __init__(self, novel_id: int, model_id: str = None, role: str = "global", temperature: float = None):
         from core.memory import MemoryManager
@@ -2066,12 +2055,14 @@ style 块使用规则：
         self.llm = NovelLLM(_model, novel_id=self.novel_id)
 
     def chat(self, messages: list, document_content: str = "",
-             page: str = None, chapter_number: int = None) -> str:
+             page: str = None, chapter_number: int = None,
+             hint: str = "") -> str:
         """
         多轮对话。
         document_content: 当前文档内容（注入上下文，截断至6000字）
-        page: 当前所在页面（用于上下文感知，预留）
+        page: 当前所在页面（用于按页面裁剪 role_prompt 中的代码块模板）
         chapter_number: 当前章节号（若提供则按章纲关键词过滤世界观）
+        hint: 额外上下文提示（dispatch 降级时传入识别到的 intent 说明）
         messages: [{"role": "user"/"assistant", "content": "..."}]
 
         历史压缩：当对话超过 MAX_CANVAS_HISTORY 轮时，把早期消息压缩成
@@ -2082,7 +2073,7 @@ style 块使用规则：
         _RECENT_KEEP = 8       # 压缩后保留最近几轮原文
         _MAX_SUMMARY_CHARS = 600  # 历史摘要最多占用字符数
 
-        role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
+        role_prompt = self._build_role_prompt(page)
 
         # ── 历史消息压缩 ─────────────────────────────────────────────
         # messages 是 [user, assistant, user, assistant, ...] 的列表
@@ -2133,23 +2124,25 @@ style 块使用规则：
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
         system_prompt = "\n".join(system_parts)
 
-        # 当前文档内容附加到对话最后一条 user 消息之前（而非 system）
-        # 截断至 6000 字，避免超长文档撑爆上下文
+        # 当前文档内容 + 降级 hint 附加到最后一条 user 消息末尾
         _msgs = list(effective_msgs)
+        suffix = ""
+        if hint:
+            suffix += f"\n\n---\n【系统提示】{hint}"
         if document_content.strip():
             doc_truncated = document_content[:6000]
             doc_note = "...(内容过长已截断)" if len(document_content) > 6000 else ""
-            doc_block = (
+            suffix += (
                 f"\n\n---\n【当前文档内容（你可能需要据此修改）】\n"
                 f"```markdown\n{doc_truncated}{doc_note}\n```"
             )
-            # 将文档内容附加到最后一条 user 消息末尾
+        if suffix:
             if _msgs and _msgs[-1]["role"] == "user":
                 _msgs = _msgs[:-1] + [
-                    {**_msgs[-1], "content": _msgs[-1]["content"] + doc_block}
+                    {**_msgs[-1], "content": _msgs[-1]["content"] + suffix}
                 ]
             else:
-                _msgs.append({"role": "user", "content": doc_block})
+                _msgs.append({"role": "user", "content": suffix.strip()})
 
         return self.llm.generate_chat(system_prompt, _msgs, max_tokens=4096, temperature=self.temperature)
 
@@ -2520,11 +2513,23 @@ style 块使用规则：
 
         # ── Step 3: chat 路径（含降级） ───────────────────────────
         result_base["intent"] = "chat"
+        # 降级时把识别到的原始意图作为 hint 传入，帮助 chat() 聚焦上下文
+        _degraded_hint = ""
+        if result_base.get("degraded") and intent != "chat":
+            _instruction = params.get("instruction", "")
+            _ch = params.get("chapter_number") or chapter_number
+            _degraded_hint = (
+                f"用户原始意图为「{intent}」"
+                + (f"（第{_ch}章）" if _ch else "")
+                + (f"，指令：{_instruction}" if _instruction else "")
+                + "，但自动执行失败，请以对话方式协助用户完成该任务。"
+            )
         result_base["reply"] = self.chat(
             messages=messages,
             document_content=document_content,
             page=page,
             chapter_number=chapter_number,
+            hint=_degraded_hint,
         )
         return result_base
 
