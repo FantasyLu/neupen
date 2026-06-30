@@ -853,6 +853,8 @@ class WriterAgent:
         if novel:
             style_profile = novel.get_style_profile()
             style_desc = novel.writing_style or ""
+            style_ref_text = (novel.style_reference_text or "").strip()
+
             if style_profile:
                 _label_map = {
                     "overall_style":        "总体风格定位",
@@ -876,6 +878,24 @@ class WriterAgent:
                         "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
                         + "\n".join(lines)
                     )
+                # 追加参考原文片段作为感性对照（前400字）
+                if style_ref_text:
+                    _preview = style_ref_text[:400]
+                    if len(style_ref_text) > 400:
+                        _preview += "…"
+                    style_block += (
+                        "\n【风格参考原文片段（感受语感，不要直接复制）】\n"
+                        + _preview
+                    )
+            elif style_ref_text:
+                # 没有结构化档案但有参考文本：注入前600字让LLM直接感受风格
+                _preview = style_ref_text[:600]
+                if len(style_ref_text) > 600:
+                    _preview += "…"
+                style_block = (
+                    "\n【写作风格参考（请模仿以下文本的语感、节奏和表达习惯，不要直接复制）】\n"
+                    + _preview
+                )
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 

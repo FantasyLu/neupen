@@ -719,10 +719,15 @@ class ChapterMemory:
 
         parts = [f"=== 前{len(recent)}章情节摘要（写手请仔细阅读，确保剧情连贯）==="]
         missing_summary = False
+        # 单章摘要字数上限：避免某章摘要过长撑爆 token 窗口
+        _SUMMARY_MAX_CHARS = 600
         for ch in recent:
             parts.append(f"\n--- 第{ch.chapter_number}章《{ch.title or ''}》---")
             if ch.summary:
-                parts.append(f"📖 {ch.summary}")
+                summary_text = ch.summary
+                if len(summary_text) > _SUMMARY_MAX_CHARS:
+                    summary_text = summary_text[:_SUMMARY_MAX_CHARS] + "…（摘要已截断）"
+                parts.append(f"📖 {summary_text}")
                 if ch.key_events:
                     try:
                         events = json.loads(ch.key_events)
@@ -1097,11 +1102,12 @@ class MemoryManager:
             parts.append(recent_ctx)
 
         # Layer 3: 碎片化记忆（上限3片段，相关度门槛0.5）
-        search_query = (
-            f"{chapter_outline.outline_core_event or ''} "
-            f"{', '.join(active_chars)} "
-            f"{chapter_outline.outline_scene or ''}"
-        )
+        # 核心事件重复一次，提升其在向量相似度计算中的权重；
+        # 人物和场景作为补充维度，帮助检索出角色/场景延续性细节。
+        _core_event = chapter_outline.outline_core_event or ""
+        _chars_str = ", ".join(active_chars)
+        _scene = chapter_outline.outline_scene or ""
+        search_query = f"{_core_event} {_core_event} {_chars_str} {_scene}".strip()
         fragment_ctx = self.fragment_mem.build_relevant_context(
             search_query, chapter_number, n_results=3, min_relevance=0.5
         )
