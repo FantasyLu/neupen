@@ -11,6 +11,7 @@
 """
 
 import json
+import threading
 from typing import Optional, Callable
 from dataclasses import dataclass
 
@@ -88,6 +89,12 @@ class NovelWorkflow:
         self._reviewer_agent = None
         self._polisher_agent = None
         self._reader_agent = None
+
+        # ── 任务级幂等：防止同一章节并发重入 ────────────────────────────────
+        # key = chapter_number, value = threading.Lock()
+        # 同一 NovelWorkflow 实例内，已在进行中的章节会被跳过/排队
+        self._chapter_locks: dict[int, threading.Lock] = {}
+        self._chapter_locks_mutex = threading.Lock()  # 保护 _chapter_locks 字典本身
 
     @staticmethod
     def _get_temp(novel, col: str, default: float) -> float:
@@ -332,6 +339,42 @@ class NovelWorkflow:
         Returns:
             WorkflowResult，包含最终内容和审核报告
         """
+        import json as json_module
+
+        # ── 任务级幂等：获取该章节的锁，防止并发重入 ────────────────────────
+        with self._chapter_locks_mutex:
+            if chapter_number not in self._chapter_locks:
+                self._chapter_locks[chapter_number] = threading.Lock()
+            ch_lock = self._chapter_locks[chapter_number]
+
+        # non-blocking 尝试获取锁：同一章节已在写作中则立即返回
+        if not ch_lock.acquire(blocking=False):
+            return WorkflowResult(
+                success=False,
+                message=f"⚠️ 第{chapter_number}章正在写作中，请勿重复提交",
+            )
+        try:
+            return self._write_and_review_chapter_impl(
+                chapter_number=chapter_number,
+                word_target=word_target,
+                word_count_tolerance=word_count_tolerance,
+                auto_polish=auto_polish,
+                progress_callback=progress_callback,
+                stream_callback=stream_callback,
+            )
+        finally:
+            ch_lock.release()
+
+    def _write_and_review_chapter_impl(
+        self,
+        chapter_number: int,
+        word_target: int = 3000,
+        word_count_tolerance: float = None,
+        auto_polish: bool = True,
+        progress_callback: Callable = None,
+        stream_callback: Callable = None
+    ) -> WorkflowResult:
+        """write_and_review_chapter 的实际实现（由幂等包装层调用）"""
         import json as json_module
 
         try:
