@@ -1953,6 +1953,101 @@ class IdeaAgent:
 # Agent 8: Canvas 协作 Agent
 # ======================================
 
+
+# ======================================
+# 工具类: 字段级内容压缩器
+# ======================================
+
+class FieldCompressor:
+    """
+    字段级 LLM 压缩器。
+    用于把世界观 value / 大纲字段等长文本提炼为精简注入版本。
+    压缩结果仅用于 prompt 注入，原始内容不受影响。
+
+    使用方式：
+        compressor = FieldCompressor(novel_id, model_id)
+        short = compressor.compress(label="力量体系", text=long_text, target_chars=200)
+    """
+
+    _SYSTEM = (
+        "你是一位专业的小说设定编辑。你的任务是将一段详细的设定文字提炼为精简版本，"
+        "供 AI 写作助手快速参考。\n"
+        "要求：\n"
+        "- 保留所有关键规则、核心矛盾、重要限制和独特概念\n"
+        "- 删除举例说明、重复表述、修辞性语言\n"
+        "- 以简洁的要点或短句输出，不加额外说明\n"
+        "- 直接输出压缩结果，不要说'以下是压缩版本'等引导语"
+    )
+
+    def __init__(self, novel_id: int, model_id: str = None):
+        from core.llm import NovelLLM, DEFAULT_MODEL_ID
+        _model = model_id or DEFAULT_MODEL_ID
+        self.llm = NovelLLM(_model, novel_id=novel_id)
+
+    def compress(self, label: str, text: str, target_chars: int = 200) -> str:
+        """
+        压缩单个字段文本。
+
+        Args:
+            label:        字段标签（如「力量体系」），帮助模型理解语境
+            text:         原始文本
+            target_chars: 目标字数（仅供参考，非硬截断）
+
+        Returns:
+            压缩后文本；若压缩失败则返回原文前 target_chars 字符。
+        """
+        user_prompt = (
+            f"【字段】{label}\n"
+            f"【目标字数】约 {target_chars} 字以内\n\n"
+            f"【原文】\n{text}"
+        )
+        try:
+            result = self.llm.generate(
+                self._SYSTEM, user_prompt,
+                max_tokens=512, cache_system=False, temperature=0.0
+            )
+            return result.strip()
+        except Exception:
+            # 压缩失败时回退到硬截断
+            return text[:target_chars] + "…（已截断）" if len(text) > target_chars else text
+
+    def compress_world_setting(
+        self,
+        world: dict,
+        threshold: int,
+        target_chars: int,
+    ) -> dict:
+        """
+        对世界观 dict 中超过阈值的 value 逐条压缩，返回压缩版 dict。
+        短于阈值的条目直接保留原文。
+        """
+        compressed = {}
+        for k, v in world.items():
+            v_str = str(v)
+            if len(v_str) > threshold:
+                compressed[k] = self.compress(label=k, text=v_str, target_chars=target_chars)
+            else:
+                compressed[k] = v_str
+        return compressed
+
+    def compress_outline_fields(
+        self,
+        outline,          # NovelOutline ORM 对象
+        fields: list[str],
+        threshold: int,
+        target_chars: int,
+    ) -> dict:
+        """
+        对 NovelOutline 指定字段中超过阈值的内容逐条压缩。
+        返回 {field_name: compressed_text} dict，未超阈值的字段不含在结果中。
+        """
+        result = {}
+        for field in fields:
+            val = getattr(outline, field, None) or ""
+            if len(val) > threshold:
+                result[field] = self.compress(label=field, text=val, target_chars=target_chars)
+        return result
+
 class CanvasAgent:
     """
     通用 Canvas AI 协作 Agent。

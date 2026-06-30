@@ -106,11 +106,22 @@ class GlobalMemory:
         return {}
 
     def save_world_setting(self, setting: dict):
-        """保存世界观设定"""
+        """保存世界观设定，并在后台异步触发字段级压缩"""
         novel = self.get_novel()
         if novel:
             novel.set_world_setting(setting)
+            # 内容变更，清空旧压缩缓存（压缩完成前注入时会回退用原文）
+            novel.world_setting_compressed = None
             self.db.commit()
+            # 异步触发压缩，不阻塞当前保存
+            import threading
+            novel_id = self.novel_id
+            model_id = novel.llm_model or None
+            threading.Thread(
+                target=_compress_world_setting_async,
+                args=(novel_id, model_id),
+                daemon=True
+            ).start()
 
     def get_all_characters(self) -> list[Character]:
         """获取所有人物档案"""
@@ -157,7 +168,7 @@ class GlobalMemory:
         ).first()
 
     def save_outline(self, data: dict) -> NovelOutline:
-        """保存总大纲"""
+        """保存总大纲，并在后台异步触发字段级压缩"""
         # 将 dict/list 字段序列化为 JSON 字符串，避免 SQLite 类型错误
         serialized = {
             k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
@@ -168,14 +179,28 @@ class GlobalMemory:
             for k, v in serialized.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
+            # 清空旧压缩缓存
+            for f in ("theme_compressed", "main_conflict_compressed",
+                      "protagonist_arc_compressed", "ending_summary_compressed"):
+                setattr(existing, f, None)
             self.db.commit()
-            return existing
+            outline = existing
         else:
             outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in serialized.items() if k != "novel_id"})
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
-            return outline
+        # 异步触发大纲字段压缩
+        import threading
+        novel_id = self.novel_id
+        novel = self.get_novel()
+        model_id = novel.llm_model if novel else None
+        threading.Thread(
+            target=_compress_outline_async,
+            args=(novel_id, model_id),
+            daemon=True
+        ).start()
+        return outline
 
     def get_volumes(self) -> list[Volume]:
         """获取所有卷大纲"""
@@ -366,9 +391,19 @@ class GlobalMemory:
         if novel.logline:
             parts.append(f"简介：{novel.logline}")
 
-        # 世界观设定：按章节关键词过滤
-        world = self.get_world_setting()
-        if world:
+        # 世界观设定：优先使用压缩版，回退到原文；按章节关键词过滤
+        world_raw = self.get_world_setting()
+        if world_raw:
+            # 若压缩版已生成则使用，否则回退原文（压缩任务仍在后台运行）
+            novel_obj = self.get_novel()
+            if novel_obj and novel_obj.world_setting_compressed:
+                try:
+                    world = json.loads(novel_obj.world_setting_compressed)
+                except Exception:
+                    world = world_raw
+            else:
+                world = world_raw
+
             if chapter_keywords:
                 matched = {
                     k: v for k, v in world.items()
@@ -386,14 +421,24 @@ class GlobalMemory:
                 for k, v in world.items():
                     parts.append(f"{k}：{v}")
 
-        # 总大纲概要
+        # 总大纲概要：优先使用各字段的压缩版，回退到原文
         outline = self.get_outline()
         if outline:
             parts.append("\n=== 总大纲 ===")
-            if outline.theme: parts.append(f"核心主题：{outline.theme}")
-            if outline.main_conflict: parts.append(f"主要矛盾：{outline.main_conflict}")
-            if outline.protagonist_arc: parts.append(f"主角弧光：{outline.protagonist_arc}")
-            if outline.ending_summary: parts.append(f"结局概要：{outline.ending_summary}")
+            # 对每个字段：有压缩版用压缩版，否则用原文
+            def _outline_val(field: str) -> str:
+                compressed = getattr(outline, f"{field}_compressed", None)
+                original = getattr(outline, field, None) or ""
+                return (compressed or original).strip()
+
+            theme_val         = _outline_val("theme")
+            conflict_val      = _outline_val("main_conflict")
+            arc_val           = _outline_val("protagonist_arc")
+            ending_val        = _outline_val("ending_summary")
+            if theme_val:    parts.append(f"核心主题：{theme_val}")
+            if conflict_val: parts.append(f"主要矛盾：{conflict_val}")
+            if arc_val:      parts.append(f"主角弧光：{arc_val}")
+            if ending_val:   parts.append(f"结局概要：{ending_val}")
 
         # 人物档案：按出场过滤
         chars = self.get_all_characters()
@@ -512,6 +557,77 @@ class GlobalMemory:
 
     def close(self):
         self.db.close()
+
+
+# ── 异步压缩辅助函数（模块级，供 GlobalMemory save 方法调用）──────────────────
+
+def _compress_world_setting_async(novel_id: int, model_id: str | None):
+    """
+    在独立线程中对世界观 value 逐条压缩，写回 novel.world_setting_compressed。
+    失败时静默忽略，不影响主流程。
+    """
+    try:
+        from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_TARGET_CHARS
+        from core.agents import FieldCompressor
+
+        db = get_db()
+        novel = db.query(Novel).filter(Novel.id == novel_id).first()
+        if not novel or not novel.world_setting:
+            db.close()
+            return
+
+        world = novel.get_world_setting()
+        # 如果所有 value 都不超阈值，直接标记为不需要压缩版
+        needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world.values())
+        if not needs_compress:
+            novel.world_setting_compressed = novel.world_setting  # 原文即压缩版
+            db.commit()
+            db.close()
+            return
+
+        compressor = FieldCompressor(novel_id=novel_id, model_id=model_id)
+        compressed_world = compressor.compress_world_setting(
+            world=world,
+            threshold=COMPRESS_WORLD_THRESHOLD,
+            target_chars=COMPRESS_TARGET_CHARS,
+        )
+        novel.world_setting_compressed = json.dumps(compressed_world, ensure_ascii=False)
+        db.commit()
+        db.close()
+    except Exception:
+        pass  # 压缩失败不影响主流程
+
+
+def _compress_outline_async(novel_id: int, model_id: str | None):
+    """
+    在独立线程中对 NovelOutline 的长字段逐条压缩，写回 *_compressed 列。
+    失败时静默忽略。
+    """
+    try:
+        from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_TARGET_CHARS
+        from core.agents import FieldCompressor
+
+        _OUTLINE_FIELDS = ["theme", "main_conflict", "protagonist_arc", "ending_summary"]
+
+        db = get_db()
+        outline = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+        if not outline:
+            db.close()
+            return
+
+        compressor = FieldCompressor(novel_id=novel_id, model_id=model_id)
+        compressed = compressor.compress_outline_fields(
+            outline=outline,
+            fields=_OUTLINE_FIELDS,
+            threshold=COMPRESS_OUTLINE_THRESHOLD,
+            target_chars=COMPRESS_TARGET_CHARS,
+        )
+        for field, value in compressed.items():
+            setattr(outline, f"{field}_compressed", value)
+        db.commit()
+        db.close()
+    except Exception:
+        pass  # 压缩失败不影响主流程
 
 
 # ======================================

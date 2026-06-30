@@ -136,6 +136,16 @@ MAX_GATE_RETRIES = int(os.getenv("MAX_GATE_RETRIES", "2"))
 FINAL_SCORE_WEIGHTS = (0.3, 0.4, 0.3)  # (局部校对, 全局场记, 文风打磨)
 
 # ======================================
+# 内容压缩配置
+# ======================================
+# 世界观单个 value 超过此字数时触发 LLM 字段级压缩，压缩目标为 COMPRESS_TARGET_CHARS
+COMPRESS_WORLD_THRESHOLD = int(os.getenv("COMPRESS_WORLD_THRESHOLD", "300"))
+# 大纲单个字段（theme/main_conflict/protagonist_arc/ending_summary）超过此字数触发压缩
+COMPRESS_OUTLINE_THRESHOLD = int(os.getenv("COMPRESS_OUTLINE_THRESHOLD", "300"))
+# 压缩后目标字数（供 LLM 参考，非硬截断）
+COMPRESS_TARGET_CHARS = int(os.getenv("COMPRESS_TARGET_CHARS", "200"))
+
+# ======================================
 # 版本控制配置
 # ======================================
 # 每个内容保留的最大历史版本数
