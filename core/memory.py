@@ -334,10 +334,22 @@ class GlobalMemory:
         self.db.refresh(event)
         return event
 
-    def build_global_context(self, include_chapters: bool = False) -> str:
+    def build_global_context(self, include_chapters: bool = False,
+                              active_chars: list[str] | None = None,
+                              chapter_keywords: set[str] | None = None) -> str:
         """
         构建全局上下文字符串，注入到 Agent 提示词中
         包含：世界观设定、主要人物、总大纲概要、未回收伏笔
+
+        Args:
+            include_chapters: 是否附加章节大纲列表
+            active_chars: 本章出场人物姓名列表。
+                若提供，出场人物给完整档案，其余人物只给单行简介；
+                若为 None（默认），保持原有全量注入行为。
+            chapter_keywords: 本章关键词集合（来自章纲字段）。
+                若提供，世界观条目只注入「key 或 value 中包含任一关键词」的条目，
+                其余条目跳过（避免注入与本章无关的大量背景设定）；
+                若为 None（默认），保持原有全量注入行为。
         """
         parts = []
         novel = self.get_novel()
@@ -349,12 +361,25 @@ class GlobalMemory:
         if novel.logline:
             parts.append(f"简介：{novel.logline}")
 
-        # 世界观设定
+        # 世界观设定：按章节关键词过滤
         world = self.get_world_setting()
         if world:
-            parts.append("\n=== 世界观设定 ===")
-            for k, v in world.items():
-                parts.append(f"{k}：{v}")
+            if chapter_keywords:
+                matched = {
+                    k: v for k, v in world.items()
+                    if any(kw in k or kw in str(v) for kw in chapter_keywords)
+                }
+                skipped = len(world) - len(matched)
+                if matched:
+                    parts.append("\n=== 世界观设定（与本章相关）===")
+                    for k, v in matched.items():
+                        parts.append(f"{k}：{v}")
+                    if skipped > 0:
+                        parts.append(f"（另有 {skipped} 条与本章无关的设定已省略）")
+            else:
+                parts.append("\n=== 世界观设定 ===")
+                for k, v in world.items():
+                    parts.append(f"{k}：{v}")
 
         # 总大纲概要
         outline = self.get_outline()
@@ -365,13 +390,29 @@ class GlobalMemory:
             if outline.protagonist_arc: parts.append(f"主角弧光：{outline.protagonist_arc}")
             if outline.ending_summary: parts.append(f"结局概要：{outline.ending_summary}")
 
-        # 主要人物档案
+        # 人物档案：按出场过滤
         chars = self.get_all_characters()
         if chars:
-            parts.append("\n=== 人物档案 ===")
-            for char in chars:
-                parts.append(char.to_profile_text())
-                parts.append("")  # 空行分隔
+            if active_chars is not None:
+                # 规范化：去空格、小写，方便宽松匹配
+                active_set = {n.strip() for n in active_chars if n.strip()}
+                appearing = [c for c in chars if c.name in active_set]
+                others = [c for c in chars if c.name not in active_set]
+
+                if appearing:
+                    parts.append("\n=== 本章出场人物档案 ===")
+                    for char in appearing:
+                        parts.append(char.to_profile_text())
+                        parts.append("")
+                if others:
+                    parts.append("=== 其他人物（本章未出场，仅供参考）===")
+                    parts.append("  ".join(char.to_brief_text() for char in others))
+            else:
+                # 默认行为：全量注入
+                parts.append("\n=== 人物档案 ===")
+                for char in chars:
+                    parts.append(char.to_profile_text())
+                    parts.append("")
 
         # 未回收伏笔
         foreshadowings = self.get_active_foreshadowings()
@@ -452,15 +493,36 @@ class ChapterMemory:
             chapter.key_events = json.dumps(key_events, ensure_ascii=False)
             self.db.commit()
 
-    def build_recent_context(self, current_chapter: int) -> str:
+    def build_recent_context(self, current_chapter: int,
+                              adaptive: bool = False) -> str:
         """
         构建最近N章的上下文摘要，注入到写手Agent提示词。
 
         只使用每章的详细摘要和关键事件列表，不再注入原始正文。
         摘要需要在章节保存时由 WriterAgent.summarize_chapter() 生成。
         如果某章缺失摘要，会使用正文前300字作为临时标记并提示用户回填。
+
+        Args:
+            adaptive: 是否启用章数自适应。启用时前几章少注入，
+                避免把有限的上下文窗口浪费在不存在的历史章节上。
+                第1章=0章，第2-3章=1章，第4-6章=3章，第7章起=全量(RECENT_CHAPTERS_COUNT)。
         """
-        recent = self.get_recent_chapters(current_chapter)
+        if adaptive:
+            if current_chapter <= 1:
+                count = 0
+            elif current_chapter <= 3:
+                count = 1
+            elif current_chapter <= 6:
+                count = 3
+            else:
+                count = RECENT_CHAPTERS_COUNT
+        else:
+            count = RECENT_CHAPTERS_COUNT
+
+        if count == 0:
+            return "（这是第一章，没有前情）"
+
+        recent = self.get_recent_chapters(current_chapter, count=count)
         if not recent:
             return "（这是第一章，没有前情）"
 
@@ -645,16 +707,29 @@ class FragmentMemory:
             print(f"⚠️ 向量检索出错：{e}")
             return []
 
-    def build_relevant_context(self, query: str, current_chapter: int) -> str:
+    def build_relevant_context(self, query: str, current_chapter: int,
+                               n_results: int = 5,
+                               min_relevance: float = 0.0) -> str:
         """
         构建相关历史片段的上下文字符串
+
+        Args:
+            n_results: 最多检索并展示的片段数（默认5，写作场景建议传3）
+            min_relevance: 相关度门槛 [0, 1]，低于此值的片段丢弃（默认0不过滤）
         """
-        fragments = self.search_relevant(query, exclude_chapter=current_chapter)
+        fragments = self.search_relevant(query, n_results=n_results,
+                                         exclude_chapter=current_chapter)
+        if not fragments:
+            return ""
+
+        # 过滤低相关度片段
+        if min_relevance > 0:
+            fragments = [f for f in fragments if f["relevance"] >= min_relevance]
         if not fragments:
             return ""
 
         parts = ["=== 相关历史细节（语义检索）==="]
-        for f in fragments[:5]:  # 最多展示5个片段
+        for f in fragments:
             parts.append(
                 f"\n[第{f['chapter_number']}章《{f['title']}》| 相关度{f['relevance']:.2f}]\n{f['content']}"
             )
@@ -723,6 +798,54 @@ class FragmentMemory:
 # 统一记忆接口
 # ======================================
 
+def _extract_chapter_keywords(chapter_outline: "Chapter") -> set[str]:
+    """
+    从章纲各字段提取关键词集合，用于世界观的相关性过滤。
+    提取字段：核心事件、主要冲突、场景、情感基调、出场人物、伏笔名。
+    返回长度 >= 2 的词语集合（单字词噪音大，跳过）。
+    """
+    import json as _json
+    tokens: set[str] = set()
+
+    text_fields = [
+        chapter_outline.outline_core_event or "",
+        chapter_outline.outline_conflict or "",
+        chapter_outline.outline_scene or "",
+        chapter_outline.outline_emotion or "",
+    ]
+    for field in text_fields:
+        # 按标点和空格切分，保留长度>=2的词
+        import re as _re
+        for tok in _re.split("[，。！？、；：\u201c\u201d\u2018\u2019【】《》 \t\n\r]+", field):
+            tok = tok.strip()
+            if len(tok) >= 2:
+                tokens.add(tok)
+
+    # 出场人物名直接加入
+    try:
+        chars = _json.loads(chapter_outline.outline_characters or "[]")
+        for name in chars:
+            if name and len(name.strip()) >= 1:
+                tokens.add(name.strip())
+    except Exception:
+        pass
+
+    # 伏笔名
+    for fs_field in [
+        chapter_outline.outline_foreshadowing_set or "",
+        chapter_outline.outline_foreshadowing_collect or "",
+    ]:
+        try:
+            names = _json.loads(fs_field)
+            for n in names:
+                if n and len(n.strip()) >= 2:
+                    tokens.add(n.strip())
+        except Exception:
+            pass
+
+    return tokens
+
+
 class MemoryManager:
     """
     统一记忆接口
@@ -740,27 +863,55 @@ class MemoryManager:
         """
         为写手Agent构建完整的写作上下文
         整合三层记忆：全局设定 + 最近章节 + 相关细节
+
+        优化策略：
+        - 人物档案按本章出场人物过滤，非出场人物只给单行简介
+          ⚠️ active_chars = 本章章纲出场人物 ∪ 上一章章纲出场人物
+          （上一章人物可能因连续场景仍在本章，避免被降级为简介）
+        - 世界观按章节关键词过滤，只注入相关条目
+        - L3 向量检索上限收紧到 3 片段，且设相关度门槛 0.5
+        - 摘要注入章数根据当前章节自适应（前期少、后期多）
         """
         parts = []
 
-        # Layer 1: 全局记忆
-        global_ctx = self.global_mem.build_global_context()
+        # 提取本章出场人物（章纲已有）
+        current_chars = set(chapter_outline.get_outline_characters())
+
+        # 并入上一章出场人物（连续场景中上章人物可能仍在场）
+        if chapter_number > 1:
+            prev = self.chapter_mem.get_chapter(chapter_number - 1)
+            if prev:
+                prev_chars = prev.get_outline_characters()
+                current_chars.update(prev_chars)
+
+        active_chars = list(current_chars)
+
+        # 构建章节关键词集（来自章纲各字段）用于世界观过滤
+        chapter_keywords = _extract_chapter_keywords(chapter_outline)
+
+        # Layer 1: 全局记忆（按出场人物过滤档案，按关键词过滤世界观）
+        global_ctx = self.global_mem.build_global_context(
+            active_chars=active_chars or None,
+            chapter_keywords=chapter_keywords or None,
+        )
         if global_ctx:
             parts.append(global_ctx)
 
-        # Layer 2: 章节记忆（最近N章）
-        recent_ctx = self.chapter_mem.build_recent_context(chapter_number)
+        # Layer 2: 章节记忆（自适应章数）
+        recent_ctx = self.chapter_mem.build_recent_context(
+            chapter_number, adaptive=True
+        )
         if recent_ctx:
             parts.append(recent_ctx)
 
-        # Layer 3: 碎片化记忆（语义检索）
+        # Layer 3: 碎片化记忆（上限3片段，相关度门槛0.5）
         search_query = (
             f"{chapter_outline.outline_core_event or ''} "
-            f"{', '.join(chapter_outline.get_outline_characters())} "
+            f"{', '.join(active_chars)} "
             f"{chapter_outline.outline_scene or ''}"
         )
         fragment_ctx = self.fragment_mem.build_relevant_context(
-            search_query, chapter_number
+            search_query, chapter_number, n_results=3, min_relevance=0.5
         )
         if fragment_ctx:
             parts.append(fragment_ctx)
@@ -773,28 +924,45 @@ class MemoryManager:
     def build_review_context(self, chapter: "Chapter",
                               content: str) -> str:
         """
-        为审核师Agent构建完整的审核上下文
+        为审核师Agent构建完整的审核上下文。
+        - 世界观：按本章章纲关键词过滤，减少无关设定噪音
+        - 人物档案：出场人物给完整档案，其余只给单行简介
+        - 正文：截断至 6000 字
         """
+        chapter_keywords = _extract_chapter_keywords(chapter)
+
+        # 从章纲提取出场人物
+        import json as _json
+        try:
+            active_chars = _json.loads(chapter.outline_characters or "[]")
+        except Exception:
+            active_chars = None
+
         parts = []
 
-        # 全局设定（审核必须参照完整设定）
-        global_ctx = self.global_mem.build_global_context()
+        # 全局设定（按关键词过滤世界观；人物按出场过滤）
+        global_ctx = self.global_mem.build_global_context(
+            active_chars=active_chars if active_chars else None,
+            chapter_keywords=chapter_keywords if chapter_keywords else None,
+        )
         if global_ctx:
             parts.append(global_ctx)
 
-        # 前情章节摘要
+        # 前情章节摘要（最近3章）
         recent = self.chapter_mem.get_recent_chapters(chapter.chapter_number)
         if recent:
             parts.append("=== 前情摘要 ===")
-            for ch in recent[-3:]:  # 最近3章的摘要
+            for ch in recent[-3:]:
                 if ch.summary:
                     parts.append(f"第{ch.chapter_number}章《{ch.title}》：{ch.summary}")
 
         # 当前章纲
         parts.append(f"\n=== 本章应有内容（章纲）===\n{chapter.to_outline_text()}")
 
-        # 待审核的正文
-        parts.append(f"\n=== 待审核正文 ===\n{content}")
+        # 待审核的正文（截断至6000字）
+        content_truncated = content[:6000]
+        content_note = "...(内容过长已截断)" if len(content) > 6000 else ""
+        parts.append(f"\n=== 待审核正文 ===\n{content_truncated}{content_note}")
 
         return "\n\n".join(parts)
 

@@ -122,7 +122,7 @@ ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxx
 DEEPSEEK_API_KEY=sk-xxxxxxxx
 DOUBAO_API_KEY=xxxxxxxx
 QWEN_API_KEY=sk-xxxxxxxx
-GOOGLE_API_KEY=AIzaxxxxxxxx
+GEMINI_API_KEY=AIzaxxxxxxxx
 ```
 
 #### 4. 启动
@@ -200,14 +200,14 @@ streamlit run app.py
 ### 写作
 
 - **AI 写作助手**（左侧栏）：已整合至侧边栏全局 AI 创作助手，支持对话式辅助修改，输出的章节代码块可一键保存
-- **生成流水线**：写作 → 审核修复循环（最多 5 轮）→ 低分自动重写（最多 10 次）→ 可选润色 → 摘要，一键完成
+- **生成流水线**：写作 → 三关卡漏斗审核（局部校对→全局场记→文风打磨，每关最多重试 2 次）→ 可选润色 → 摘要，一键完成
 - **正文编辑**：手动改正文，保存时触发同步检测（新人物/人物变化/大纲偏离/世界观变更），逐项确认或跳过
 - **章节摘要**：查看和编辑 AI 生成的摘要和关键事件
-- **审核报告**：五类冲突逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
+- **审核报告**：三关卡得分及反馈逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
 - **读者模拟**：三种读者视角评分卡片 + 亮点/建议，手动编辑读者评分
 - **审批状态**：通过 / 需修改 / 驳回，重新生成自动重置
 - **章节评论**：主笔和审阅者均可评论
-- **版本历史**：最近 5 个版本（草稿/审核/润色/用户编辑）
+- **版本历史**：最近 10 个版本（草稿/审核/润色/用户编辑）
 - **批量写作**：选择章节范围一键按顺序生成，单章失败不中断，完成后汇总报告
 - **状态回退**：单章回退（已发布 → 待审核）和批量回退
 
@@ -357,7 +357,7 @@ streamlit run app.py
 
 侧边栏常驻统一的 **AI 创作助手**（CanvasAgent），贯穿所有页面，支持自然语言对话辅助创作。不再有页面内的独立聊天框——全局助手感知当前页面上下文，自动注入大纲、章节、设定等关联信息。
 
-AI 生成的內容通过 **类型化代码块** 一键写入对应位置，支持 7 种目标类型：
+AI 生成的内容通过 **类型化代码块** 一键写入对应位置，支持 8 种目标类型：
 
 | 代码块类型 | 写入目标 | 行为 |
 |-----------|---------|------|
@@ -368,6 +368,7 @@ AI 生成的內容通过 **类型化代码块** 一键写入对应位置，支�
 | `chapter` | 章节正文 | 自动写入编辑器并保存 |
 | `volume` | 卷大纲 | JSON 格式，保存后跳转大纲管理页 |
 | `foreshadowing` | 伏笔库 | JSON 数组，批量添加伏笔条目 |
+| `style` | 写作风格 | 自动提炼用户风格偏好并同步到 style_profile |
 
 若 AI 未使用代码块格式，对话下方会自动出现 **「应用到…」兜底选择器**，用户手动选择写入目标（自动检测 / 大纲 / 设定 / 世界观 / 人物 / 章节），确认后自动剥离对话前缀，只保留实质性内容写入。
 
@@ -405,12 +406,13 @@ WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 
 | `DEEPSEEK_API_KEY` | — | DeepSeek API 密钥 |
 | `DOUBAO_API_KEY` | — | 豆包 API 密钥 |
 | `QWEN_API_KEY` | — | 通义千问 API 密钥 |
-| `GOOGLE_API_KEY` | — | Google AI API 密钥 |
+| `GEMINI_API_KEY` | — | Google Gemini API 密钥 |
 | `DEFAULT_MODEL` | `claude-opus-4-6` | 全局默认模型 |
 | `DATA_DIR` | `./data` | 数据存储根目录 |
 | `LANCEDB_DIR` | `./data/lancedb` | LanceDB 持久化目录 |
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | 向量化使用的 Embedding 模型 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
+| `DEBUG_PROMPTS` | `0` | 设为 `1` 时在每次 LLM 调用时将 system/user prompt 打印到 stderr |
 
 ### 记忆系统参数
 
@@ -426,6 +428,10 @@ WriterAgent 系统提示词内置去 AI 味规则，从生成阶段即避免 AI 
 |-------|-------|------|
 | `DEFAULT_CHAPTER_WORDS` | `3000` | 默认目标字数 |
 | `WORD_COUNT_TOLERANCE` | `0.30` | 字数容差比例（30%） |
+| `GATE_CONTEXT_THRESHOLD` | `8.5` | 关卡1（局部校对）熔断阈值 |
+| `GATE_CONTINUITY_THRESHOLD` | `9.0` | 关卡2（全局场记）熔断阈值 |
+| `GATE_STYLISTIC_THRESHOLD` | `8.0` | 关卡3（文风打磨）熔断阈值 |
+| `MAX_GATE_RETRIES` | `2` | 每个关卡的最大重试次数 |
 | `AUTO_APPROVE_THRESHOLD` | `6` | 自动通过的审核评分阈值 |
 | `REVIEW_SCORE_THRESHOLD` | `7.0` | 审核通过的最低评分 |
 | `LOW_SCORE_REWRITE_THRESHOLD` | `7.0` | 触发全文重写的评分阈值 |
@@ -468,6 +474,10 @@ pip install python-docx EbookLib
 **Q: 修改世界观/人物后要全部重写吗？**
 
 不一定。影响分析会按严重度排列受影响章节，低严重度可忽略，高严重度可单章重新生成或手动编辑。
+
+**Q: 小说写到后期（100 章以上），API 调用越来越慢或报 context limit 错误？**
+
+系统已内置多层上下文精简策略：世界观按本章关键词过滤、人物档案区分出场/未出场、审核正文截断至 6000 字、向量检索最多 3 片段。若仍超限，可检查世界观条目是否过于冗长（建议每条控制在 200 字以内），或将模型切换为 Qwen Turbo / Gemini 等 1M 长上下文模型。
 
 **Q: 审阅者看不到编辑按钮？**
 
@@ -607,13 +617,13 @@ neupen/
 | Agent | 角色 | 关键方法 |
 |-------|------|---------|
 | 大纲师 `OutlineAgent` | 生成结构化大纲 JSON（总纲 + 卷纲 + 章纲） | `generate_full_outline()`, `generate_chapter_range_outlines()`, `refine_chapter_outline()`, `analyze_chapter_consistency()`, `extract_relationships()`, `parse_document()` |
-| 人设师 `CharacterAgent` | 生成人物档案，检测人物矛盾 | `generate_characters()`, `check_character_consistency()`, `update_character_state()` |
+| 人设师 `CharacterAgent` | 生成人物档案，检测人物矛盾（分批处理，每批最多 10 人） | `generate_characters()`, `check_character_consistency()`, `update_character_state()` |
 | 写手部 `WriterAgent` | 基于三层记忆 + 章纲生成正文，支持流式输出 | `write_chapter()`, `summarize_chapter()`, `regenerate_section()` |
-| 审核师 `ReviewerAgent` | 五类冲突检测，自动修复轻微问题 | `review_chapter()`, `auto_fix_minor_issues()`, `fix_all_issues()` |
+| 审核师 `ReviewerAgent` | 三关卡漏斗式流水线审核（局部校对→全局场记→文风打磨），任一关熔断即精准反馈重写；旧版单通道审核保留兼容 | `pipeline_review()`, `fix_all_issues()`, `auto_fix_minor_issues()`, `review_chapter()`（旧版兼容） |
 | 润色师 `PolisherAgent` | 消除 AI 痕迹、增强文学性，支持风格迁移 | `polish_chapter()`, `apply_style_to_selection()`, `analyze_style()` |
 | 读者模拟 `ReaderAgent` | 三种读者视角的体验评分 | `evaluate_chapter()` |
 | 灵感师 `IdeaAgent` | 多轮创意对话，提取项目配置 | `chat()`, `extract_project_config()` |
-| 画布助手 `CanvasAgent` | 页面内嵌 AI 助手（4 种角色模式） | `chat()` — 感知完整小说上下文，输出可操作的代码块 |
+| 画布助手 `CanvasAgent` | 侧边栏全局 AI 助手，感知小说上下文（按章节关键词过滤世界观，文档截断至 6000 字） | `chat()` — 输出 8 种类型化代码块，一键应用到对应位置 |
 
 ### 三层记忆系统
 
@@ -647,37 +657,55 @@ neupen/
 - **Layer 2 — 章节记忆（中期，SQLite）**：最近 5 章的正文和摘要。版本历史管理（最多 10 个版本）。
 - **Layer 3 — 碎片化记忆（向量，LanceDB + Qwen3-Embedding）**：按 500 字分块向量化，中文语义检索。单表多小说，支持跨小说检索和 Lance 原生版本快照。
 
-**写作上下文构建顺序**：全局设定（L1）+ 近期章节（L2）+ 语义相关片段（L3）+ 当前章纲 → WriterAgent 输入。
+**写作上下文构建顺序**：全局设定（L1，按出场人物和关键词过滤）+ 近期章节（L2，自适应章数）+ 语义相关片段（L3，最多 3 片段，相关度 ≥ 0.5）+ 当前章纲 → WriterAgent 输入。
+
+#### 上下文精简策略
+
+为避免长篇小说后期上下文爆炸，各 Agent 均采用主动截断策略：
+
+| 位置 | 策略 |
+|------|------|
+| 人物档案 | 本章出场人物给完整档案，其余人物仅注入单行简介（姓名+角色+核心特征） |
+| 世界观设定 | 按章纲关键词过滤，只注入与本章相关的条目 |
+| 章节摘要 | L2 层按总章数自适应：50 章以内取 5 章，50-100 章取 4 章，100 章以上取 3 章 |
+| 向量检索 | L3 层最多返回 3 个片段，相关度低于 0.5 自动丢弃 |
+| 待审正文 | 所有关卡截断至 6000 字 |
+| 润色正文 | 截断至 8000 字 |
+| Canvas 文档 | 截断至 6000 字，从 system prompt 移至 user 消息注入 |
+| 人设一致性检测 | 每批最多 10 人，单人档案截断至 800 字 |
 
 ### 冲突检测与变更同步
 
-| 检测类型 | 示例 |
-|---------|------|
-| 设定冲突 | 无魔力体质的角色突然施法 |
-| OOC | 冷漠型角色突然变得热情 |
-| 大纲冲突 | 章纲要求决战，正文写的是郊游 |
-| 前后矛盾 | 角色昨天在A城，今天无理由出现在B城 |
-| 逻辑漏洞 | 锁着的门没人开但角色进去了 |
+**三关卡流水线**（主流程）每关独立聚焦一个维度：
 
-每个冲突项含：类型、严重度（1-10）、引用原文、修复方案列表。
+| 关卡 | 检测维度 | 示例 |
+|------|---------|------|
+| 关卡1 局部校对 | 大纲偏离、人物 OOC | 章纲要求决战，正文写的是郊游；冷漠型角色突然热情 |
+| 关卡2 全局场记 | 状态冲突、世界观冲突、时空矛盾 | 上章左臂废了这章用左手攀爬；角色无理由跨城瞬移 |
+| 关卡3 文风打磨 | 去 AI 痕迹、写作风格 | 连续碎句、总结式段尾、上帝视角滥用 |
+
+**旧版单通道审核**（`review_chapter()`，保留兼容）检测五类冲突：设定冲突、OOC、大纲冲突、前后矛盾、逻辑漏洞，每个冲突项含类型、严重度（1-10）、引用原文、修复方案列表。
 
 **变更同步**：章节写作完成后自动检测新引入的人物、人物状态变化、大纲偏离和世界观新增内容，逐项确认后同步到设定库。修改世界观/章纲后自动触发影响分析，返回受影响章节列表及严重度排序。
 
 ### 工作流编排
 
+采用三关卡漏斗式审核流水线，任一关卡熔断即用反馈精准修正后重试，三关全通过后计算加权最终得分：
+
 ```
 write_and_review_chapter(chapter_number, word_target, auto_polish)
 │
-├── 1. WriterAgent.write_chapter()        → 生成草稿（流式输出）
-├── 2. 修复-审核循环（最多 MAX_REVIEW_ITERATIONS 轮）
-│      ├── ReviewerAgent.review_chapter() → 冲突检测
-│      └── ReviewerAgent.auto_fix()       → 自动修复
-├── 3. 低分重写循环（最多 MAX_TOTAL_ATTEMPTS 次）
-│      └── 评分 < LOW_SCORE_REWRITE_THRESHOLD → 全文重写
-├── 4. PolisherAgent.polish_chapter()     → 文笔润色（可选）
-├── 5. save → SQLite + LanceDB + 版本历史
-├── 6. summarize_chapter()                → 摘要供后续记忆注入
-└── 7. 返回同步检测结果（新人物/人物变化/大纲偏离/世界观变更）
+├── 1. WriterAgent.write_chapter()           → 生成草稿（流式输出）
+├── 2. 三关卡流水线审核（最多 MAX_GATE_RETRIES 轮重试）
+│      ├── 关卡1：局部校对（大纲+人设一致性）   阈值 GATE_CONTEXT_THRESHOLD (8.5)
+│      ├── 关卡2：全局场记（状态+世界观+时空逻辑）阈值 GATE_CONTINUITY_THRESHOLD (9.0)
+│      └── 关卡3：文风打磨（去AI痕迹+写作风格）  阈值 GATE_STYLISTIC_THRESHOLD (8.0)
+│      任一关卡 REJECT → 用精准修改批注重写 → 重新过流水线
+│      三关全 PASS → 最终得分 = 校对×0.3 + 场记×0.4 + 文风×0.3
+├── 3. PolisherAgent.polish_chapter()        → 润色收尾（三关全通过后可选）
+├── 4. save → SQLite + LanceDB + 版本历史
+├── 5. summarize_chapter()                   → 摘要供后续记忆注入
+└── 6. 返回同步检测结果（新人物/人物变化/大纲偏离/世界观变更）
 ```
 
 批量写作：选择章节范围后一键按顺序执行，单章失败不中断后续，完成后汇总报告（成功/失败/用时/字数/评分）。
@@ -692,8 +720,10 @@ write_and_review_chapter(chapter_number, word_target, auto_polish)
 Novel (小说项目)
 │  id, title, author, logline, genre, world_setting(JSON), writing_style
 │  status, llm_model, model_outline/.../model_reader
+│  temp_outline/.../temp_canvas, deai_rules
 │  style_profile(JSON), style_reference_text, quality_config(JSON)
 │  target_platform, target_tags(JSON), invite_code
+│  total_input_tokens, total_output_tokens
 │
 ├── NovelOutline (总大纲)
 │     premise, theme, main_conflict, story_structure(JSON)
