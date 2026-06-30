@@ -720,7 +720,7 @@ class ChapterMemory:
         parts = [f"=== 前{len(recent)}章情节摘要（写手请仔细阅读，确保剧情连贯）==="]
         missing_summary = False
         # 单章摘要字数上限：避免某章摘要过长撑爆 token 窗口
-        _SUMMARY_MAX_CHARS = 600
+        _SUMMARY_MAX_CHARS = 400
         for ch in recent:
             parts.append(f"\n--- 第{ch.chapter_number}章《{ch.title or ''}》---")
             if ch.summary:

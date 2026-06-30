@@ -878,15 +878,7 @@ class WriterAgent:
                         "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
                         + "\n".join(lines)
                     )
-                # 追加参考原文片段作为感性对照（前400字）
-                if style_ref_text:
-                    _preview = style_ref_text[:400]
-                    if len(style_ref_text) > 400:
-                        _preview += "…"
-                    style_block += (
-                        "\n【风格参考原文片段（感受语感，不要直接复制）】\n"
-                        + _preview
-                    )
+                # 有 style_profile 时不再额外注入原文片段（结构化档案已涵盖风格信息）
             elif style_ref_text:
                 # 没有结构化档案但有参考文本：注入前600字让LLM直接感受风格
                 _preview = style_ref_text[:600]
