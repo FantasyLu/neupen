@@ -187,15 +187,27 @@ class OutlineAgent:
         if not chapter:
             raise ValueError(f"章节 {chapter_number} 的章纲不存在")
 
-        global_ctx = self.memory.global_mem.build_global_context()
         active_fs = self.memory.global_mem.get_active_foreshadowings()
         fs_schedule_text = self._build_foreshadowing_schedule_prompt(active_fs)
         fs_block = f"\n{fs_schedule_text}\n" if fs_schedule_text else ""
 
+        # 从本章章纲和用户反馈提取关键词，过滤无关世界观
+        from core.memory import _extract_chapter_keywords
+        chapter_keywords = _extract_chapter_keywords(chapter)
+        # 把用户反馈中的词也加进去（简单分词）
+        import re as _re
+        for tok in _re.split(r"[，。！？、；：\s]+", user_feedback):
+            tok = tok.strip()
+            if len(tok) >= 2:
+                chapter_keywords.add(tok)
+
+        global_ctx = self.memory.global_mem.build_global_context(
+            chapter_keywords=chapter_keywords if chapter_keywords else None
+        )
+
         user_prompt = f"""当前小说上下文：
 {global_ctx}
 {fs_block}
-
 当前第{chapter_number}章章纲：
 {chapter.to_outline_text()}
 
@@ -301,10 +313,22 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         Returns:
             list[dict]，每项含 chapter_number / title / outline_core_event 等字段
         """
-        global_ctx = self.memory.global_mem.build_global_context()
         active_fs = self.memory.global_mem.get_active_foreshadowings()
         fs_text = self._build_foreshadowing_schedule_prompt(active_fs)
         fs_block = f"\n{fs_text}\n" if fs_text else ""
+
+        # 从用户描述提取关键词，过滤无关世界观
+        import re as _re
+        from core.memory import _extract_chapter_keywords
+        desc_keywords: set[str] = set()
+        for tok in _re.split(r"[，。！？、；：\s]+", description):
+            tok = tok.strip()
+            if len(tok) >= 2:
+                desc_keywords.add(tok)
+
+        global_ctx = self.memory.global_mem.build_global_context(
+            chapter_keywords=desc_keywords if desc_keywords else None
+        )
 
         ch_count = end - start + 1
 
@@ -610,20 +634,15 @@ class CharacterAgent:
 
     def check_character_consistency(self) -> list[str]:
         """
-        检测所有人物设定之间的矛盾和不合理之处
-        返回问题列表
+        检测所有人物设定之间的矛盾和不合理之处。
+        分批处理（每批最多10人），避免人物过多时上下文爆炸。
+        返回问题列表。
         """
         chars = self.memory.global_mem.get_all_characters()
         if len(chars) < 2:
             return []
 
-        chars_text = "\n\n".join([c.to_profile_text() for c in chars])
-
-        user_prompt = f"""请检查以下人物档案之间是否存在设定矛盾或不合理之处：
-
-{chars_text}
-
-检查维度：
+        _CHECK_INSTRUCTION = """检查维度：
 1. 人际关系是否双向一致（A说是B的朋友，B是否也有对应描述）
 2. 能力设定是否合理（是否有人能力过于全能）
 3. 背景故事是否与世界观冲突
@@ -632,9 +651,39 @@ class CharacterAgent:
 
 以列表形式输出所有问题（每个问题一行），没有问题则输出"无明显矛盾"。"""
 
-        response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
-        problems = [line.strip() for line in response.split("\n") if line.strip() and line.strip() != "无明显矛盾"]
-        return problems
+        _MAX_CHAR_LEN = 800   # 单人档案最多800字，超出截断
+        _BATCH_SIZE = 10      # 每批最多10人
+
+        def _char_text(c) -> str:
+            t = c.to_profile_text()
+            if len(t) > _MAX_CHAR_LEN:
+                t = t[:_MAX_CHAR_LEN] + "…（已截断）"
+            return t
+
+        all_problems: list[str] = []
+
+        # 分批检测
+        for batch_start in range(0, len(chars), _BATCH_SIZE):
+            batch = chars[batch_start: batch_start + _BATCH_SIZE]
+            chars_text = "\n\n".join(_char_text(c) for c in batch)
+            batch_label = (
+                f"（第{batch_start + 1}~{batch_start + len(batch)}人，"
+                f"共{len(chars)}人）"
+            ) if len(chars) > _BATCH_SIZE else ""
+
+            user_prompt = (
+                f"请检查以下人物档案{batch_label}之间是否存在设定矛盾或不合理之处：\n\n"
+                f"{chars_text}\n\n{_CHECK_INSTRUCTION}"
+            )
+            response = self.llm.generate(self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature)
+            batch_problems = [
+                line.strip()
+                for line in response.split("\n")
+                if line.strip() and line.strip() != "无明显矛盾"
+            ]
+            all_problems.extend(batch_problems)
+
+        return all_problems
 
     def update_character_state(self, character_name: str,
                                   chapter_number: int,
@@ -678,23 +727,6 @@ class WriterAgent:
 - 情感描写要克制，通过细节表现，而非直接说"他很难过"
 - 适度使用悬念，让每章结尾都有留人的钩子
 - 避免大量重复使用同一个词或句式
-
-去AI味规则（必须严格遵守）：
-## 1. 视角与情感（Show, Don't Tell）
-- 【极致局部主观】严禁上帝视角。不用“房间很冷”，写“陈默打了个冷颤，把领口往上拉”；不用“张毅很恐慌”，写“张毅指节发白，死死抠在吧台边缘”。
-- 【台词留白错漏】严禁长篇大论的演讲和理智的“局势分析”。人类说话是零碎、自私、有错漏的，允许半句话、粗口、结巴或无效口头禅。
-- 【严禁动作套话】禁用“瞳孔骤缩、大脑空白、心跳漏一拍”等AI套话。改为真实的感官窄缩：视线发黑、耳鸣、手忙脚乱、连眨眼都忘了。
-- 【配角去神化】严禁刚出场的普通配角化身“设定百科全书”或“未卜先知”。医生也只能根据临床本能猜测，不能代替作者坐实世界观。
-## 2. 句式与字词封杀（Anti-AI Syntax）
-- 【根治碎句癌】严禁连续使用三、四个字的无主语超短碎句（如：开门。拔刀。血流。）。根据因果和生理逻辑，融成长短错落、有呼吸感的完整叙事句。
-- 【封杀对比解释句】坚决禁用“不是……而是……”、“与其说……不如说……”。AI喜欢用它纠正读者，必须直接砸出视觉事实。
-  * ❌ 错误：“那不是血，而是活的真菌。”
-  * ⭕ 正确：“流出来的已经没有红色的血了，是一股泛着暗金光的黏稠活体。”
-- 【动词瘦身】禁用“似乎、仿佛、宛如、隐约”等温吞词。大面积删减无意义的“着、地”和长副词。将“细得像蛇一样贴着地板缓缓地爬进来”精简为“一缕灰雾像蛇一样贴地滑了进来”。
-- 【切断收尾综合征】严禁在章尾、段尾出现“这意味着……”、“更大的危机正在逼近……”、“这就是命运的安排”等说书人式总结。在动作或死寂中直接断章。
-## 3. 战斗与异能（Hardcore Physics）
-- 【物理阻力与黏滞】严禁超能力/变异“魔法化、特效化”（禁用“金光大盛、残影、高压水枪般喷涌”）。
-- 【肉体代价】必须写出粗粝的生物质感。攻击要带痛感和阻力（如：砸进湿棉被的闷响、刀被纤维里的肉牙咬住）；异能暴长要写出肉体代价与微观异变（如：撕裂血痂、皮肤发烫蠕动、骨骼坚硬凸起、伴随蛋白质烧焦的恶臭）。
 
 输出要求：
 - 直接输出小说正文，不要加解释或注释
@@ -779,11 +811,19 @@ class WriterAgent:
         if review_feedback:
             feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
 
-        user_prompt = f"""📏 字数硬性约束：本章必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间（目标 {word_target} 字），不得超过上限。
+        # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
+        from core.config import DEFAULT_DEAI_RULES
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
+        deai_block = f"\n【去AI味规则（写作时必须严格遵守）】\n{deai_rules}\n"
 
-请根据以下所有资料，写作第{chapter_number}章：《{chapter.title or ''}》
+        user_prompt = f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
+📏 字数约束：{int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字（目标 {word_target} 字），不得超过上限。
 
-{writing_context}{style_block}{platform_block}{feedback_block}
+{writing_context}{style_block}{platform_block}{deai_block}{feedback_block}
 【写作要求】
 - 必须完整呈现章纲中的核心事件
 - 人物对话和行为必须符合其设定
@@ -978,6 +1018,15 @@ class WriterAgent:
         chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
         global_ctx = self.memory.global_mem.build_global_context()
 
+        # 动态注入去AI味规则
+        from core.config import DEFAULT_DEAI_RULES
+        novel = self.memory.global_mem.get_novel()
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
+
         user_prompt = f"""相关设定：
 {global_ctx[:2000]}
 
@@ -985,6 +1034,9 @@ class WriterAgent:
 {section_text}
 
 修改要求：{instruction}
+
+【去AI味规则（重写时必须遵守）】
+{deai_rules}
 
 请重写这段内容，保持故事连贯性："""
 
@@ -1132,15 +1184,31 @@ class ReviewerAgent:
             for c in minor_conflicts
         ])
 
-        system_prompt = """你是一位小说编辑，负责修复文本中的轻微问题。
-只修复指定的问题，不改变故事情节和整体内容。
-直接输出修复后的完整文本。"""
+        system_prompt = (
+            "你是一位小说编辑，负责修复文本中的轻微问题。\n"
+            "修复原则：\n"
+            "1. 只修复指定的问题，不改变故事情节和整体内容\n"
+            "2. 修复过程中同样必须遵守去AI味规则，不得引入新的AI痕迹\n"
+            "3. 直接输出修复后的完整文本"
+        )
+
+        # 动态注入去AI味规则
+        from core.config import DEFAULT_DEAI_RULES
+        novel = self.memory.global_mem.get_novel()
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
 
         user_prompt = f"""原文：
 {content}
 
 需要修复的问题（只修复这些，其他不变）：
 {conflicts_desc}
+
+【去AI味规则（修复时同样必须遵守）】
+{deai_rules}
 
 请输出修复后的完整正文："""
 
@@ -1193,13 +1261,25 @@ class ReviewerAgent:
             "1. 严格按审核意见逐条修复问题\n"
             "2. 确保修改后的内容完整实现本章章纲目标\n"
             "3. 保持人物关系、场景氛围的一致性\n"
-            "4. 直接输出完整修改后正文，不加任何说明或标注"
+            "4. 修改过程中同样必须遵守去AI味规则，不得引入新的AI痕迹\n"
+            "5. 直接输出完整修改后正文，不加任何说明或标注"
         )
+
+        # 动态注入去AI味规则
+        from core.config import DEFAULT_DEAI_RULES
+        novel = self.memory.global_mem.get_novel()
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
+
         user_prompt = (
             f"章节正文：\n{content}\n\n"
             f"本次审核评分：{report.overall_score:.1f}/10\n"
             f"{chapter_goal_block}"
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
+            f"【去AI味规则（修改时同样必须遵守）】\n{deai_rules}\n\n"
             "请修复以上所有问题并确保章纲目标得以实现，直接输出完整修改后正文："
         )
         return llm.generate(system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature)
@@ -1225,11 +1305,7 @@ class PolisherAgent:
     SYSTEM_PROMPT = """你是一位资深的中文小说文学编辑，专注于将AI生成的文稿提升为高质量的文学作品。
 
 你的润色原则：
-1. **去AI痕迹**：消除以下典型AI写作特征：
-   - 过度使用"同时"、"此时"、"然而"、"不得不"等连接词
-   - 句式过于整齐，缺乏变化
-   - 形容词堆砌，感情表达过于直白
-   - 场景描写缺乏层次，只有视觉没有其他感官
+1. **去AI痕迹**：严格按照下方注入的「去AI味规则」逐条处理，不得遗漏
 
 2. **增强文学性**：
    - 加入更多感官细节（嗅觉、触觉、听觉）
@@ -1289,15 +1365,25 @@ class PolisherAgent:
             _tg = novel.get_target_tags()
             platform_style_text = get_style_description(_pt, _tg)
 
+        # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
+        from core.config import DEFAULT_DEAI_RULES
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
 {f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
 {f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
-{f"【风格参考样例】\n{style_reference}" if style_reference else ""}
+{f"【风格参考样例】\n{style_reference[:3000]}{'...(已截断)' if len(style_reference) > 3000 else ''}" if style_reference else ""}
+【去AI味规则（润色时必须逐条执行，这是硬性要求）】
+{deai_rules}
 
 【待润色内容】
-{content}
+{content[:8000]}{"...(内容过长已截断，请润色可见部分)" if len(content) > 8000 else ""}
 
 请在保持故事情节不变的前提下，提升文学质量，输出润色后的完整正文："""
 
@@ -1319,6 +1405,15 @@ class PolisherAgent:
         """
         对选中的文字片段应用特定风格指令
         """
+        # 动态注入去AI味规则
+        from core.config import DEFAULT_DEAI_RULES
+        novel = self.memory.global_mem.get_novel()
+        deai_rules = (
+            novel.deai_rules.strip()
+            if novel and novel.deai_rules and novel.deai_rules.strip()
+            else DEFAULT_DEAI_RULES
+        )
+
         user_prompt = f"""对以下文字片段进行修改：
 
 【原文】
@@ -1326,6 +1421,9 @@ class PolisherAgent:
 
 【修改要求】
 {instruction}
+
+【去AI味规则（修改时同样必须遵守）】
+{deai_rules}
 
 请直接输出修改后的内容："""
 
@@ -1749,24 +1847,47 @@ style 块使用规则：
              page: str = None, chapter_number: int = None) -> str:
         """
         多轮对话。
-        document_content: 当前文档内容（注入 system prompt）
+        document_content: 当前文档内容（注入上下文，截断至6000字）
         page: 当前所在页面（用于上下文感知，预留）
-        chapter_number: 当前章节号（用于上下文感知，预留）
+        chapter_number: 当前章节号（若提供则按章纲关键词过滤世界观）
         messages: [{"role": "user"/"assistant", "content": "..."}]
         """
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
-        global_ctx = self.memory.global_mem.build_global_context()
+
+        # 若提供章节号，从章纲提取关键词，过滤世界观设定（减少无关 token）
+        chapter_keywords: set[str] | None = None
+        if chapter_number:
+            ch = self.memory.global_mem.get_chapter_outline(chapter_number)
+            if ch:
+                from core.memory import _extract_chapter_keywords
+                chapter_keywords = _extract_chapter_keywords(ch)
+
+        global_ctx = self.memory.global_mem.build_global_context(
+            chapter_keywords=chapter_keywords
+        )
 
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
-        if document_content.strip():
-            system_parts += [
-                "", "---",
-                "【当前文档内容（用户可能要求修改）】",
-                f"```markdown\n{document_content}\n```",
-            ]
-
         system_prompt = "\n".join(system_parts)
-        return self.llm.generate_chat(system_prompt, messages, max_tokens=4096, temperature=self.temperature)
+
+        # 当前文档内容附加到对话最后一条 user 消息之前（而非 system）
+        # 截断至 6000 字，避免超长文档撑爆上下文
+        _msgs = list(messages)
+        if document_content.strip():
+            doc_truncated = document_content[:6000]
+            doc_note = "...(内容过长已截断)" if len(document_content) > 6000 else ""
+            doc_block = (
+                f"\n\n---\n【当前文档内容（你可能需要据此修改）】\n"
+                f"```markdown\n{doc_truncated}{doc_note}\n```"
+            )
+            # 将文档内容附加到最后一条 user 消息末尾
+            if _msgs and _msgs[-1]["role"] == "user":
+                _msgs = _msgs[:-1] + [
+                    {**_msgs[-1], "content": _msgs[-1]["content"] + doc_block}
+                ]
+            else:
+                _msgs.append({"role": "user", "content": doc_block})
+
+        return self.llm.generate_chat(system_prompt, _msgs, max_tokens=4096, temperature=self.temperature)
 
     def close(self):
         self.memory.close()

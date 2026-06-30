@@ -203,6 +203,11 @@ class Character(Base):
         if self.speech_patterns: parts.append(f"说话风格：{self.speech_patterns}")
         return "\n".join(parts)
 
+    def to_brief_text(self) -> str:
+        """单行简介，用于非出场人物的存在感提示（仅姓名+角色+当前状态）"""
+        state = f"，当前状态：{self.current_state}" if self.current_state else ""
+        return f"【{self.name}】({self.role}){state}"
+
     def __repr__(self):
         return f"<Character id={self.id} name={self.name}>"
 

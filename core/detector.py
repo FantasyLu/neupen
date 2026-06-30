@@ -265,21 +265,34 @@ class ConflictDetector:
         检测新设定与现有内容的冲突
         当用户修改世界观/人物设定时触发
         """
-        existing_context = self.memory.global_mem.build_global_context(include_chapters=True)
+        # 不再 include_chapters=True（会拉入全量章纲，体积极大）
+        # 改为仅注入全局设定摘要，并在 prompt 中补充已有章节数量供 AI 参考
+        existing_context = self.memory.global_mem.build_global_context(include_chapters=False)
+        chapter_outlines = self.memory.global_mem.get_chapter_outlines()
+        chapter_count = len(chapter_outlines)
+        # 给出最近10章的摘要行，供 AI 判断影响范围
+        recent_outlines = chapter_outlines[-10:] if chapter_outlines else []
+        recent_summary = "\n".join(
+            f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.outline_core_event or ''}"
+            for ch in recent_outlines
+        ) if recent_outlines else "（无章纲）"
 
         system_prompt = """你是一位专业的小说设定一致性检测专家。
 当用户修改了小说的某项设定时，你需要检测这个改动是否会与已有内容产生矛盾。
 输出JSON格式：{"conflicts": [...], "impact_chapters": [...]}"""
 
-        user_prompt = f"""现有小说设定和内容：
+        user_prompt = f"""现有小说设定摘要：
 {existing_context}
+
+已完成章纲（共{chapter_count}章，最近{len(recent_outlines)}章概览）：
+{recent_summary}
 
 用户想要修改的{setting_type}设定：
 {json.dumps(new_setting, ensure_ascii=False, indent=2)}
 
 请检测：
 1. 新设定与现有设定是否矛盾
-2. 新设定会影响哪些已有章节（需要修改）
+2. 新设定可能影响哪些章节（按章号范围估计）
 3. 对未来剧情的影响
 
 输出JSON格式。"""
@@ -536,7 +549,26 @@ class ConflictDetector:
         # 构建章纲 + 人物上下文
         outline_text = chapter.to_outline_text()
         chars = self.memory.global_mem.get_all_characters()
-        char_text = "\n".join([c.to_profile_text() for c in chars[:20]])
+
+        # 按本章出场人物过滤：出场人物给完整档案，其余只给单行简介（减少无关 token）
+        import json as _json
+        try:
+            active_set = set(_json.loads(chapter.outline_characters or "[]"))
+        except Exception:
+            active_set = set()
+
+        appearing = [c for c in chars if c.name in active_set] if active_set else chars[:10]
+        others = [c for c in chars if c.name not in active_set and c not in appearing]
+
+        char_parts = []
+        if appearing:
+            char_parts.append("=== 本章出场人物（完整档案）===")
+            for c in appearing:
+                char_parts.append(c.to_profile_text()[:1000])  # 单人最多1000字
+        if others:
+            char_parts.append("=== 其他人物（未出场，仅供参照）===")
+            char_parts.append("  ".join(c.to_brief_text() for c in others[:20]))
+        char_text = "\n".join(char_parts)
 
         # 前情摘要
         recent = self.memory.chapter_mem.get_recent_chapters(chapter_number)
