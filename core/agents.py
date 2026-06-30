@@ -1189,6 +1189,105 @@ class ReviewerAgent:
             "reject_feedback": None,
         }
 
+    def parallel_pipeline_review(
+        self,
+        chapter_number: int,
+        content: str,
+        progress_callback=None,
+    ) -> dict:
+        """
+        并行四审核流水线（新版，替换三关卡串行方案）。
+
+        四个 Reviewer 并行执行，合并所有 REJECT 的 feedback 后由 WriterAgent 一次性修正。
+        已通过的 Reviewer 在后续轮次中不再重复审核。
+        每个 Reviewer 最多参与 2 次审核（初审 + 1次重审）。
+
+        Returns:
+            {
+                "passed": bool,
+                "final_score": float,
+                "gates": [GateResult, ...],     # 最后一轮全部4个关卡的结果
+                "all_gate_results": list[dict], # 所有轮次所有关卡结果
+                "reject_feedbacks": str | None, # 最终仍未通过的 feedback（供调用方记录）
+                "rounds": int,                  # 实际执行轮数
+            }
+        """
+        from core.detector import GateResult
+
+        _GATE_LABELS = {
+            "plot_aligner":       "🎯 剧情对齐",
+            "character_guard":    "🛡️ 人设世界观",
+            "continuity_tracker": "🔗 时空状态",
+            "style_refiner":      "✨ 文风去AI",
+        }
+        _MAX_ROUNDS = 2  # 每个 Reviewer 最多参与2次（初审+1次重审）
+
+        all_gate_results: list[dict] = []
+        passed_gate_names: set[str] = set()
+        final_score = 0.0
+        last_review: dict = {}
+
+        for round_idx in range(_MAX_ROUNDS):
+            if progress_callback:
+                skip_info = (f"（跳过已通过：{', '.join(_GATE_LABELS.get(g, g) for g in passed_gate_names)}）"
+                             if passed_gate_names else "")
+                progress_callback(
+                    f"🔍 第{round_idx + 1}轮并行审核{skip_info}..."
+                )
+
+            last_review = self.detector.run_parallel_review(
+                chapter_number, content, skip_gates=passed_gate_names
+            )
+
+            # 记录本轮结果
+            for gate_result in last_review["gates"]:
+                all_gate_results.append({**gate_result.to_dict(), "round": round_idx + 1})
+
+            # 更新已通过的关卡
+            passed_gate_names = last_review["passed_gate_names"]
+            final_score = last_review["weighted_score"]
+
+            # 打印每个关卡结果
+            if progress_callback:
+                for gate_result in last_review["gates"]:
+                    icon = "✅" if gate_result.passed else "❌"
+                    label = _GATE_LABELS.get(gate_result.gate_name, gate_result.gate_name)
+                    progress_callback(
+                        f"  {icon} {label}：{gate_result.total_score:.1f}/10"
+                    )
+                progress_callback(
+                    f"  加权得分：{final_score:.1f}/10"
+                    + ("  ✅ 全部通过" if last_review["all_passed"] else
+                       f"  ❌ 未通过：{', '.join(_GATE_LABELS.get(g, g) for g in last_review['failed_gate_names'])}")
+                )
+
+            if last_review["all_passed"]:
+                break
+
+        # 补全未执行到的关卡（被 skip 的）用满分占位，保证 gates 始终有4条
+        executed_names = {g.gate_name for g in last_review.get("gates", [])}
+        all_four_gates = list(last_review.get("gates", []))
+        for gate_name, label in _GATE_LABELS.items():
+            if gate_name not in executed_names:
+                # 该关卡在本轮被跳过（已通过），补一条满分占位
+                all_four_gates.append(GateResult(
+                    gate_name=gate_name, total_score=10.0,
+                    breakdown={}, action="PASS",
+                    feedback="本轮已通过，跳过", passed=True
+                ))
+
+        return {
+            "passed": last_review.get("all_passed", False),
+            "final_score": round(final_score, 2),
+            "gates": all_four_gates,
+            "all_gate_results": all_gate_results,
+            "reject_feedbacks": last_review.get("reject_feedbacks") or None,
+            "rounds": _MAX_ROUNDS if not last_review.get("all_passed") else (
+                next((i + 1 for i, _ in enumerate(range(_MAX_ROUNDS))
+                      if last_review.get("all_passed")), _MAX_ROUNDS)
+            ),
+        }
+
     def auto_fix_minor_issues(self, content: str,
                                report: ReviewReport,
                                novel_id: int) -> str:

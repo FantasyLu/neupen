@@ -332,7 +332,6 @@ class NovelWorkflow:
         Returns:
             WorkflowResult，包含最终内容和审核报告
         """
-        from core.config import MAX_GATE_RETRIES
         import json as json_module
 
         try:
@@ -357,54 +356,45 @@ class NovelWorkflow:
 
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
 
-            # Step 2: 三关卡流水线审核
-            gate_labels = {
-                "context_sentry": ("关卡1", "局部校对（大纲+人设）", "大纲+人设修正"),
-                "global_continuity_judge": ("关卡2", "全局场记（状态+时空）", "状态+逻辑修正"),
-                "stylistic_refiner": ("关卡3", "文风打磨（去AI痕迹）", "文风修正"),
-            }
-
-            all_gate_results = []
+            # Step 2: 并行四审核流水线
+            # 流程：4个 Reviewer 并行 → 合并 REJECT feedback → WriterAgent 一次性修正
+            #        → 仅未通过的 Reviewer 重审（已通过的跳过），最多2轮
+            all_gate_results_dicts = []
             final_passed = False
             final_score = 0.0
+            last_parallel_result: dict = {}
+            _MAX_PARALLEL_ROUNDS = 2  # 整体最多2轮（初审 + 1次修正重审）
 
-            for attempt in range(MAX_GATE_RETRIES + 1):
-                pipeline_result = self.reviewer_agent.pipeline_review(
+            for attempt in range(_MAX_PARALLEL_ROUNDS):
+                last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
                     chapter_number, current_content,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
 
-                # 收集已执行的全部关卡结果
-                all_gate_results = pipeline_result["gates"]
+                all_gate_results_dicts = last_parallel_result["all_gate_results"]
+                final_score = last_parallel_result["final_score"]
 
-                if pipeline_result["passed"]:
+                if last_parallel_result["passed"]:
                     final_passed = True
-                    final_score = pipeline_result["final_score"]
                     if progress_callback:
                         progress_callback(
-                            f"✅ 三关全通过！最终加权得分：{final_score:.1f}/10"
-                            f"（= 校对{all_gate_results[0].total_score:.1f}×0.3"
-                            f" + 场记{all_gate_results[1].total_score:.1f}×0.4"
-                            f" + 文风{all_gate_results[2].total_score:.1f}×0.3）"
+                            f"✅ 四审全通过！最终加权得分：{final_score:.1f}/10"
                         )
                     break
 
-                # 有关卡熔断
-                reject_gate = pipeline_result["reject_gate"]
-                reject_feedback = pipeline_result["reject_feedback"]
-                gate_info = gate_labels.get(reject_gate, ("", "", ""))
-
-                if attempt < MAX_GATE_RETRIES:
+                # 有 Reviewer 未通过：合并所有 REJECT feedback，WriterAgent 一次性修正
+                reject_feedbacks = last_parallel_result["reject_feedbacks"]
+                if attempt < _MAX_PARALLEL_ROUNDS - 1:
                     if progress_callback:
+                        failed = last_parallel_result.get("failed_gate_names", set())
                         progress_callback(
-                            f"❌ {gate_info[0]}熔断！正在根据反馈进行{gate_info[2]}（第{attempt + 1}/{MAX_GATE_RETRIES}次）..."
+                            f"❌ 审核未通过（{len(failed)}项），正在根据合并反馈进行修正"
+                            f"（第{attempt + 1}/{_MAX_PARALLEL_ROUNDS}次）..."
                         )
-
                     fix_prompt = (
-                        f"【审核关卡：{gate_info[1]}】\n"
-                        f"【精准修改批注（请仅针对以下问题进行修改，保留其他内容不变）】\n"
-                        f"{reject_feedback}\n\n"
-                        f"请根据上述批注修改章节正文，只修改问题涉及的部分，其他内容保持不变。"
+                        f"【并行审核反馈（请针对以下所有问题统筹修改，保留无问题的内容）】\n\n"
+                        f"{reject_feedbacks}\n\n"
+                        f"请根据以上所有批注修改章节正文，统筹解决各类问题，"
                         f"直接输出修改后的完整正文。"
                     )
                     try:
@@ -415,37 +405,32 @@ class NovelWorkflow:
                             review_feedback=fix_prompt,
                         )
                     except Exception:
-                        # 修正失败，继续下一轮尝试
                         pass
                 else:
-                    # 重试耗尽
-                    final_score = pipeline_result["final_score"]
                     if progress_callback:
                         progress_callback(
-                            f"⚠️ {gate_info[0]}重试{MAX_GATE_RETRIES}次仍未通过"
+                            f"⚠️ 审核重试{_MAX_PARALLEL_ROUNDS}轮仍有问题未通过"
                             f"（{final_score:.1f}/10），使用当前版本继续"
                         )
-                    break
 
             # 保存审核结果到数据库
+            last_gates = last_parallel_result.get("gates", [])
             if chapter:
-                # 构建兼容旧格式的审核报告
-                all_gates_dict = [g.to_dict() for g in all_gate_results]
                 pipeline_report = {
-                    "pipeline": True,
+                    "pipeline": "parallel_v2",
                     "passed": final_passed,
                     "final_score": final_score,
-                    "gates": all_gates_dict,
+                    "gates": [g.to_dict() for g in last_gates],
+                    "all_gate_results": all_gate_results_dicts,
                 }
                 chapter.review_report = json_module.dumps(pipeline_report, ensure_ascii=False)
                 chapter.review_score = final_score
                 chapter.status = "reviewed" if final_passed else "review_pending"
                 self.db.commit()
 
-            # Step 3: 润色（由关卡3已做文风打磨，此处轻量兜底）
+            # Step 3: 润色（StyleRefiner 已覆盖文风，此处轻量兜底）
             final_content = current_content
             if auto_polish and final_passed:
-                # 只有三关全通过才额外润色，否则保持修正后版本
                 if progress_callback:
                     progress_callback(f"✨ 润色收尾...")
                 try:
@@ -472,7 +457,7 @@ class NovelWorkflow:
                 self.memory.chapter_mem.save_version(chapter.id, draft_content, "draft", "AI初稿")
                 self.memory.chapter_mem.save_version(
                     chapter.id, final_content, "polished",
-                    f"流水线审核{'✅通过' if final_passed else '⚠️部分通过'}，得分 {final_score:.1f}"
+                    f"并行四审核{'✅通过' if final_passed else '⚠️部分通过'}，得分 {final_score:.1f}"
                 )
                 chapter.status = "published"
                 chapter.word_count = len(final_content)
@@ -512,10 +497,10 @@ class NovelWorkflow:
                     "content": final_content,
                     "word_count": len(final_content),
                     "review_report": {
-                        "pipeline": True,
+                        "pipeline": "parallel_v2",
                         "passed": final_passed,
                         "overall_score": final_score,
-                        "gates": [g.to_dict() for g in all_gate_results],
+                        "gates": [g.to_dict() for g in last_gates],
                     },
                     "review_passed": final_passed,
                     "overall_score": final_score,
