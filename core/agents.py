@@ -76,18 +76,32 @@ class OutlineAgent:
 
     @staticmethod
     def _build_foreshadowing_schedule_prompt(active_fs: list) -> str:
-        """将活跃伏笔列表转为调度提示文本，注入章纲生成 prompt"""
+        """将活跃伏笔列表转为调度提示文本，注入章纲生成 prompt。
+        按重要度排序（high > medium > low），超过30条时截断并告知数量，
+        避免大量伏笔撑爆章纲生成的 context。
+        """
         if not active_fs:
             return ""
+        importance_order = {"high": 0, "medium": 1, "low": 2}
+        sorted_fs = sorted(active_fs, key=lambda f: importance_order.get(f.importance, 1))
+
+        _MAX_FS = 30
+        truncated = len(sorted_fs) > _MAX_FS
+        display_fs = sorted_fs[:_MAX_FS]
+
         importance_icon = {"high": "🔴", "medium": "🟡", "low": "⚪"}
         lines = ["【待回收伏笔调度表（生成章纲时必须安排以下伏笔的回收，不得遗漏）】"]
-        for f in active_fs:
+        for f in display_fs:
             icon = importance_icon.get(f.importance, "🟡")
             deadline = f"最晚第{f.collect_by_chapter}章回收。" if f.collect_by_chapter else "无截止时间要求。"
             desc = f.description or "（无描述）"
             lines.append(
                 f"- {icon} [{f.importance}重要] 《{f.name}》（第{f.set_chapter}章埋下）：{desc} {deadline}"
             )
+        if truncated:
+            omitted = len(sorted_fs) - _MAX_FS
+            omit_names = "、".join(f"《{f.name}》" for f in sorted_fs[_MAX_FS:])
+            lines.append(f"（另有 {omitted} 条低重要度伏笔未列出：{omit_names}）")
         lines.append(
             "\n要求：在生成的章纲 outline_foreshadowing_collect 字段中，"
             "确保每个有截止时间的伏笔都在其截止章节前被安排回收。"
@@ -400,8 +414,16 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
               "world_setting_updates": [{"key", "value", "reason"}]
             }
         """
-        global_ctx = self.memory.global_mem.build_global_context()
+        # 从章纲提取关键词，过滤无关世界观/伏笔
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+        from core.memory import _extract_chapter_keywords
+        chapter_keywords = _extract_chapter_keywords(chapter) if chapter else set()
+
         all_chars = self.memory.global_mem.get_all_characters()
+        global_ctx = self.memory.global_mem.build_global_context(
+            chapter_keywords=chapter_keywords if chapter_keywords else None,
+            current_chapter=chapter_number,
+        )
         existing_chars = [c.name for c in all_chars]
 
         # 构建现有人物状态摘要，供 AI 对比
@@ -1851,19 +1873,61 @@ style 块使用规则：
         page: 当前所在页面（用于上下文感知，预留）
         chapter_number: 当前章节号（若提供则按章纲关键词过滤世界观）
         messages: [{"role": "user"/"assistant", "content": "..."}]
+
+        历史压缩：当对话超过 MAX_CANVAS_HISTORY 轮时，把早期消息压缩成
+        一条摘要 assistant 消息，只将最近 CANVAS_RECENT_ROUNDS 轮原文传给 LLM，
+        避免长对话撑爆 context window。
         """
+        _MAX_ROUNDS = 10       # 超过此轮数触发压缩
+        _RECENT_KEEP = 8       # 压缩后保留最近几轮原文
+        _MAX_SUMMARY_CHARS = 600  # 历史摘要最多占用字符数
+
         role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
 
-        # 若提供章节号，从章纲提取关键词，过滤世界观设定（减少无关 token）
+        # ── 历史消息压缩 ─────────────────────────────────────────────
+        # messages 是 [user, assistant, user, assistant, ...] 的列表
+        # 每"轮"= 一条 user + 一条 assistant = 2 条消息
+        total_rounds = len(messages) // 2
+        if total_rounds > _MAX_ROUNDS:
+            # 需要压缩的早期消息数量（保留最近 _RECENT_KEEP 轮）
+            keep_msgs = _RECENT_KEEP * 2
+            old_msgs = messages[:-keep_msgs]
+            recent_msgs = messages[-keep_msgs:]
+
+            # 把早期对话压缩为一段文字摘要（不再调用 LLM，直接拼文本）
+            old_summary_lines = []
+            for m in old_msgs:
+                role_label = "用户" if m["role"] == "user" else "助手"
+                text = m["content"][:150].replace("\n", " ")
+                if len(m["content"]) > 150:
+                    text += "…"
+                old_summary_lines.append(f"{role_label}：{text}")
+            old_summary = (
+                f"[早期对话摘要（共{len(old_msgs)//2}轮，已压缩）]\n"
+                + "\n".join(old_summary_lines)
+            )
+            if len(old_summary) > _MAX_SUMMARY_CHARS:
+                old_summary = old_summary[:_MAX_SUMMARY_CHARS] + "…（已截断）"
+
+            # 把摘要作为第一条 assistant 消息插入
+            effective_msgs = [{"role": "assistant", "content": old_summary}] + recent_msgs
+        else:
+            effective_msgs = messages
+
+        # 若提供章节号，从章纲提取关键词和出场人物，过滤世界观设定和人物档案（减少无关 token）
         chapter_keywords: set[str] | None = None
+        canvas_active_chars: list[str] | None = None
         if chapter_number:
             ch = self.memory.global_mem.get_chapter_outline(chapter_number)
             if ch:
                 from core.memory import _extract_chapter_keywords
                 chapter_keywords = _extract_chapter_keywords(ch)
+                canvas_active_chars = ch.get_outline_characters() or None
 
         global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=chapter_keywords
+            chapter_keywords=chapter_keywords,
+            active_chars=canvas_active_chars,
+            current_chapter=chapter_number,
         )
 
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
@@ -1871,7 +1935,7 @@ style 块使用规则：
 
         # 当前文档内容附加到对话最后一条 user 消息之前（而非 system）
         # 截断至 6000 字，避免超长文档撑爆上下文
-        _msgs = list(messages)
+        _msgs = list(effective_msgs)
         if document_content.strip():
             doc_truncated = document_content[:6000]
             doc_note = "...(内容过长已截断)" if len(document_content) > 6000 else ""

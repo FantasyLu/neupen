@@ -550,21 +550,28 @@ class ConflictDetector:
         outline_text = chapter.to_outline_text()
         chars = self.memory.global_mem.get_all_characters()
 
-        # 按本章出场人物过滤：出场人物给完整档案，其余只给单行简介（减少无关 token）
+        # 按本章出场人物过滤：出场人物调用相关性过滤档案，其余只给单行简介
         import json as _json
+        from core.memory import _extract_chapter_keywords
         try:
             active_set = set(_json.loads(chapter.outline_characters or "[]"))
         except Exception:
             active_set = set()
 
+        chapter_keywords = _extract_chapter_keywords(chapter)
         appearing = [c for c in chars if c.name in active_set] if active_set else chars[:10]
         others = [c for c in chars if c.name not in active_set and c not in appearing]
+        co_chars = {c.name for c in appearing}
 
         char_parts = []
         if appearing:
-            char_parts.append("=== 本章出场人物（完整档案）===")
+            char_parts.append("=== 本章出场人物（相关字段档案）===")
             for c in appearing:
-                char_parts.append(c.to_profile_text()[:1000])  # 单人最多1000字
+                # 按本章关键词做字段级相关性过滤（不截断，只取相关字段）
+                char_parts.append(c.to_chapter_relevant_profile(
+                    chapter_keywords=chapter_keywords,
+                    co_appearing_chars=co_chars,
+                ))
         if others:
             char_parts.append("=== 其他人物（未出场，仅供参照）===")
             char_parts.append("  ".join(c.to_brief_text() for c in others[:20]))
@@ -629,7 +636,9 @@ action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
         熔断阈值 9.0，揪出状态冲突、世界观冲突、时空硬伤。
         """
         chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
-        global_ctx = self.memory.global_mem.build_global_context()
+        global_ctx = self.memory.global_mem.build_global_context(
+            current_chapter=chapter_number,
+        )
 
         # 收集前文章节的状态信息（人物 current_state + 关键事件）
         from core.models import Chapter

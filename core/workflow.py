@@ -262,8 +262,19 @@ class NovelWorkflow:
             progress_callback("👤 正在生成人物档案...")
 
         try:
-            # 构建大纲文本
-            outline_text = self.memory.global_mem.build_global_context(include_chapters=True)
+            # 构建大纲文本：全局设定 + 轻量章纲单行摘要（避免全量章纲撑爆 context）
+            base_ctx = self.memory.global_mem.build_global_context(include_chapters=False)
+            chapter_outlines = self.memory.global_mem.get_chapter_outlines()
+            if chapter_outlines:
+                ch_lines = [
+                    f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.outline_core_event or ''}"
+                    + (f"  出场：{', '.join(ch.get_outline_characters())}" if ch.get_outline_characters() else "")
+                    for ch in chapter_outlines
+                ]
+                chapters_summary = "\n=== 章节大纲概览 ===\n" + "\n".join(ch_lines)
+            else:
+                chapters_summary = ""
+            outline_text = base_ctx + chapters_summary
 
             # 调用人设师 Agent
             characters_data = self.character_agent.generate_characters(outline_text)
