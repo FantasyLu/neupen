@@ -36,6 +36,7 @@ EbookLib>=0.18
 # Embedding 模型
 sentence-transformers>=3.0.0
 torchvision>=0.20.0
+transformers>=5.10.1
 
 # 工具库
 tiktoken>=0.8.0
