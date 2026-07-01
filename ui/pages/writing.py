@@ -12,7 +12,7 @@ from core.models import get_db, Chapter, ContentVersion, Novel
 from core.workflow import load_novel
 from core.permissions import can_edit, can_approve
 from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent
-from ui.helpers import format_chapter_status, format_approval_badge
+from ui.helpers import format_chapter_status, format_approval_badge, render_chapter_editor, render_stream_preview
 from ui.components.collaboration import render_chapter_comments, render_approval_status
 
 
@@ -398,9 +398,9 @@ def page_writing():
 
     # ─── 右栏：章节内容 ──────────────────────────────────
     with col_content:
-        # 执行写作
-        output_area  = st.empty()
-        status_area  = st.empty()
+        # ── 流式预览区（写作时显示，写完后消失）──────────────────────────
+        stream_preview_area = st.empty()
+        status_area = st.empty()
 
         if write_btn or rewrite_btn:
             st.session_state.is_writing = True
@@ -408,9 +408,14 @@ def page_writing():
             def stream_cb(chunk: str):
                 nonlocal streaming_text
                 streaming_text += chunk
-                output_area.markdown(
-                    f"> **第{selected_ch_num}章 正在生成中…**\n\n{streaming_text}",
-                )
+                with stream_preview_area.container():
+                    st.markdown(
+                        f"""<div style="font-size:0.68rem;letter-spacing:0.14em;color:#c9a96e;
+                        text-transform:uppercase;margin-bottom:0.4rem;">
+                        正在生成 · 第{selected_ch_num}章</div>""",
+                        unsafe_allow_html=True,
+                    )
+                    render_stream_preview(streaming_text, selected_ch_num, height=420)
 
             def progress_cb(msg: str):
                 status_area.info(msg)
@@ -432,7 +437,7 @@ def page_writing():
 
                 if result.success:
                     status_area.empty()
-                    output_area.empty()
+                    stream_preview_area.empty()
                     score  = result.data.get("overall_score", 0)
                     passed = result.data.get("review_passed", True)
                     if passed:
@@ -466,11 +471,11 @@ def page_writing():
                     st.session_state.pop(f"edit_content_{novel_id}_{selected_ch_num}", None)
                     st.rerun()
                 else:
-                    output_area.empty()
+                    stream_preview_area.empty()
                     st.session_state.is_writing = False
                     st.error(f"生成失败：{result.message}")
             except Exception as e:
-                output_area.empty()
+                stream_preview_area.empty()
                 st.session_state.is_writing = False
                 st.error(f"生成出错：{e}")
 
@@ -479,7 +484,7 @@ def page_writing():
         if selected_ch:
 
             tab_text, tab_summary, tab_review, tab_reader, tab_history, tab_comment = st.tabs([
-                "📝 正文", "📄 摘要", "📋 审核", "📖 读者模拟", "📜 版本历史", "💬 评论"
+                "正文", "摘要", "审核", "读者模拟", "版本历史", "评论"
             ])
 
             with tab_text:
@@ -499,11 +504,12 @@ def page_writing():
                 if text_key not in st.session_state:
                     st.session_state[text_key] = selected_ch.content or ""
 
-                st.text_area(
-                    f"第{selected_ch_num}章正文",
-                    key=text_key, height=520,
+                render_chapter_editor(
+                    text_key=text_key,
+                    height=520,
+                    disabled=not can_edit(novel_id),
                     placeholder="在此直接书写章节内容，或通过左侧 AI 生成后应用…",
-                    disabled=not can_edit(novel_id)
+                    font_size_key=f"editor_font_size_{novel_id}",
                 )
 
                 if can_edit(novel_id):
