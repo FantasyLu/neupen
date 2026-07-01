@@ -399,8 +399,17 @@ class NovelWorkflow:
 
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
 
-            # Step 2: 并行四审核流水线
-            # 流程：4个 Reviewer 并行 → 合并 REJECT feedback → WriterAgent 一次性修正
+            # Step 2: 润色（先润色，让审核对最终呈现的文本做判断）
+            if auto_polish:
+                if progress_callback:
+                    progress_callback(f"✨ 润色草稿...")
+                try:
+                    current_content = self.polisher_agent.polish_chapter(current_content)
+                except Exception:
+                    pass  # 润色失败则继续用草稿
+
+            # Step 3: 并行四审核流水线
+            # 流程：4个 Reviewer 并行 → 合并 REJECT feedback → WriterAgent 一次性修正润色后文本
             #        → 仅未通过的 Reviewer 重审（已通过的跳过），最多2轮
             all_gate_results_dicts = []
             final_passed = False
@@ -471,17 +480,8 @@ class NovelWorkflow:
                 chapter.status = "reviewed" if final_passed else "review_pending"
                 self.db.commit()
 
-            # Step 3: 润色（StyleRefiner 已覆盖文风，此处轻量兜底）
+            # Step 4: 保存最终内容（润色已在审核前完成，current_content 即为最终版本）
             final_content = current_content
-            if auto_polish and final_passed:
-                if progress_callback:
-                    progress_callback(f"✨ 润色收尾...")
-                try:
-                    final_content = self.polisher_agent.polish_chapter(current_content)
-                except Exception:
-                    pass
-
-            # Step 4: 保存最终内容
             self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
             import threading
             from core.memory import FragmentMemory
