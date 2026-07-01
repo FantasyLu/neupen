@@ -766,5 +766,434 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
                 feedback=f"打磨官调用失败：{e}，自动放行", passed=True
             )
 
+    # ======================================
+    # 并行四审核 Reviewer 方法
+    # ======================================
+
+    def run_plot_aligner(self, chapter_number: int, content: str) -> GateResult:
+        """
+        Reviewer-A: 剧情对齐官 (PlotAligner)
+        职责：章纲核心事件是否发生、关键冲突是否写到、章节结局是否符合章纲。
+        Context：章纲文本 + 前3章摘要（无人物档案、无世界观）。
+        熔断阈值：8.5
+        """
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+        if not chapter:
+            return GateResult(
+                gate_name="plot_aligner", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback="无章纲，跳过剧情对齐", passed=True
+            )
+
+        outline_text = chapter.to_outline_text()
+
+        # 前3章摘要（仅摘要，不含正文）
+        recent = self.memory.chapter_mem.get_recent_chapters(chapter_number)
+        recent_text = "\n".join([
+            f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.summary or '(无摘要)'}"
+            for ch in recent[-3:]
+        ]) if recent else "(无)"
+
+        system_prompt = """你是一位严格的剧情对齐官（PlotAligner）。
+你的唯一职责：对照章纲，检查正文是否完整呈现了本章规定的核心事件、冲突和结局。
+不要评价文笔、人设、世界观，只看剧情结构是否对齐章纲。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 章纲核心事件未发生或严重缺失：一处扣 3.0 分
+- 章纲规定的核心冲突未写出：扣 2.0 分
+- 章纲结局/转折与正文不符：扣 2.5 分
+- 新增与章纲无关的重大剧情（跑偏）：扣 1.5 分
+
+输出严格 JSON，不含其他文字：
+{
+  "gate_name": "plot_aligner",
+  "total_score": 8.5,
+  "breakdown": {
+    "core_event_coverage": 10.0,
+    "conflict_coverage": 8.0,
+    "ending_alignment": 9.0
+  },
+  "action": "PASS",
+  "feedback": "精确说明扣分原因和具体修改方案。PASS 时也要指出瑕疵。"
+}
+action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【本章章纲】
+{outline_text}
+
+【前情摘要（近3章）】
+{recent_text}
+
+【待审核正文】
+{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+
+请严格对照章纲，逐条检查核心事件、冲突、结局是否在正文中完整体现。"""
+
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "plot_aligner")
+        except Exception as e:
+            return GateResult(
+                gate_name="plot_aligner", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"剧情对齐官调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_character_guard(self, chapter_number: int, content: str) -> GateResult:
+        """
+        Reviewer-B: 人设与世界观守卫 (CharacterGuard)
+        职责：人物OOC检测 + 世界观/能力体系/社会规则违反。
+        Context：出场人物档案（相关性过滤后）+ 世界观设定（无前情、无时空状态）。
+        熔断阈值：8.5
+        """
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+
+        # 出场人物档案（相关性过滤）
+        import json as _json
+        from core.memory import _extract_chapter_keywords
+        chars = self.memory.global_mem.get_all_characters()
+
+        if chapter:
+            try:
+                active_set = set(_json.loads(chapter.outline_characters or "[]"))
+            except Exception:
+                active_set = set()
+            chapter_keywords = _extract_chapter_keywords(chapter)
+        else:
+            active_set = set()
+            chapter_keywords = set()
+
+        appearing = [c for c in chars if c.name in active_set] if active_set else chars[:8]
+        others = [c for c in chars if c.name not in {c.name for c in appearing}]
+        co_chars = {c.name for c in appearing}
+
+        char_parts = []
+        if appearing:
+            char_parts.append("=== 本章出场人物（相关字段档案）===")
+            for c in appearing:
+                char_parts.append(c.to_chapter_relevant_profile(
+                    chapter_keywords=chapter_keywords,
+                    co_appearing_chars=co_chars,
+                ))
+        if others:
+            char_parts.append("=== 其他人物（未出场，仅名称角色）===")
+            char_parts.append("  ".join(c.to_brief_text() for c in others[:15]))
+        char_text = "\n".join(char_parts) if char_parts else "(无人物档案)"
+
+        # 世界观设定（只取世界观部分，不含章纲和人物）
+        novel = self.memory.global_mem.get_novel()
+        world_setting = novel.get_world_setting() if novel else {}
+        world_parts = []
+        for k, v in world_setting.items():
+            if v and str(v).strip():
+                world_parts.append(f"【{k}】{v}")
+        world_text = "\n".join(world_parts[:8]) if world_parts else "(无世界观设定)"
+
+        system_prompt = """你是一位严格的人设与世界观守卫（CharacterGuard）。
+你的职责有两项，且只有这两项：
+1. 检测人物OOC（Out of Character）：人物言行、性格、说话方式是否违背人物档案
+2. 检测世界观违规：正文中的设定是否违背世界观规则（能力体系、社会规则、禁忌、底层逻辑）
+
+不要评价剧情结构、时空逻辑、文笔。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 主角/核心人物明显OOC（性格核心矛盾）：一处扣 2.5 分
+- 次要人物OOC：一处扣 1.0 分
+- 世界观底层规则违反（魔法/科技/社会规则）：一处扣 3.0 分
+- 世界观细节偏差（非底层规则）：一处扣 1.0 分
+
+输出严格 JSON，不含其他文字：
+{
+  "gate_name": "character_guard",
+  "total_score": 8.5,
+  "breakdown": {
+    "character_ooc": 10.0,
+    "world_setting_logic": 7.0
+  },
+  "action": "PASS",
+  "feedback": "精确引用原文违规片段，说明违背了哪条人设/世界观规则，给出具体修改建议。"
+}
+action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【出场人物档案】
+{char_text}
+
+【世界观设定】
+{world_text[:2000]}{'...(已截断)' if len(world_text) > 2000 else ''}
+
+【待审核正文】
+{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+
+请逐条对照人物档案和世界观设定，检测OOC和世界观违规。"""
+
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "character_guard")
+        except Exception as e:
+            return GateResult(
+                gate_name="character_guard", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"人设守卫调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_continuity_tracker(self, chapter_number: int, content: str) -> GateResult:
+        """
+        Reviewer-C: 时空与状态连续性追踪官 (ContinuityTracker)
+        职责：人物当前状态（伤势/持有物）+ 时空逻辑（地理位置/时间线）连续性。
+        Context：人物状态面板 + 前10章摘要（无世界观、无人物档案详情）。
+        熔断阈值：9.0
+        """
+        # 人物状态面板（只取 current_state，不含详细档案）
+        chars = self.memory.global_mem.get_all_characters()
+        state_lines = [
+            f"{c.name}（{c.role or '配角'}）：{c.current_state}"
+            for c in chars if c.current_state and c.current_state.strip()
+        ]
+        char_states = "\n".join(state_lines[:20]) if state_lines else "(无状态记录)"
+
+        # 前10章摘要（时间线追踪）
+        from core.models import Chapter as ChapterModel
+        prev_chapters = (
+            self.memory.chapter_mem.db.query(ChapterModel)
+            .filter(
+                ChapterModel.novel_id == self.novel_id,
+                ChapterModel.chapter_number < chapter_number,
+                ChapterModel.content.isnot(None)
+            )
+            .order_by(ChapterModel.chapter_number.desc())
+            .limit(10).all()[::-1]
+        )
+        summary_parts = [
+            f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.summary or '(无摘要)'}"
+            for ch in prev_chapters
+        ]
+        summaries_text = "\n".join(summary_parts) if summary_parts else "(无前情记录)"
+
+        system_prompt = """你是一位严苛的时空与状态连续性追踪官（ContinuityTracker）。
+你的职责有两项，且只有这两项：
+1. 状态连续性：检查正文中人物的伤势、持有物品、体力状态是否与状态面板一致
+2. 时空逻辑：检查地理位置移动是否合理、时间线是否自洽、事件先后顺序是否矛盾
+
+不要评价人设、世界观规则、文笔。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 状态硬伤（已废的肢体被正常使用、凭空使用未持有道具）：一处扣 2.5 分
+- 状态软伤（状态描述与前文有细节出入但不影响逻辑）：一处扣 1.0 分
+- 时空硬伤（地理距离不合理、时间线明显矛盾）：一处扣 2.5 分
+- 时空软伤（时间/地点描述模糊但未明确矛盾）：一处扣 0.5 分
+
+输出严格 JSON，不含其他文字：
+{
+  "gate_name": "continuity_tracker",
+  "total_score": 9.0,
+  "breakdown": {
+    "state_continuity": 10.0,
+    "spatiotemporal_logic": 8.0
+  },
+  "action": "PASS",
+  "feedback": "精确引用原文矛盾位置，指出与哪一章的状态/时空记录相矛盾，给出具体修改建议。"
+}
+action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
+
+        user_prompt = f"""【人物当前状态面板】
+{char_states}
+
+【前情摘要（近10章）】
+{summaries_text}
+
+【待审核正文】
+{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+
+请严格对照状态面板和前情摘要，逐条检查状态矛盾和时空硬伤。"""
+
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "continuity_tracker")
+        except Exception as e:
+            return GateResult(
+                gate_name="continuity_tracker", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"连续性追踪官调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_style_refiner(self, chapter_number: int, content: str) -> GateResult:
+        """
+        Reviewer-D: 文风打磨官 (StyleRefiner)
+        职责：去AI腔、违禁句式、Show don't tell。
+        Context：仅 deai_rules + style_profile（最轻，无任何故事信息）。
+        熔断阈值：8.0
+        """
+        novel = self.memory.global_mem.get_novel()
+
+        # 去AI规则
+        if novel and novel.deai_rules and novel.deai_rules.strip():
+            deai_rules = novel.deai_rules.strip()
+        else:
+            from core.config import DEFAULT_DEAI_RULES
+            deai_rules = DEFAULT_DEAI_RULES
+
+        # 风格档案（如有）
+        style_text = ""
+        if novel:
+            style_profile = novel.get_style_profile()
+            if style_profile:
+                style_lines = [f"- {k}：{v}" for k, v in style_profile.items() if v]
+                style_text = "\n".join(style_lines[:10])
+
+        system_prompt = """你是一位犀利的文风打磨官（StyleRefiner）。
+你的唯一职责：检测并标注所有"AI味"违规，提供精准修改建议。
+不要评价剧情、人设、时空逻辑。
+
+评分采用 10 分制硬性扣分标尺：
+- 满分 10 分
+- 违禁句式（"不是…而是…"/"与其说…不如说…"等）：每处扣 1.5 分
+- 说书人腔调/上帝视角（段尾总结性/预言性发言，如"这意味着…""更大的危机正在逼近"）：每处扣 1.5 分
+- 机械连接词堆砌（过度使用"突然、竟然、然而、不得不"）：每处扣 0.5 分
+- 直说情绪而非Show（"他很恐慌"而非通过生理细节表现）：每处扣 1.0 分
+
+输出严格 JSON，不含其他文字：
+{
+  "gate_name": "style_refiner",
+  "total_score": 7.5,
+  "breakdown": {
+    "forbidden_syntax": 8.5,
+    "narrator_intrusion": 7.0,
+    "show_dont_tell": 9.0
+  },
+  "action": "REJECT",
+  "feedback": "逐条列出：违规原文片段 → 违规类型 → 具体修改建议。PASS 时也需指出可优化细节。"
+}
+action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
+
+        style_block = f"\n【风格档案参考】\n{style_text}" if style_text else ""
+        user_prompt = f"""【去AI味规则（逐条对照检测）】
+{deai_rules[:3000]}{'...(已截断)' if len(deai_rules) > 3000 else ''}{style_block}
+
+【待审核正文】
+{content[:5000]}{'...(已截断)' if len(content) > 5000 else ''}
+
+请逐条对照规则检查正文，不要放过任何违规。"""
+
+        try:
+            response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
+            return self._parse_gate_response(response, "style_refiner")
+        except Exception as e:
+            return GateResult(
+                gate_name="style_refiner", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"文风打磨官调用失败：{e}，自动放行", passed=True
+            )
+
+    def run_parallel_review(
+        self,
+        chapter_number: int,
+        content: str,
+        skip_gates: set[str] | None = None,
+    ) -> dict:
+        """
+        并行执行四个 Reviewer，返回汇总结果。
+
+        Args:
+            chapter_number: 章节号
+            content: 待审核正文
+            skip_gates: 已通过、本轮跳过的关卡名集合
+
+        Returns:
+            {
+                "gates": [GateResult, ...],          # 本轮执行的关卡结果（按顺序）
+                "all_passed": bool,                   # 本轮全部通过
+                "reject_feedbacks": str,              # 合并所有 REJECT 的 feedback
+                "passed_gate_names": set[str],        # 本轮通过的关卡名
+                "failed_gate_names": set[str],        # 本轮未通过的关卡名
+                "weighted_score": float,              # 加权综合得分
+            }
+        """
+        import concurrent.futures
+
+        skip_gates = skip_gates or set()
+
+        # 四关卡定义：(gate_name, method, weight, label)
+        gate_defs = [
+            ("plot_aligner",       self.run_plot_aligner,       0.25, "剧情对齐"),
+            ("character_guard",    self.run_character_guard,    0.25, "人设世界观"),
+            ("continuity_tracker", self.run_continuity_tracker, 0.25, "时空状态"),
+            ("style_refiner",      self.run_style_refiner,      0.25, "文风去AI"),
+        ]
+
+        results: list[GateResult] = []
+        skipped_scores: list[tuple[float, float]] = []  # (score, weight) for skipped
+
+        # 收集需要执行的关卡
+        to_run = [(name, fn, weight, label)
+                  for name, fn, weight, label in gate_defs
+                  if name not in skip_gates]
+        skipped = [(name, weight)
+                   for name, fn, weight, label in gate_defs
+                   if name in skip_gates]
+
+        # 并行执行
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_map = {
+                executor.submit(fn, chapter_number, content): (name, weight, label)
+                for name, fn, weight, label in to_run
+            }
+            ordered_results: list[tuple[str, float, GateResult]] = []
+            for future in concurrent.futures.as_completed(future_map):
+                name, weight, label = future_map[future]
+                try:
+                    gate_result = future.result()
+                except Exception as e:
+                    gate_result = GateResult(
+                        gate_name=name, total_score=10.0,
+                        breakdown={}, action="PASS",
+                        feedback=f"{label}调用异常：{e}，自动放行", passed=True
+                    )
+                ordered_results.append((name, weight, gate_result))
+
+        # 按原始顺序排列结果
+        name_order = [name for name, _, _, _ in gate_defs if name not in skip_gates]
+        ordered_results.sort(key=lambda x: name_order.index(x[0]))
+        results = [r for _, _, r in ordered_results]
+
+        # 计算加权得分（包含跳过关卡，跳过关卡视为满分10.0）
+        total_weight = sum(w for _, w, _ in ordered_results) + sum(w for _, w in skipped)
+        weighted_score = sum(r.total_score * w for _, w, r in ordered_results)
+        weighted_score += sum(10.0 * w for _, w in skipped)
+        if total_weight > 0:
+            weighted_score /= total_weight
+
+        # 汇总 REJECT 反馈
+        reject_parts = []
+        failed_names: set[str] = set()
+        passed_names: set[str] = set(skip_gates)  # 跳过的视为已通过
+
+        for _, weight, gate_result in ordered_results:
+            if not gate_result.passed:
+                failed_names.add(gate_result.gate_name)
+                label_map = {
+                    "plot_aligner": "【剧情对齐问题】",
+                    "character_guard": "【人设/世界观问题】",
+                    "continuity_tracker": "【时空/状态问题】",
+                    "style_refiner": "【文风问题】",
+                }
+                label = label_map.get(gate_result.gate_name, f"【{gate_result.gate_name}】")
+                reject_parts.append(f"{label}\n{gate_result.feedback}")
+            else:
+                passed_names.add(gate_result.gate_name)
+
+        reject_feedbacks = "\n\n".join(reject_parts)
+
+        return {
+            "gates": results,
+            "all_passed": len(failed_names) == 0,
+            "reject_feedbacks": reject_feedbacks,
+            "passed_gate_names": passed_names,
+            "failed_gate_names": failed_names,
+            "weighted_score": round(weighted_score, 2),
+        }
+
     def close(self):
         self.memory.close()

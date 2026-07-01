@@ -48,7 +48,8 @@ class Novel(Base):
     author = Column(String(100), nullable=True, default="", comment="作者/笔名")
     logline = Column(Text, comment="一句话灵感/简介")
     genre = Column(String(50), comment="题材类型（玄幻/都市/言情等）")
-    world_setting = Column(Text, comment="世界观设定（JSON格式）")
+    world_setting = Column(Text, comment="世界观设定（JSON格式，原始完整内容）")
+    world_setting_compressed = Column(Text, comment="世界观设定压缩版（JSON格式，每个value经LLM提炼，注入时优先使用）")
     writing_style = Column(Text, comment="写作风格要求")
     target_words = Column(Integer, default=0, comment="目标总字数")
     current_words = Column(Integer, default=0, comment="已写字数")
@@ -515,6 +516,11 @@ class NovelOutline(Base):
     ending_summary = Column(Text, comment="结局概要")
     total_chapters = Column(Integer, default=0, comment="预计总章节数")
     full_outline_text = Column(Text, comment="原始大纲文本")
+    # 压缩缓存列：内容变更时异步重建，注入时优先使用
+    theme_compressed            = Column(Text, comment="核心主题——LLM压缩版")
+    main_conflict_compressed    = Column(Text, comment="主要矛盾——LLM压缩版")
+    protagonist_arc_compressed  = Column(Text, comment="主角弧光——LLM压缩版")
+    ending_summary_compressed   = Column(Text, comment="结局概要——LLM压缩版")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -635,6 +641,12 @@ def _migrate_add_columns():
         ("novels",         "temp_polisher",        "FLOAT"),
         ("novels",         "temp_reader",          "FLOAT"),
         ("novels",         "temp_canvas",          "FLOAT"),
+        # 内容压缩缓存列
+        ("novels",         "world_setting_compressed",          "TEXT"),
+        ("novel_outlines", "theme_compressed",                  "TEXT"),
+        ("novel_outlines", "main_conflict_compressed",          "TEXT"),
+        ("novel_outlines", "protagonist_arc_compressed",        "TEXT"),
+        ("novel_outlines", "ending_summary_compressed",         "TEXT"),
     ]
 
     with engine.connect() as conn:

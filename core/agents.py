@@ -567,6 +567,27 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                 return [r for r in result if r.get("character") in existing_names]
         return []
 
+    def expand_outline_section(self, context: str, instruction: str,
+                                chapter_number: int | None = None) -> str:
+        """
+        根据用户指令扩写/调整大纲内容，返回修改后的大纲 Markdown 文本。
+        由 CanvasAgent.dispatch() 调用。
+        """
+        chapter_hint = f"当前聚焦章节：第{chapter_number}章。\n" if chapter_number else ""
+        system_prompt = (
+            "你是一位经验丰富的小说大纲师。根据用户指令，对现有大纲进行扩写或调整。\n"
+            "保持大纲整体结构和风格，只修改用户明确要求的部分。\n"
+            "直接输出调整后的完整大纲 Markdown 文本，不加任何说明。"
+        )
+        user_prompt = (
+            f"{chapter_hint}"
+            f"【当前大纲上下文】\n{context[:3000]}\n\n"
+            f"【调整指令】\n{instruction}\n\n"
+            "请输出调整后的大纲内容："
+        )
+        return self.llm.generate(system_prompt, user_prompt,
+                                 max_tokens=4096, temperature=self.temperature)
+
     def close(self):
         self.memory.close()
 
@@ -718,6 +739,38 @@ class CharacterAgent:
             char.current_state = f"（第{chapter_number}章后）{state_update}"
             self.memory.global_mem.db.commit()
 
+    def update_character_profile(self, char_name: str,
+                                  existing_profile: str,
+                                  instruction: str) -> dict | None:
+        """
+        根据用户指令定向更新人物档案，返回更新后的字段字典。
+        由 CanvasAgent.dispatch() 调用。
+        """
+        system_prompt = (
+            "你是一位专业的小说人物档案编辑。根据用户指令，对现有人物档案做定向修改。\n"
+            "只修改用户明确要求改动的字段，其余字段原样保留。\n"
+            "输出合法 JSON 对象，包含 name 字段及所有需要保留/修改的字段，不含其他文字。\n"
+            "可用字段：name, role, age, gender, personality, background, appearance, "
+            "growth_arc, current_state, motivations, speech_patterns, secrets, is_main, "
+            "abilities（JSON数组字符串）, relationships（JSON对象字符串）"
+        )
+        user_prompt = (
+            f"【人物姓名】{char_name}\n\n"
+            f"【现有档案】\n{existing_profile or '（暂无）'}\n\n"
+            f"【修改指令】\n{instruction}\n\n"
+            "请输出修改后的完整人物档案 JSON："
+        )
+        try:
+            raw = self.llm.generate(system_prompt, user_prompt,
+                                    max_tokens=2048, temperature=self.temperature)
+            js = raw[raw.find("{"):raw.rfind("}") + 1]
+            data = _safe_json_loads(js)
+            if isinstance(data, dict) and data.get("name"):
+                return data
+        except Exception:
+            pass
+        return None
+
     def close(self):
         self.memory.close()
 
@@ -770,12 +823,18 @@ class WriterAgent:
                        stream_callback=None,
                        review_feedback: str = "") -> str:
         """
-        生成指定章节的正文
+        生成指定章节的正文。
+
+        流式模式：直接生成并回调，不做字数重试（避免用户看到内容被清空重写）。
+        非流式模式：生成后检测字数，超出范围则最多重试 2 次，
+                    每次重试把实际字数和偏差告诉 LLM，引导精准修正。
 
         Args:
             chapter_number: 章节序号
             word_target: 目标字数
-            stream_callback: 流式输出回调函数（可选）
+            word_count_tolerance: 字数容差（默认 0.30 = ±30%）
+            stream_callback: 流式输出回调（提供时走流式路径，不重试）
+            review_feedback: 上轮审核反馈（用于针对性改写）
 
         Returns:
             生成的章节正文
@@ -794,6 +853,8 @@ class WriterAgent:
         if novel:
             style_profile = novel.get_style_profile()
             style_desc = novel.writing_style or ""
+            style_ref_text = (novel.style_reference_text or "").strip()
+
             if style_profile:
                 _label_map = {
                     "overall_style":        "总体风格定位",
@@ -817,6 +878,16 @@ class WriterAgent:
                         "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
                         + "\n".join(lines)
                     )
+                # 有 style_profile 时不再额外注入原文片段（结构化档案已涵盖风格信息）
+            elif style_ref_text:
+                # 没有结构化档案但有参考文本：注入前600字让LLM直接感受风格
+                _preview = style_ref_text[:600]
+                if len(style_ref_text) > 600:
+                    _preview += "…"
+                style_block = (
+                    "\n【写作风格参考（请模仿以下文本的语感、节奏和表达习惯，不要直接复制）】\n"
+                    + _preview
+                )
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
@@ -829,10 +900,6 @@ class WriterAgent:
             if _ps:
                 platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
 
-        feedback_block = ""
-        if review_feedback:
-            feedback_block = f"\n【上一稿审核反馈（请在本次写作中针对性改进，避免重复犯同样的问题）】\n{review_feedback}\n"
-
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
         deai_rules = (
@@ -840,36 +907,104 @@ class WriterAgent:
             if novel and novel.deai_rules and novel.deai_rules.strip()
             else DEFAULT_DEAI_RULES
         )
-        deai_block = f"\n【去AI味规则（写作时必须严格遵守）】\n{deai_rules}\n"
+        deai_block = f"\n【去AI味规则】\n{deai_rules}\n"
 
-        user_prompt = f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
-📏 字数约束：{int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字（目标 {word_target} 字），不得超过上限。
+        word_min = int(word_target * (1 - word_count_tolerance))
+        word_max = int(word_target * (1 + word_count_tolerance))
 
-{writing_context}{style_block}{platform_block}{deai_block}{feedback_block}
-【写作要求】
-- 必须完整呈现章纲中的核心事件
-- 人物对话和行为必须符合其设定
-- 注意与前几章的连贯性
-- 章节结尾需要有合适的收束或钩子
+        def _build_prompt(extra_feedback: str = "") -> str:
+            """组装 user prompt，extra_feedback 用于重试时注入字数偏差提示。"""
+            fb = review_feedback
+            if extra_feedback:
+                fb = (fb + "\n" + extra_feedback) if fb else extra_feedback
+            feedback_block = (
+                f"\n【上一稿审核反馈（本次必须针对性改进，这些问题不能再出现）】\n{fb}\n"
+                if fb else ""
+            )
+            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ''}》
 
-⚠️ 再次强调：本章字数必须控制在 {int(word_target * (1 - word_count_tolerance))}~{int(word_target * (1 + word_count_tolerance))} 字之间，不得超过 {int(word_target * (1 + word_count_tolerance))} 字。
+【字数硬约束】
+- 最少：{word_min} 字（不足会显得情节仓促、铺垫缺失）
+- 最多：{word_max} 字（超过此上限属于硬性违规，系统会截断导致内容残缺）
+- 目标：{word_target} 字
+{deai_block}{feedback_block}
+【写作上下文（下方所有设定和前情均须遵守）】
+{writing_context}{style_block}{platform_block}
 
-请直接开始写作正文，从标题开始："""
+【本章写作要求】
+1. 【核心事件完整性】章纲所述的核心事件必须在正文中有完整的"开始→过程→结果"三阶段。
+   不能只有结论句（如"他终于明白了"），要有完整经过（如"他翻开档案→逐行核对→手指停在那行字上"）。
 
+2. 【人设一致性】每个出场人物的言行必须与其档案相符。
+   寡言的人物对白不能冗长；冷静的人物不能轻易崩溃；能力边界不得超出设定。
+
+3. 【叙事连贯】本章开头需自然衔接上章结尾的时间、地点与人物状态。
+   章内场景转换须给出合理的物理过渡（不能无缘由地"场景切换"）。
+
+4. 【章节收束】结尾需包含：
+   ✓ 一个向下一章延伸的悬念或情感落点
+   ✗ 说书人式总结（"这意味着……""命运的齿轮开始转动……"）
+
+请直接输出正文，从标题开始："""
+
+        # ── 流式路径：直接生成，不做字数重试 ──────────────────────────────
         if stream_callback:
-            # 流式生成
             content_parts = []
             for text_chunk in self.llm.generate_stream(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+                self.SYSTEM_PROMPT, _build_prompt(), max_tokens=12000,
+                temperature=self.temperature
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
             return "".join(content_parts)
-        else:
-            # 非流式生成
-            return self.llm.generate(
-                self.SYSTEM_PROMPT, user_prompt, max_tokens=12000, temperature=self.temperature
+
+        # ── 非流式路径：生成后检测字数，超出范围最多重试 2 次 ──────────────
+        _MAX_WORD_RETRIES = 2
+        content = ""
+        for attempt in range(_MAX_WORD_RETRIES + 1):
+            extra_fb = ""
+            if attempt > 0:
+                actual = len(content)
+                if actual < word_min:
+                    deficit = word_min - actual
+                    extra_fb = (
+                        f"⚠️ 字数不足重试（第{attempt}次）：上次生成 {actual} 字，"
+                        f"距最低要求还差 {deficit} 字。请补充更多场景细节、对话过程或心理描写，"
+                        f"使总字数达到 {word_min} 字以上。保持已有内容的风格和情节，"
+                        f"直接输出完整的重写版本。"
+                    )
+                else:
+                    surplus = actual - word_max
+                    extra_fb = (
+                        f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，"
+                        f"超出上限 {surplus} 字。请精简重复描写、压缩过渡段落，"
+                        f"使总字数控制在 {word_max} 字以内。保持核心情节完整，"
+                        f"直接输出完整的重写版本。"
+                    )
+
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT, _build_prompt(extra_fb),
+                max_tokens=12000, temperature=self.temperature
             )
+            actual = len(content)
+            if word_min <= actual <= word_max:
+                break  # 字数达标，退出重试
+            if attempt < _MAX_WORD_RETRIES:
+                import sys
+                print(
+                    f"[WriterAgent] 第{chapter_number}章字数偏差（{actual}字，"
+                    f"目标 {word_min}~{word_max}），发起第{attempt + 1}次重试…",
+                    file=sys.stderr
+                )
+        else:
+            # 所有重试耗尽仍超范围，打印警告后返回最终结果
+            import sys
+            print(
+                f"[WriterAgent] 第{chapter_number}章重试{_MAX_WORD_RETRIES}次后"
+                f"字数仍为 {len(content)}（目标 {word_min}~{word_max}），使用当前版本。",
+                file=sys.stderr
+            )
+        return content
 
     def summarize_chapter(self, chapter_number: int, title: str,
                            content: str) -> tuple[str, list[str]]:
@@ -1189,12 +1324,115 @@ class ReviewerAgent:
             "reject_feedback": None,
         }
 
+    def parallel_pipeline_review(
+        self,
+        chapter_number: int,
+        content: str,
+        progress_callback=None,
+    ) -> dict:
+        """
+        并行四审核流水线（新版，替换三关卡串行方案）。
+
+        四个 Reviewer 并行执行，合并所有 REJECT 的 feedback 后由 WriterAgent 一次性修正。
+        已通过的 Reviewer 在后续轮次中不再重复审核。
+        每个 Reviewer 最多参与 2 次审核（初审 + 1次重审）。
+
+        Returns:
+            {
+                "passed": bool,
+                "final_score": float,
+                "gates": [GateResult, ...],     # 最后一轮全部4个关卡的结果
+                "all_gate_results": list[dict], # 所有轮次所有关卡结果
+                "reject_feedbacks": str | None, # 最终仍未通过的 feedback（供调用方记录）
+                "rounds": int,                  # 实际执行轮数
+            }
+        """
+        from core.detector import GateResult
+
+        _GATE_LABELS = {
+            "plot_aligner":       "🎯 剧情对齐",
+            "character_guard":    "🛡️ 人设世界观",
+            "continuity_tracker": "🔗 时空状态",
+            "style_refiner":      "✨ 文风去AI",
+        }
+        _MAX_ROUNDS = 2  # 每个 Reviewer 最多参与2次（初审+1次重审）
+
+        all_gate_results: list[dict] = []
+        passed_gate_names: set[str] = set()
+        final_score = 0.0
+        last_review: dict = {}
+
+        for round_idx in range(_MAX_ROUNDS):
+            if progress_callback:
+                skip_info = (f"（跳过已通过：{', '.join(_GATE_LABELS.get(g, g) for g in passed_gate_names)}）"
+                             if passed_gate_names else "")
+                progress_callback(
+                    f"🔍 第{round_idx + 1}轮并行审核{skip_info}..."
+                )
+
+            last_review = self.detector.run_parallel_review(
+                chapter_number, content, skip_gates=passed_gate_names
+            )
+
+            # 记录本轮结果
+            for gate_result in last_review["gates"]:
+                all_gate_results.append({**gate_result.to_dict(), "round": round_idx + 1})
+
+            # 更新已通过的关卡
+            passed_gate_names = last_review["passed_gate_names"]
+            final_score = last_review["weighted_score"]
+
+            # 打印每个关卡结果
+            if progress_callback:
+                for gate_result in last_review["gates"]:
+                    icon = "✅" if gate_result.passed else "❌"
+                    label = _GATE_LABELS.get(gate_result.gate_name, gate_result.gate_name)
+                    progress_callback(
+                        f"  {icon} {label}：{gate_result.total_score:.1f}/10"
+                    )
+                progress_callback(
+                    f"  加权得分：{final_score:.1f}/10"
+                    + ("  ✅ 全部通过" if last_review["all_passed"] else
+                       f"  ❌ 未通过：{', '.join(_GATE_LABELS.get(g, g) for g in last_review['failed_gate_names'])}")
+                )
+
+            if last_review["all_passed"]:
+                break
+
+        # 补全未执行到的关卡（被 skip 的）用满分占位，保证 gates 始终有4条
+        executed_names = {g.gate_name for g in last_review.get("gates", [])}
+        all_four_gates = list(last_review.get("gates", []))
+        for gate_name, label in _GATE_LABELS.items():
+            if gate_name not in executed_names:
+                # 该关卡在本轮被跳过（已通过），补一条满分占位
+                all_four_gates.append(GateResult(
+                    gate_name=gate_name, total_score=10.0,
+                    breakdown={}, action="PASS",
+                    feedback="本轮已通过，跳过", passed=True
+                ))
+
+        return {
+            "passed": last_review.get("all_passed", False),
+            "final_score": round(final_score, 2),
+            "gates": all_four_gates,
+            "all_gate_results": all_gate_results,
+            "reject_feedbacks": last_review.get("reject_feedbacks") or None,
+            "rounds": _MAX_ROUNDS if not last_review.get("all_passed") else (
+                next((i + 1 for i, _ in enumerate(range(_MAX_ROUNDS))
+                      if last_review.get("all_passed")), _MAX_ROUNDS)
+            ),
+        }
+
     def auto_fix_minor_issues(self, content: str,
                                report: ReviewReport,
                                novel_id: int) -> str:
         """
-        自动修复轻微问题（严重程度 < 4 的问题）
-        返回修复后的内容
+        自动修复轻微问题（严重程度 < 4 的问题）。
+        返回修复后的内容。
+
+        .. deprecated::
+            主流程已切换至并行四审核架构（WriterAgent 直接改写），
+            此方法仅保留供外部兼容调用，不再由写作流水线内部使用。
         """
         minor_conflicts = [c for c in report.conflicts if c.severity < 4]
         if not minor_conflicts:
@@ -1223,8 +1461,12 @@ class ReviewerAgent:
             else DEFAULT_DEAI_RULES
         )
 
+        # 正文截断至 8000 字，防止超长章节撑爆 context
+        content_truncated = content[:8000]
+        truncate_note = "\n...(正文过长已截断，请仅修复可见部分)" if len(content) > 8000 else ""
+
         user_prompt = f"""原文：
-{content}
+{content_truncated}{truncate_note}
 
 需要修复的问题（只修复这些，其他不变）：
 {conflicts_desc}
@@ -1243,6 +1485,10 @@ class ReviewerAgent:
         """
         根据完整审核报告修复所有问题（不限严重程度）。
         用于审核-修改自动循环中的每次改写。
+
+        .. deprecated::
+            主流程已切换至并行四审核架构（WriterAgent 直接改写），
+            此方法仅保留供外部兼容调用，不再由写作流水线内部使用。
         """
         if not report.conflicts:
             return content
@@ -1296,8 +1542,12 @@ class ReviewerAgent:
             else DEFAULT_DEAI_RULES
         )
 
+        # 正文截断至 8000 字，防止超长章节撑爆 context
+        content_truncated = content[:8000]
+        truncate_note = "\n...(正文过长已截断，请仅修复可见部分)" if len(content) > 8000 else ""
+
         user_prompt = (
-            f"章节正文：\n{content}\n\n"
+            f"章节正文：\n{content_truncated}{truncate_note}\n\n"
             f"本次审核评分：{report.overall_score:.1f}/10\n"
             f"{chapter_goal_block}"
             f"需要修复的问题（共 {len(report.conflicts)} 条）：\n{conflicts_desc}\n\n"
@@ -1722,11 +1972,43 @@ class IdeaAgent:
 
     def chat(self, messages: list) -> str:
         """
-        多轮对话，返回 AI 回复
+        多轮对话，返回 AI 回复。
         messages: [{"role": "user"/"assistant", "content": "..."}]
-        返回 AI 回复文本
+
+        历史压缩：超过 _MAX_ROUNDS 轮时，把早期消息压缩成一条摘要 assistant 消息，
+        只将最近 _RECENT_KEEP 轮原文传给 LLM，避免长对话撑爆 context window。
         """
-        return self.llm.generate_chat(self.SYSTEM_PROMPT, messages, max_tokens=1024, temperature=self.temperature)
+        _MAX_ROUNDS = 10
+        _RECENT_KEEP = 8
+        _MAX_SUMMARY_CHARS = 500
+
+        total_rounds = len(messages) // 2
+        if total_rounds > _MAX_ROUNDS:
+            keep_msgs = _RECENT_KEEP * 2
+            old_msgs = messages[:-keep_msgs]
+            recent_msgs = messages[-keep_msgs:]
+            # 把早期对话拼成纯文本摘要（不调用 LLM，直接截取前 150 字）
+            summary_lines = []
+            for m in old_msgs:
+                role_label = "用户" if m["role"] == "user" else "助手"
+                text = m["content"][:150].replace("\n", " ")
+                if len(m["content"]) > 150:
+                    text += "…"
+                summary_lines.append(f"{role_label}：{text}")
+            summary = (
+                f"[早期对话摘要（共{len(old_msgs) // 2}轮，已压缩）]\n"
+                + "\n".join(summary_lines)
+            )
+            if len(summary) > _MAX_SUMMARY_CHARS:
+                summary = summary[:_MAX_SUMMARY_CHARS] + "…（已截断）"
+            effective_msgs = [{"role": "assistant", "content": summary}] + recent_msgs
+        else:
+            effective_msgs = messages
+
+        return self.llm.generate_chat(
+            self.SYSTEM_PROMPT, effective_msgs,
+            max_tokens=1024, temperature=self.temperature
+        )
 
     def extract_project_config(self, messages: list) -> dict:
         """
@@ -1753,6 +2035,121 @@ class IdeaAgent:
 # Agent 8: Canvas 协作 Agent
 # ======================================
 
+
+# ======================================
+# 工具类: 字段级内容压缩器
+# ======================================
+
+class FieldCompressor:
+    """
+    字段级 LLM 压缩器。
+    用于把世界观 value / 大纲字段等长文本提炼为精简注入版本。
+    压缩结果仅用于 prompt 注入，原始内容不受影响。
+
+    世界观：LLM 根据 key 名自动判断信息密度需求，在给定上限内自由决定保留多少。
+    大纲字段：按字段分别传入目标字数（theme≤100、conflict≤300、arc/ending≤500）。
+    """
+
+    _SYSTEM = (
+        "你是一位专业的小说设定编辑。你的任务是将一段详细的设定文字提炼为精简版本，"
+        "供 AI 写作助手快速参考。\n\n"
+        "核心原则：\n"
+        "- 【必须保留】所有关键规则、核心矛盾、重要限制、独特概念、不可违反的设定约束\n"
+        "- 【可以删除】举例说明、重复表述、修辞性语言、背景铺垫\n"
+        "- 规则密集的内容（力量体系、世界规则、社会结构等）保留更多细节\n"
+        "- 背景描述类内容（历史事件、地理环境等）可以更大幅压缩\n"
+        "- 以简洁的要点或短句输出，直接输出结果，不加引导语"
+    )
+
+    def __init__(self, novel_id: int, model_id: str = None):
+        from core.llm import NovelLLM, DEFAULT_MODEL_ID
+        _model = model_id or DEFAULT_MODEL_ID
+        self.llm = NovelLLM(_model, novel_id=novel_id)
+
+    def compress(self, label: str, text: str, target_chars: int,
+                 hint: str = "") -> str:
+        """
+        压缩单个字段文本。
+
+        Args:
+            label:        字段标签（如「力量体系」），帮助模型理解语境
+            text:         原始文本
+            target_chars: 目标字数上限（供 LLM 参考，非硬截断）
+            hint:         额外提示（如「这是全书主要矛盾，需保留所有冲突层次」）
+
+        Returns:
+            压缩后文本；若压缩失败则返回原文。
+        """
+        user_prompt = (
+            f"【字段名】{label}\n"
+            f"【目标字数上限】{target_chars} 字\n"
+        )
+        if hint:
+            user_prompt += f"【额外说明】{hint}\n"
+        user_prompt += f"\n【原文】\n{text}"
+
+        try:
+            result = self.llm.generate(
+                self._SYSTEM, user_prompt,
+                max_tokens=1024, cache_system=False, temperature=0.0
+            )
+            return result.strip()
+        except Exception:
+            # 压缩失败时回退原文（不硬截断，保留完整内容）
+            return text
+
+    def compress_world_setting(
+        self,
+        world: dict,
+        threshold: int,
+        target_max: int,
+    ) -> dict:
+        """
+        对世界观 dict 中超过阈值的 value 逐条压缩。
+        target_max 是给 LLM 的参考上限，LLM 会根据 key 名（力量体系/地理/历史等）
+        自行判断应保留的密度，在上限内自由决定实际长度。
+        短于阈值的条目直接保留原文。
+        """
+        compressed = {}
+        for k, v in world.items():
+            v_str = str(v)
+            if len(v_str) > threshold:
+                compressed[k] = self.compress(
+                    label=k, text=v_str, target_chars=target_max
+                )
+            else:
+                compressed[k] = v_str
+        return compressed
+
+    def compress_outline_fields(
+        self,
+        outline,                        # NovelOutline ORM 对象
+        field_targets: dict[str, int],  # {field_name: target_chars}
+        threshold: int,
+    ) -> dict:
+        """
+        对 NovelOutline 指定字段按各自目标字数压缩。
+        只处理超过 threshold 的字段，未超阈值的直接跳过（调用方读原文）。
+        返回 {field_name: compressed_text}。
+        """
+        _FIELD_HINTS = {
+            "theme":           "这是全书核心主题，提炼为一句核心立意即可",
+            "main_conflict":   "这是全书主要矛盾，需保留所有冲突层次和对立关系",
+            "protagonist_arc": "这是主角成长弧光，需保留每个关键转折点和阶段变化",
+            "ending_summary":  "这是结局概要，需保留各条故事线的收束方式和最终走向",
+        }
+        result = {}
+        for field, target in field_targets.items():
+            val = getattr(outline, field, None) or ""
+            if len(val) > threshold:
+                result[field] = self.compress(
+                    label=field,
+                    text=val,
+                    target_chars=target,
+                    hint=_FIELD_HINTS.get(field, ""),
+                )
+        return result
+
 class CanvasAgent:
     """
     通用 Canvas AI 协作 Agent。
@@ -1760,100 +2157,89 @@ class CanvasAgent:
     当 AI 建议修改文档时，以 ```markdown ... ``` 代码块输出新版本。
     """
 
-    _ROLE_PROMPTS = {
-        "global": """你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。
+    # ── 角色基础定位（不含代码块模板，保持简短）────────────────────────
+    _ROLE_BASE = "你是贯穿全书创作的 AI 协作者，能处理大纲、世界观、人物设定、章节写作的一切问题。"
 
-【输出规范】
-普通讨论、分析和建议直接用正常文字，不加代码块。
-当你需要提供可直接写入系统的结构化内容时，使用以下专属代码块格式（每种代码块对应一个明确的写入目标）：
-
+    # ── 代码块模板（按类型分组，按需拼入）────────────────────────────────
+    _BLOCK_TEMPLATES = {
+        "outline": """\
 若要更新整体大纲（包含前提设定、核心主题、主要矛盾等）：
 ```outline
 （完整大纲 Markdown，保留现有内容并补充修改）
-```
-
+```""",
+        "settings": """\
 若要更新世界观/背景/系统设定文档：
 ```settings
 （完整设定 Markdown 文档）
-```
-
+```""",
+        "world": """\
 若要对世界观做结构化键值更新（如"世界规则"、"力量体系"、"社会结构"等键）：
 ```world
 {"键名": "完整的设定内容", "另一个键": "完整内容"}
-```
-
+```""",
+        "characters": """\
 若要创建或更新人物档案（必须包含 name 字段，其余字段可选填）：
 ```characters
-[
-  {
-    "name": "人物姓名",
-    "role": "主角/配角/反派",
-    "age": "年龄",
-    "gender": "性别",
-    "personality": "性格特征",
-    "background": "背景故事",
-    "abilities": ["能力1", "能力2"],
-    "appearance": "外貌描述",
-    "growth_arc": "成长弧光",
-    "current_state": "当前状态",
-    "motivations": "动机",
-    "speech_patterns": "说话风格",
-    "secrets": "隐藏信息",
-    "is_main": true
-  }
-]
+[{"name": "姓名", "role": "主角/配角/反派", "personality": "性格", "background": "背景", "is_main": true}]
 ```
-
-若要删除人物档案，在 characters 块中传入 action 字段：
-```characters
-[
-  {"name": "要删除的人物姓名", "action": "delete"}
-]
-```
-增删可混在同一数组中。
-
+删除人物：`[{"name": "姓名", "action": "delete"}]`""",
+        "chapter": """\
 若要给出当前章节的正文或修改版本：
 ```chapter
 （完整章节正文）
-```
-
+```""",
+        "volume": """\
 若要创建或更新卷大纲：
 ```volume
-{"volume_number": 1, "title": "卷名", "summary": "卷简介", "main_conflict": "核心矛盾", "arc_goal": "目标主题", "start_chapter": 1, "end_chapter": 30}
-```
-
+{"volume_number": 1, "title": "卷名", "summary": "卷简介", "main_conflict": "核心矛盾", "start_chapter": 1, "end_chapter": 30}
+```""",
+        "foreshadowing": """\
 若要创建新的伏笔条目：
 ```foreshadowing
-[
-  {"name": "伏笔名", "description": "伏笔内容描述", "importance": "high/medium/low", "set_chapter": 1, "collect_by_chapter": 10}
-]
-```
-
-若要记录或更新写作风格偏好（当用户对文笔、节奏、对话、描写等提出具体意见时，自动提炼并输出）：
+[{"name": "伏笔名", "description": "描述", "importance": "high/medium/low", "set_chapter": 1, "collect_by_chapter": 10}]
+```""",
+        "style": """\
+若要记录写作风格偏好（用户对文笔/节奏/对话提出意见时输出）：
 ```style
-{
-  "overall_style": "总体风格定位（如：冷峻硬核、温情治愈）",
-  "sentence_patterns": "句式特征（如：多用短句、长句铺陈）",
-  "vocabulary": "词汇风格（如：口语化、书面典雅）",
-  "narrative_voice": "叙述视角风格（如：第一人称内心独白、第三人称限知视角）",
-  "dialogue_style": "对话特点（如：简练有力、带方言口癖）",
-  "description_style": "描写特点（如：重感官细节、白描留白）",
-  "rhythm_pacing": "节奏与节拍（如：快节奏、张弛有度）",
-  "emotion_expression": "情感表达方式（如：克制含蓄、直抒胸臆）",
-  "signature_techniques": "标志性手法（如：多线叙事、倒叙插叙）",
-  "polish_instructions": "写作核心指令（最关键的几条规则，直接注入写作 prompt）"
-}
+{"overall_style": "...", "dialogue_style": "...", "polish_instructions": "..."}
 ```
-
-style 块使用规则：
-- 只填用户明确提到或暗示的维度，未涉及的维度不要输出。
-- 用户在讨论中提出的「写得不好」「应该这样写」等批评意见，都应被提炼为正向的风格指令。
-- 例如用户说「对话太生硬了，应该更自然」，应输出 "dialogue_style": "对话要自然流畅，贴近日常口语，避免书面化"
-- 如果用户没有提出风格相关的意见，不要输出 style 块。
-- 每次只输出本次讨论中涉及的新增或修改项，不要重复已有的风格设定。
-
-用户可一键将代码块内容应用到对应位置。请根据用户意图选择最合适的类型——讨论人物时用 characters，讨论世界观规则时用 world，讨论背景文档时用 settings。""",
+只填本次涉及的维度，未提及的不输出。""",
     }
+
+    # ── 按页面决定需要哪些代码块 ──────────────────────────────────────────
+    # page 值对应 UI 路由（None = 通用/sidebar）
+    _PAGE_BLOCKS: dict[str | None, list[str]] = {
+        "outline":       ["outline", "volume", "foreshadowing", "world"],
+        "writing":       ["chapter", "style", "foreshadowing"],
+        "characters":    ["characters"],
+        "settings":      ["settings", "world"],
+        "visualization": ["foreshadowing"],
+        "export":        [],
+        None:            ["outline", "settings", "world", "characters", "chapter",
+                          "volume", "foreshadowing", "style"],   # sidebar/全局
+    }
+
+    _ROLE_PROMPTS = {
+        "global": None,  # 占位，实际由 _build_role_prompt() 动态生成
+    }
+
+    @classmethod
+    def _build_role_prompt(cls, page: str | None) -> str:
+        """根据当前页面动态拼装 role_prompt，只包含本页面可能用到的代码块模板。"""
+        block_keys = cls._PAGE_BLOCKS.get(page, cls._PAGE_BLOCKS[None])
+        if not block_keys:
+            return cls._ROLE_BASE
+
+        blocks_text = "\n\n".join(cls._BLOCK_TEMPLATES[k] for k in block_keys
+                                  if k in cls._BLOCK_TEMPLATES)
+        return (
+            f"{cls._ROLE_BASE}\n\n"
+            "【输出规范】\n"
+            "普通讨论、分析和建议直接用正常文字，不加代码块。\n"
+            "需要提供可写入系统的内容时，使用以下专属代码块格式：\n\n"
+            f"{blocks_text}\n\n"
+            "用户可一键将代码块内容应用到对应位置。"
+        )
 
     def __init__(self, novel_id: int, model_id: str = None, role: str = "global", temperature: float = None):
         from core.memory import MemoryManager
@@ -1866,12 +2252,14 @@ style 块使用规则：
         self.llm = NovelLLM(_model, novel_id=self.novel_id)
 
     def chat(self, messages: list, document_content: str = "",
-             page: str = None, chapter_number: int = None) -> str:
+             page: str = None, chapter_number: int = None,
+             hint: str = "") -> str:
         """
         多轮对话。
         document_content: 当前文档内容（注入上下文，截断至6000字）
-        page: 当前所在页面（用于上下文感知，预留）
+        page: 当前所在页面（用于按页面裁剪 role_prompt 中的代码块模板）
         chapter_number: 当前章节号（若提供则按章纲关键词过滤世界观）
+        hint: 额外上下文提示（dispatch 降级时传入识别到的 intent 说明）
         messages: [{"role": "user"/"assistant", "content": "..."}]
 
         历史压缩：当对话超过 MAX_CANVAS_HISTORY 轮时，把早期消息压缩成
@@ -1882,7 +2270,7 @@ style 块使用规则：
         _RECENT_KEEP = 8       # 压缩后保留最近几轮原文
         _MAX_SUMMARY_CHARS = 600  # 历史摘要最多占用字符数
 
-        role_prompt = self._ROLE_PROMPTS.get(self.role, self._ROLE_PROMPTS["global"])
+        role_prompt = self._build_role_prompt(page)
 
         # ── 历史消息压缩 ─────────────────────────────────────────────
         # messages 是 [user, assistant, user, assistant, ...] 的列表
@@ -1933,25 +2321,414 @@ style 块使用规则：
         system_parts = [role_prompt, "", "---", "【小说上下文】", global_ctx]
         system_prompt = "\n".join(system_parts)
 
-        # 当前文档内容附加到对话最后一条 user 消息之前（而非 system）
-        # 截断至 6000 字，避免超长文档撑爆上下文
+        # 当前文档内容 + 降级 hint 附加到最后一条 user 消息末尾
         _msgs = list(effective_msgs)
+        suffix = ""
+        if hint:
+            suffix += f"\n\n---\n【系统提示】{hint}"
         if document_content.strip():
             doc_truncated = document_content[:6000]
             doc_note = "...(内容过长已截断)" if len(document_content) > 6000 else ""
-            doc_block = (
+            suffix += (
                 f"\n\n---\n【当前文档内容（你可能需要据此修改）】\n"
                 f"```markdown\n{doc_truncated}{doc_note}\n```"
             )
-            # 将文档内容附加到最后一条 user 消息末尾
+        if suffix:
             if _msgs and _msgs[-1]["role"] == "user":
                 _msgs = _msgs[:-1] + [
-                    {**_msgs[-1], "content": _msgs[-1]["content"] + doc_block}
+                    {**_msgs[-1], "content": _msgs[-1]["content"] + suffix}
                 ]
             else:
-                _msgs.append({"role": "user", "content": doc_block})
+                _msgs.append({"role": "user", "content": suffix.strip()})
 
         return self.llm.generate_chat(system_prompt, _msgs, max_tokens=4096, temperature=self.temperature)
+
+    def _classify_intent(self, user_message: str, chapter_number: int | None,
+                          document_content: str) -> dict:
+        """
+        轻量意图分类：一次极短的 LLM 调用，返回 intent + params。
+
+        intent 枚举：
+          chat                    — 普通对话/讨论/建议，Canvas 自身回复
+          rewrite_chapter_section — 修改/改写本章某部分内容
+          rewrite_chapter_full    — 重写/重新生成整章
+          review_chapter          — 审核/检查/分析当前章节
+          update_character        — 修改/新增某人物属性/设定
+          expand_outline          — 扩写/调整章纲或大纲
+
+        返回格式：
+          {
+            "intent": "chat",
+            "params": {
+              "chapter_number": 3,       # 适用时
+              "character_name": "李明",  # 适用时
+              "instruction": "..."       # 用户意图的结构化描述
+            },
+            "confidence": 0.9            # 0~1，低于 0.6 降级为 chat
+          }
+        """
+        _INTENT_SYSTEM = """你是一个意图分类器。根据用户消息，判断其意图类型并输出 JSON。
+
+意图类型（只能选一个）：
+- chat：普通讨论、建议、提问、设定分析，不需要执行任何写作/修改操作
+- rewrite_chapter_section：明确要求修改/改写/调整当前章节的某个部分（非整章重写）
+- rewrite_chapter_full：明确要求重写整章或重新生成本章
+- review_chapter：明确要求检查/审核/分析当前章节的问题
+- update_character：明确要求修改、完善或新增某个人物的设定属性
+- expand_outline：明确要求扩写、修改或重新生成章纲/大纲内容
+
+判断原则：
+- 用户只是"讨论"或"建议"某件事 → chat
+- 用户明确说"帮我改""修改一下""重写""生成" → 对应操作类 intent
+- 不确定时选 chat，confidence 填 0.5
+
+【重要】chapter_number 字段的含义：
+- 填用户想要【修改/操作】的目标章节号，不是参考章节
+- 例："根据第7-10章的摘要修改第11章章纲" → chapter_number = 11（11是目标，7-10是参考）
+- 例："重写第3章" → chapter_number = 3
+- 若用户提到多个章节，仔细区分"被修改的"和"作为参考的"
+
+【重要】reference_chapters 字段：
+- 用户明确提到要参考/基于某些章节的内容时填写，格式为 [start, end]（整数）
+- 例："根据第7-10章的摘要" → reference_chapters = [7, 10]
+- 没有明确提到参考章节时填 null
+
+输出严格 JSON，不含其他文字：
+{
+  "intent": "chat",
+  "params": {
+    "chapter_number": null,
+    "reference_chapters": null,
+    "character_name": null,
+    "instruction": "用一句话描述用户想做什么（操作类 intent 必填）"
+  },
+  "confidence": 0.9
+}"""
+
+        ctx_hint = ""
+        if chapter_number:
+            ctx_hint += f"当前所在章节：第{chapter_number}章。"
+        if document_content and document_content.strip():
+            ctx_hint += f"当前文档有内容（{len(document_content)}字）。"
+
+        user_prompt = f"{ctx_hint}\n\n用户消息：{user_message[:500]}"
+
+        try:
+            raw = self.llm.generate(
+                _INTENT_SYSTEM, user_prompt,
+                max_tokens=256, cache_system=False, temperature=0.0
+            )
+            js = raw[raw.find("{"):raw.rfind("}") + 1]
+            data = json.loads(js)
+            if float(data.get("confidence", 1.0)) < 0.6:
+                data["intent"] = "chat"
+            return data
+        except Exception:
+            return {"intent": "chat", "params": {}, "confidence": 0.5}
+
+    def dispatch(
+        self,
+        messages: list,
+        document_content: str = "",
+        page: str = None,
+        chapter_number: int = None,
+        progress_callback=None,
+    ) -> dict:
+        """
+        Canvas 主入口：意图分类 → 路由执行 → 返回结果。
+
+        流程：
+          1. _classify_intent() 判断意图
+          2. 操作类 intent → 调用对应 Agent/workflow 执行，出错则降级 chat
+          3. chat intent → 直接调用 self.chat() 生成回复
+
+        progress_callback(message: str)：供 UI 追加进度消息（异步任务用）
+
+        返回：
+          {
+            "intent": str,
+            "reply": str,                  # 主回复文本
+            "progress_log": [str, ...],    # 执行过程日志（操作类路径）
+            "result_content": str | None,  # 操作类结果正文
+            "result_type": str | None,     # chapter / character / outline / None
+            "degraded": bool,              # 是否发生了降级
+          }
+        """
+        def _log(msg: str):
+            if progress_callback:
+                progress_callback(msg)
+
+        user_message = messages[-1]["content"] if messages else ""
+        result_base = {
+            "intent": "chat",
+            "reply": "",
+            "progress_log": [],
+            "result_content": None,
+            "result_type": None,
+            "degraded": False,
+        }
+
+        # ── Step 1: 意图分类 ──────────────────────────────────────
+        classified = self._classify_intent(user_message, chapter_number, document_content)
+        intent = classified.get("intent", "chat")
+        params = classified.get("params", {})
+        result_base["intent"] = intent
+
+        # ── Step 2: 操作类路由 ────────────────────────────────────
+        if intent == "rewrite_chapter_section":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            instruction = params.get("instruction") or user_message
+            _log(f"✍️ 正在改写第{ch_num}章相关段落…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                writer = wf.writer_agent
+                novel = self.memory.global_mem.get_novel()
+                _tol = float((novel.get_quality_config() if novel else {}).get(
+                    "word_count_tolerance", 0.2))
+                feedback_prompt = (
+                    f"【用户修改意图】\n{instruction}\n\n"
+                    f"【当前章节内容（在此基础上做定向修改）】\n"
+                    f"{document_content[:4000] if document_content else '（无）'}\n\n"
+                    f"请只修改用户指定的部分，保留其他内容不变，直接输出完整正文。"
+                )
+                revised = writer.write_chapter(
+                    chapter_number=ch_num,
+                    word_target=max(len(document_content), 1000) if document_content else 3000,
+                    word_count_tolerance=_tol,
+                    review_feedback=feedback_prompt,
+                )
+                wf.memory.chapter_mem.save_chapter_content(ch_num, revised, "content")
+                wf.close()
+                _log(f"✅ 改写完成（{len(revised)}字）")
+                result_base["result_content"] = revised
+                result_base["result_type"] = "chapter"
+                result_base["reply"] = (
+                    f"已根据你的要求完成改写（第{ch_num}章，共{len(revised)}字）。"
+                    f"内容已自动保存，可在写作页查看。"
+                )
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 改写失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "rewrite_chapter_full":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            _log(f"✍️ 正在重写第{ch_num}章（含完整审核流程）…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                novel = wf.memory.global_mem.get_novel()
+                qcfg = novel.get_quality_config() if novel else {}
+                _tol = float(qcfg.get("word_count_tolerance", 0.2))
+                word_target = int(qcfg.get("word_target", 3000))
+                wr = wf.write_and_review_chapter(
+                    chapter_number=ch_num,
+                    word_target=word_target,
+                    word_count_tolerance=_tol,
+                    auto_polish=True,
+                    progress_callback=_log,
+                )
+                wf.close()
+                if wr.success:
+                    content = wr.data.get("content", "")
+                    score = wr.data.get("overall_score", 0)
+                    result_base["result_content"] = content
+                    result_base["result_type"] = "chapter"
+                    result_base["reply"] = (
+                        f"第{ch_num}章已重写完成（{len(content)}字，得分 {score:.1f}/10）。"
+                        f"内容已保存，可在写作页查看。"
+                    )
+                else:
+                    result_base["reply"] = f"重写失败：{wr.message}"
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 重写失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "review_chapter":
+            ch_num = params.get("chapter_number") or chapter_number or 1
+            _log(f"🔍 正在并行审核第{ch_num}章…")
+            try:
+                from core.workflow import NovelWorkflow
+                wf = NovelWorkflow(self.novel_id)
+                ch = wf.memory.chapter_mem.get_chapter(ch_num)
+                content = (ch.content if ch and ch.content else "") or document_content
+                if not content:
+                    raise ValueError("找不到章节内容")
+                parallel_result = wf.reviewer_agent.parallel_pipeline_review(
+                    ch_num, content, progress_callback=_log
+                )
+                wf.close()
+                gates = parallel_result.get("gates", [])
+                score = parallel_result.get("final_score", 0)
+                passed = parallel_result.get("passed", False)
+                label_map = {
+                    "plot_aligner": "剧情对齐",
+                    "character_guard": "人设/世界观",
+                    "continuity_tracker": "时空/状态",
+                    "style_refiner": "文风去AI",
+                }
+                lines = [
+                    f"**第{ch_num}章审核报告**（{'✅ 通过' if passed else '❌ 未通过'}，"
+                    f"综合得分 {score:.1f}/10）\n"
+                ]
+                for g in gates:
+                    icon = "✅" if g.passed else "❌"
+                    lbl = label_map.get(g.gate_name, g.gate_name)
+                    lines.append(f"{icon} **{lbl}**：{g.total_score:.1f}/10")
+                    if not g.passed and g.feedback:
+                        lines.append(f"  > {g.feedback[:200]}")
+                result_base["reply"] = "\n".join(lines)
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 审核失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "update_character":
+            char_name = params.get("character_name", "")
+            instruction = params.get("instruction") or user_message
+            _log(f"👤 正在更新人物「{char_name}」的设定…")
+            try:
+                if not char_name:
+                    raise ValueError("未识别到人物姓名")
+                char_agent = CharacterAgent(self.novel_id, temperature=self.temperature)
+                existing = self.memory.global_mem.get_character(char_name)
+                existing_text = (
+                    existing.to_chapter_relevant_profile(set(), set())
+                    if existing else ""
+                )
+                updated_data = char_agent.update_character_profile(
+                    char_name=char_name,
+                    existing_profile=existing_text,
+                    instruction=instruction,
+                )
+                char_agent.close()
+                if updated_data:
+                    self.memory.global_mem.save_character(updated_data)
+                    _log(f"✅ 人物「{char_name}」设定已更新")
+                    result_base["result_content"] = json.dumps(
+                        updated_data, ensure_ascii=False, indent=2)
+                    result_base["result_type"] = "character"
+                    result_base["reply"] = (
+                        f"已根据你的要求更新了「{char_name}」的设定，可在人物档案页查看。"
+                    )
+                else:
+                    result_base["reply"] = f"「{char_name}」设定处理完成，但未返回结构化数据。"
+                return result_base
+            except Exception as e:
+                _log(f"⚠️ 人物更新失败（{e}），切换为普通回复…")
+                result_base["degraded"] = True
+
+        elif intent == "expand_outline":
+            instruction = params.get("instruction") or user_message
+            ch_num = params.get("chapter_number") or chapter_number
+            ref_range = params.get("reference_chapters")  # [start, end] 或 null
+
+            if not ch_num:
+                # 连目标章节都无法确定，降级 chat
+                _log("⚠️ 无法确定要修改的章节号，切换为普通回复…")
+                result_base["degraded"] = True
+            else:
+                _log(f"📖 正在修改第{ch_num}章章纲…")
+                try:
+                    outline_agent = OutlineAgent(self.novel_id, temperature=self.temperature)
+
+                    # ── 组装参考摘要 ──────────────────────────────────────
+                    # 将参考章节的摘要拼成一段文字，附加到用户指令里
+                    reference_block = ""
+                    if ref_range and isinstance(ref_range, list) and len(ref_range) == 2:
+                        ref_start, ref_end = int(ref_range[0]), int(ref_range[1])
+                        from core.memory import ChapterMemory
+                        ch_mem = ChapterMemory(self.novel_id)
+                        ref_chapters = ch_mem.get_chapters_by_range(ref_start, ref_end)
+                        ch_mem.db.close()
+                        if ref_chapters:
+                            ref_lines = [f"【第{ref_start}章至第{ref_end}章的摘要信息（请以此为基础修改章纲）】"]
+                            for rc in ref_chapters:
+                                ref_lines.append(f"\n第{rc.chapter_number}章《{rc.title or ''}》")
+                                if rc.summary:
+                                    ref_lines.append(f"摘要：{rc.summary}")
+                                    if rc.key_events:
+                                        try:
+                                            import json as _json
+                                            evs = _json.loads(rc.key_events)
+                                            if evs:
+                                                ref_lines.append("关键事件：" + "；".join(evs))
+                                        except Exception:
+                                            pass
+                                elif rc.content:
+                                    ref_lines.append(f"正文片段：{rc.content[:300]}…")
+                                else:
+                                    ref_lines.append("（暂无摘要或正文）")
+                            reference_block = "\n".join(ref_lines)
+                        else:
+                            reference_block = (
+                                f"（注：第{ref_start}-{ref_end}章暂无摘要数据，"
+                                f"请根据已有上下文推断修改方向）"
+                            )
+
+                    # 将参考摘要拼入修改指令
+                    full_instruction = instruction
+                    if reference_block:
+                        full_instruction = f"{reference_block}\n\n【修改指令】{instruction}"
+
+                    # ── 调用精准章纲修改（写回 DB 的 structured 路径） ──────
+                    updated_data = outline_agent.refine_chapter_outline(
+                        chapter_number=ch_num,
+                        user_feedback=full_instruction,
+                    )
+                    outline_agent.close()
+
+                    if updated_data and isinstance(updated_data, dict):
+                        # 确保 chapter_number 不被意外改掉
+                        updated_data["chapter_number"] = ch_num
+                        # 写回数据库
+                        self.memory.global_mem.save_chapter_outline(updated_data)
+                        # 构造展示用的摘要文本
+                        saved_ch = self.memory.global_mem.get_chapter_outline(ch_num)
+                        result_content = saved_ch.to_outline_text() if saved_ch else str(updated_data)
+                        _log(f"✅ 第{ch_num}章章纲已更新并写入数据库")
+                        result_base["result_content"] = result_content
+                        result_base["result_type"] = "outline"
+                        ref_hint = (
+                            f"（参考了第{ref_range[0]}-{ref_range[1]}章摘要）"
+                            if ref_range else ""
+                        )
+                        result_base["reply"] = (
+                            f"已根据你的要求修改第{ch_num}章章纲{ref_hint}，"
+                            f"结果已直接写入数据库，可前往章节大纲页查看。"
+                        )
+                    else:
+                        _log("⚠️ 章纲修改返回数据为空，切换为普通回复…")
+                        result_base["degraded"] = True
+
+                    return result_base
+                except Exception as e:
+                    _log(f"⚠️ 章纲修改失败（{e}），切换为普通回复…")
+                    result_base["degraded"] = True
+
+        # ── Step 3: chat 路径（含降级） ───────────────────────────
+        result_base["intent"] = "chat"
+        # 降级时把识别到的原始意图作为 hint 传入，帮助 chat() 聚焦上下文
+        _degraded_hint = ""
+        if result_base.get("degraded") and intent != "chat":
+            _instruction = params.get("instruction", "")
+            _ch = params.get("chapter_number") or chapter_number
+            _degraded_hint = (
+                f"用户原始意图为「{intent}」"
+                + (f"（第{_ch}章）" if _ch else "")
+                + (f"，指令：{_instruction}" if _instruction else "")
+                + "，但自动执行失败，请以对话方式协助用户完成该任务。"
+            )
+        result_base["reply"] = self.chat(
+            messages=messages,
+            document_content=document_content,
+            page=page,
+            chapter_number=chapter_number,
+            hint=_degraded_hint,
+        )
+        return result_base
 
     def close(self):
         self.memory.close()

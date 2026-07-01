@@ -453,47 +453,89 @@ def render_global_chat(novel_id: int):
             elif page == "写作":
                 doc_ctx = st.session_state.get(f"edit_content_{novel_id}_{ch_num}", "")
 
+        # 读取项目级 Canvas 温度
+        canvas_temp = None
+        try:
+            db = get_db()
+            n = db.query(Novel).filter(Novel.id == novel_id).first()
+            db.close()
+            if n:
+                canvas_temp = n.temp_canvas
+        except Exception:
+            pass
+        from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
+
+        agent = CanvasAgent(
+            novel_id=novel_id, role="global",
+            temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP
+        )
+
+        # ── 进度日志收集（操作类任务用）──────────────────────────
+        progress_log: list[str] = []
+
+        def _on_progress(msg: str):
+            progress_log.append(msg)
+
+        # ── 执行 dispatch（意图分类 + 路由）──────────────────────
+        dispatch_result: dict = {}
         with st.spinner("思考中…"):
             try:
-                # 读取项目级 Canvas 温度
-                canvas_temp = None
-                try:
-                    db = get_db()
-                    n = db.query(Novel).filter(Novel.id == novel_id).first()
-                    db.close()
-                    if n:
-                        canvas_temp = n.temp_canvas
-                except Exception:
-                    pass
-                from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
-                agent = CanvasAgent(novel_id=novel_id, role="global",
-                                     temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP)
-                reply = agent.chat(history, document_content=doc_ctx,
-                                   page=page, chapter_number=ch_num if page == "写作" else None)
+                dispatch_result = agent.dispatch(
+                    messages=history,
+                    document_content=doc_ctx,
+                    page=page,
+                    chapter_number=ch_num if page == "写作" else None,
+                    progress_callback=_on_progress,
+                )
                 agent.close()
             except Exception as e:
+                agent.close()
                 history.pop()
                 st.session_state[chat_key] = history
                 st.error(f"AI 出错：{e}")
                 return
 
+        intent = dispatch_result.get("intent", "chat")
+        reply = dispatch_result.get("reply", "")
+        result_content = dispatch_result.get("result_content")
+        result_type = dispatch_result.get("result_type")
+        degraded = dispatch_result.get("degraded", False)
+
+        # ── 构建助手消息内容 ─────────────────────────────────────
+        # 操作类任务：在回复前插入进度日志，结果内容包装为对应类型化代码块
+        if intent != "chat" and progress_log:
+            log_block = "\n".join(f"- {m}" for m in progress_log)
+            if degraded:
+                log_block += "\n- ⚠️ 已降级为普通回复"
+            reply = f"**执行日志**\n{log_block}\n\n---\n\n{reply}"
+
+        # 操作类任务且有结果内容：包装为类型化代码块附在回复末尾
+        if result_content and result_type in ("chapter", "outline", "character"):
+            block_tag = {
+                "chapter": "chapter",
+                "outline": "outline",
+                "character": "characters",
+            }.get(result_type, result_type)
+            # 仅在 reply 中未包含代码块时才附加
+            if f"```{block_tag}" not in reply:
+                reply += f"\n\n```{block_tag}\n{result_content}\n```"
+
         history.append({"role": "assistant", "content": reply})
         st.session_state[chat_key] = history
 
-        # chapter 块自动写入编辑器并保存
+        # ── 操作类任务的自动写入 ─────────────────────────────────
         for part in _parse_response(reply):
             if part["type"] == "chapter":
-                ch_num = st.session_state.get("writing_chapter") or 1
-                st.session_state[f"writing_pending_{novel_id}_{ch_num}"] = part["content"]
+                wc_num = st.session_state.get("writing_chapter") or 1
+                st.session_state[f"writing_pending_{novel_id}_{wc_num}"] = part["content"]
                 try:
                     wf = load_novel(novel_id)
-                    wf.update_chapter_content(ch_num, part["content"], "AI 全局助手自动保存")
+                    wf.update_chapter_content(wc_num, part["content"], "AI 全局助手自动保存")
                     wf.close()
-                    st.session_state[f"edit_content_{novel_id}_{ch_num}"] = part["content"]
+                    st.session_state[f"edit_content_{novel_id}_{wc_num}"] = part["content"]
                 except Exception:
                     pass
             elif part["type"] == "style":
-                # 自动合并 style 偏好到小说风格档案
                 try:
                     style_update = json.loads(part["content"])
                     if isinstance(style_update, dict) and style_update:

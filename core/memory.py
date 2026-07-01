@@ -106,10 +106,12 @@ class GlobalMemory:
         return {}
 
     def save_world_setting(self, setting: dict):
-        """保存世界观设定"""
+        """保存世界观设定，清空旧压缩缓存（压缩在 build_global_context 惰性触发）"""
         novel = self.get_novel()
         if novel:
             novel.set_world_setting(setting)
+            # 内容变更，清空旧压缩缓存；下次 build_global_context 时惰性重建
+            novel.world_setting_compressed = None
             self.db.commit()
 
     def get_all_characters(self) -> list[Character]:
@@ -157,7 +159,7 @@ class GlobalMemory:
         ).first()
 
     def save_outline(self, data: dict) -> NovelOutline:
-        """保存总大纲"""
+        """保存总大纲，清空旧压缩缓存（压缩在 build_global_context 惰性触发）"""
         # 将 dict/list 字段序列化为 JSON 字符串，避免 SQLite 类型错误
         serialized = {
             k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
@@ -168,14 +170,18 @@ class GlobalMemory:
             for k, v in serialized.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
+            # 清空旧压缩缓存
+            for f in ("theme_compressed", "main_conflict_compressed",
+                      "protagonist_arc_compressed", "ending_summary_compressed"):
+                setattr(existing, f, None)
             self.db.commit()
-            return existing
+            outline = existing
         else:
             outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in serialized.items() if k != "novel_id"})
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
-            return outline
+        return outline
 
     def get_volumes(self) -> list[Volume]:
         """获取所有卷大纲"""
@@ -366,9 +372,23 @@ class GlobalMemory:
         if novel.logline:
             parts.append(f"简介：{novel.logline}")
 
-        # 世界观设定：按章节关键词过滤
-        world = self.get_world_setting()
-        if world:
+        # 世界观设定：优先使用压缩版；未压缩时惰性触发同步压缩并缓存
+        world_raw = self.get_world_setting()
+        if world_raw:
+            novel_obj = novel  # 复用已查询的 novel 对象，避免多次 DB 查询
+            if novel_obj and novel_obj.world_setting_compressed:
+                try:
+                    world = json.loads(novel_obj.world_setting_compressed)
+                except Exception:
+                    world = world_raw
+            else:
+                # 压缩缓存缺失，惰性同步压缩后写回 DB
+                world = _compress_world_setting_sync(
+                    novel_obj=novel_obj,
+                    world_raw=world_raw,
+                    db=self.db,
+                ) if novel_obj else world_raw
+
             if chapter_keywords:
                 matched = {
                     k: v for k, v in world.items()
@@ -386,14 +406,33 @@ class GlobalMemory:
                 for k, v in world.items():
                     parts.append(f"{k}：{v}")
 
-        # 总大纲概要
+        # 总大纲概要：优先使用各字段的压缩版；未压缩时惰性触发同步压缩并缓存
         outline = self.get_outline()
         if outline:
+            # 若任意字段压缩版缺失，惰性触发同步压缩
+            needs_compress = any(
+                getattr(outline, f"{f}_compressed", None) is None
+                for f in ("theme", "main_conflict", "protagonist_arc", "ending_summary")
+                if getattr(outline, f, None)
+            )
+            if needs_compress:
+                _compress_outline_sync(outline=outline, db=self.db, novel=novel)
+
             parts.append("\n=== 总大纲 ===")
-            if outline.theme: parts.append(f"核心主题：{outline.theme}")
-            if outline.main_conflict: parts.append(f"主要矛盾：{outline.main_conflict}")
-            if outline.protagonist_arc: parts.append(f"主角弧光：{outline.protagonist_arc}")
-            if outline.ending_summary: parts.append(f"结局概要：{outline.ending_summary}")
+            # 对每个字段：有压缩版用压缩版，否则用原文
+            def _outline_val(field: str) -> str:
+                compressed = getattr(outline, f"{field}_compressed", None)
+                original = getattr(outline, field, None) or ""
+                return (compressed or original).strip()
+
+            theme_val         = _outline_val("theme")
+            conflict_val      = _outline_val("main_conflict")
+            arc_val           = _outline_val("protagonist_arc")
+            ending_val        = _outline_val("ending_summary")
+            if theme_val:    parts.append(f"核心主题：{theme_val}")
+            if conflict_val: parts.append(f"主要矛盾：{conflict_val}")
+            if arc_val:      parts.append(f"主角弧光：{arc_val}")
+            if ending_val:   parts.append(f"结局概要：{ending_val}")
 
         # 人物档案：按出场过滤
         chars = self.get_all_characters()
@@ -473,10 +512,32 @@ class GlobalMemory:
                 if lines:
                     parts.append("\n=== 待回收伏笔 ===\n" + "\n".join(lines))
             else:
-                # ── 无章节上下文时全量注入（保持原行为）──────────────
-                parts.append("\n=== 待回收伏笔 ===")
+                # ── 无章节关键词：仅按到期迫近过滤，其余给单行汇总 ──────
+                # 避免在没有章节上下文时把全部伏笔塞进 prompt
+                _URGENT_WINDOW = 5
+                urgent_fs = []
+                summary_fs = []
                 for f in foreshadowings:
-                    parts.append(f.to_full_text())
+                    is_urgent = (
+                        current_chapter is not None
+                        and f.collect_by_chapter is not None
+                        and f.collect_by_chapter <= current_chapter + _URGENT_WINDOW
+                    )
+                    if is_urgent:
+                        urgent_fs.append(f)
+                    else:
+                        summary_fs.append(f)
+
+                lines = []
+                if urgent_fs:
+                    lines.append("【即将到期，必须处理】")
+                    for f in urgent_fs:
+                        lines.append(f.to_full_text())
+                if summary_fs:
+                    brief_list = "、".join(f.to_brief_text() for f in summary_fs)
+                    lines.append(f"【其余 {len(summary_fs)} 条待回收伏笔】{brief_list}")
+                if lines:
+                    parts.append("\n=== 待回收伏笔 ===\n" + "\n".join(lines))
 
         # 可选：章节大纲列表
         if include_chapters:
@@ -490,6 +551,69 @@ class GlobalMemory:
 
     def close(self):
         self.db.close()
+
+
+# ── 惰性同步压缩辅助函数（模块级，供 build_global_context 调用）─────────────────
+
+def _compress_world_setting_sync(novel_obj, world_raw: dict, db) -> dict:
+    """
+    同步压缩世界观设定，将结果写回 DB 并返回压缩后的 dict。
+    任何异常均打印警告后回退原文，不抛出。
+    """
+    import sys
+    try:
+        from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_WORLD_TARGET_MAX
+        from core.agents import FieldCompressor
+
+        needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world_raw.values())
+        if not needs_compress:
+            # 所有条目都在阈值内，直接把原文当作压缩版缓存
+            novel_obj.world_setting_compressed = novel_obj.world_setting
+            db.commit()
+            return world_raw
+
+        compressor = FieldCompressor(novel_id=novel_obj.id, model_id=novel_obj.llm_model or None)
+        compressed = compressor.compress_world_setting(
+            world=world_raw,
+            threshold=COMPRESS_WORLD_THRESHOLD,
+            target_max=COMPRESS_WORLD_TARGET_MAX,
+        )
+        novel_obj.world_setting_compressed = json.dumps(compressed, ensure_ascii=False)
+        db.commit()
+        return compressed
+    except Exception as e:
+        print(f"[压缩警告] 世界观压缩失败，回退原文：{e}", file=sys.stderr)
+        return world_raw
+
+
+def _compress_outline_sync(outline, db, novel) -> None:
+    """
+    同步压缩大纲字段，将结果写回 outline.*_compressed 并 commit。
+    任何异常均打印警告，不抛出。
+    """
+    import sys
+    try:
+        from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_OUTLINE_TARGETS
+        from core.agents import FieldCompressor
+
+        model_id = novel.llm_model if novel else None
+        compressor = FieldCompressor(novel_id=outline.novel_id, model_id=model_id)
+        compressed = compressor.compress_outline_fields(
+            outline=outline,
+            field_targets=COMPRESS_OUTLINE_TARGETS,
+            threshold=COMPRESS_OUTLINE_THRESHOLD,
+        )
+        for field, value in compressed.items():
+            setattr(outline, f"{field}_compressed", value)
+        # 对没有超过阈值、未被压缩器写入的字段，把原文当压缩版存入
+        for field in COMPRESS_OUTLINE_TARGETS:
+            if getattr(outline, f"{field}_compressed", None) is None:
+                orig = getattr(outline, field, None)
+                if orig:
+                    setattr(outline, f"{field}_compressed", orig)
+        db.commit()
+    except Exception as e:
+        print(f"[压缩警告] 大纲压缩失败，回退原文：{e}", file=sys.stderr)
 
 
 # ======================================
@@ -520,6 +644,17 @@ class ChapterMemory:
             Chapter.novel_id == self.novel_id,
             Chapter.chapter_number == chapter_number
         ).first()
+
+    def get_chapters_by_range(self, start: int, end: int) -> list[Chapter]:
+        """
+        获取指定章节范围内的所有章节（含 start 和 end）。
+        按章节序号升序排列，只返回已有正文或摘要的章节。
+        """
+        return self.db.query(Chapter).filter(
+            Chapter.novel_id == self.novel_id,
+            Chapter.chapter_number >= start,
+            Chapter.chapter_number <= end,
+        ).order_by(Chapter.chapter_number).all()
 
     def save_chapter_content(self, chapter_number: int, content: str,
                               content_type: str = "content"):
@@ -584,10 +719,15 @@ class ChapterMemory:
 
         parts = [f"=== 前{len(recent)}章情节摘要（写手请仔细阅读，确保剧情连贯）==="]
         missing_summary = False
+        # 单章摘要字数上限：避免某章摘要过长撑爆 token 窗口
+        _SUMMARY_MAX_CHARS = 400
         for ch in recent:
             parts.append(f"\n--- 第{ch.chapter_number}章《{ch.title or ''}》---")
             if ch.summary:
-                parts.append(f"📖 {ch.summary}")
+                summary_text = ch.summary
+                if len(summary_text) > _SUMMARY_MAX_CHARS:
+                    summary_text = summary_text[:_SUMMARY_MAX_CHARS] + "…（摘要已截断）"
+                parts.append(f"📖 {summary_text}")
                 if ch.key_events:
                     try:
                         events = json.loads(ch.key_events)
@@ -962,11 +1102,12 @@ class MemoryManager:
             parts.append(recent_ctx)
 
         # Layer 3: 碎片化记忆（上限3片段，相关度门槛0.5）
-        search_query = (
-            f"{chapter_outline.outline_core_event or ''} "
-            f"{', '.join(active_chars)} "
-            f"{chapter_outline.outline_scene or ''}"
-        )
+        # 核心事件重复一次，提升其在向量相似度计算中的权重；
+        # 人物和场景作为补充维度，帮助检索出角色/场景延续性细节。
+        _core_event = chapter_outline.outline_core_event or ""
+        _chars_str = ", ".join(active_chars)
+        _scene = chapter_outline.outline_scene or ""
+        search_query = f"{_core_event} {_core_event} {_chars_str} {_scene}".strip()
         fragment_ctx = self.fragment_mem.build_relevant_context(
             search_query, chapter_number, n_results=3, min_relevance=0.5
         )

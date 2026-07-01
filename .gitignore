@@ -21,6 +21,7 @@ dist/
 build/
 *.dmg
 *.app
+*.spec
 
 # Claude Code local settings
 .claude/

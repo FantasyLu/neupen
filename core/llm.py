@@ -5,7 +5,82 @@
 
 import os
 import sys
-from typing import Generator
+import time
+import random
+import logging
+from typing import Generator, Callable, Any
+
+logger = logging.getLogger(__name__)
+
+# ── 重试配置（可通过环境变量覆盖） ─────────────────────────────────────
+_RETRY_MAX_ATTEMPTS = int(os.environ.get("LLM_RETRY_MAX_ATTEMPTS", "4"))
+_RETRY_BASE_DELAY   = float(os.environ.get("LLM_RETRY_BASE_DELAY", "2.0"))   # 秒
+_RETRY_MAX_DELAY    = float(os.environ.get("LLM_RETRY_MAX_DELAY", "60.0"))   # 秒
+_RETRY_JITTER       = float(os.environ.get("LLM_RETRY_JITTER", "0.3"))       # 随机抖动比例
+
+
+def _is_retryable_error(e: Exception) -> bool:
+    """判断异常是否可重试（限流 / 服务端错误 / 网络超时）"""
+    err_str = str(e).lower()
+    # Anthropic SDK 具名异常
+    try:
+        import anthropic as _anth
+        if isinstance(e, (_anth.RateLimitError, _anth.APIStatusError)):
+            if isinstance(e, _anth.APIStatusError):
+                return e.status_code in (429, 500, 502, 503, 504)
+            return True  # RateLimitError 一律重试
+    except ImportError:
+        pass
+    # OpenAI / 字符串匹配兜底
+    if any(k in err_str for k in ("429", "rate limit", "too many requests",
+                                   "500", "502", "503", "504",
+                                   "connection", "timeout", "timed out",
+                                   "service unavailable", "overloaded")):
+        return True
+    return False
+
+
+def _with_retry(fn: Callable[[], Any],
+                max_attempts: int = None,
+                base_delay: float = None,
+                max_delay: float = None,
+                label: str = "") -> Any:
+    """
+    指数退避重试包装器（仅用于非流式调用）。
+
+    重试条件：429 限流 / 5xx 服务端错误 / 网络超时
+    不重试：401 认证错误 / 其他明确的客户端错误
+
+    Args:
+        fn:           无参可调用，直接发起请求
+        max_attempts: 最大尝试次数（含首次），默认读 _RETRY_MAX_ATTEMPTS
+        base_delay:   首次重试等待秒数，默认 _RETRY_BASE_DELAY
+        max_delay:    单次等待上限，默认 _RETRY_MAX_DELAY
+        label:        日志标记
+    """
+    max_attempts = max_attempts or _RETRY_MAX_ATTEMPTS
+    base_delay   = base_delay   or _RETRY_BASE_DELAY
+    max_delay    = max_delay    or _RETRY_MAX_DELAY
+
+    last_exc: Exception = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if not _is_retryable_error(e):
+                raise
+            if attempt == max_attempts:
+                break
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            delay *= (1 + _RETRY_JITTER * random.uniform(-1, 1))
+            logger.warning(
+                "[LLM-Retry] %s 第%d/%d次失败，%.1fs后重试: %s",
+                label, attempt, max_attempts, delay, e
+            )
+            time.sleep(delay)
+
+    raise last_exc
 
 # ======================================
 # 模型注册表
@@ -534,32 +609,47 @@ class NovelLLM:
         else:
             system_content = system_prompt
 
+        kwargs = dict(
+            model=self.model_id,
+            max_tokens=max_tokens,
+            system=system_content,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        def _do_call():
+            try:
+                response = self.client.messages.create(**kwargs)
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'input_tokens', 0),
+                        getattr(response.usage, 'output_tokens', 0)
+                    )
+                return response.content[0].text
+            except _anthropic.AuthenticationError:
+                raise RuntimeError("❌ Anthropic API Key 无效，请检查 .env 中的 ANTHROPIC_API_KEY")
+            except _anthropic.RateLimitError as e:
+                raise e  # 交给 _with_retry 判断是否可重试
+            except _anthropic.APIStatusError as e:
+                raise e  # 5xx 交给 _with_retry
+            except Exception as e:
+                raise RuntimeError(f"Anthropic API 调用失败：{e}")
+
         try:
-            kwargs = dict(
-                model=self.model_id,
-                max_tokens=max_tokens,
-                system=system_content,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
-            if temperature is not None:
-                kwargs["temperature"] = temperature
-            response = self.client.messages.create(**kwargs)
-            # 记录 token 消耗
-            if hasattr(response, 'usage'):
-                self._record_tokens(
-                    getattr(response.usage, 'input_tokens', 0),
-                    getattr(response.usage, 'output_tokens', 0)
-                )
-            return response.content[0].text
-        except _anthropic.RateLimitError:
-            raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
-        except _anthropic.AuthenticationError:
-            raise RuntimeError("❌ Anthropic API Key 无效，请检查 .env 中的 ANTHROPIC_API_KEY")
+            return _with_retry(_do_call, label=f"Anthropic/{self.model_id}")
+        except RuntimeError:
+            raise
         except Exception as e:
-            raise RuntimeError(f"Anthropic API 调用失败：{e}")
+            raise RuntimeError(f"Anthropic API 调用失败（重试耗尽）：{e}")
 
     def _stream_anthropic(self, system_prompt: str, user_prompt: str,
                            max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        """
+        流式生成：对首次建立连接阶段加重试；yield 开始后不重试（避免重复输出）。
+        """
+        import anthropic as _anthropic
+
         kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
@@ -568,7 +658,13 @@ class NovelLLM:
         )
         if temperature is not None:
             kwargs["temperature"] = temperature
-        with self.client.messages.stream(**kwargs) as stream:
+
+        # 重试建立流连接本身（首次 token 前的网络/限流错误）
+        def _open_stream():
+            return self.client.messages.stream(**kwargs)
+
+        stream_ctx = _with_retry(_open_stream, label=f"Anthropic-stream/{self.model_id}")
+        with stream_ctx as stream:
             for text in stream.text_stream:
                 yield text
 
@@ -576,38 +672,50 @@ class NovelLLM:
 
     def _generate_openai(self, system_prompt: str, user_prompt: str,
                           max_tokens: int, temperature: float = None) -> str:
+        kwargs = dict(
+            model=self.model_id,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        def _do_call():
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                if hasattr(response, 'usage'):
+                    self._record_tokens(
+                        getattr(response.usage, 'prompt_tokens', 0),
+                        getattr(response.usage, 'completion_tokens', 0)
+                    )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                err = str(e)
+                if "401" in err or "authentication" in err.lower() or "invalid api key" in err.lower():
+                    raise RuntimeError(
+                        f"❌ {self.info['display_name']} API Key 无效，"
+                        f"请检查 .env 中的 {self.info['api_key_env']}"
+                    )
+                raise  # 其他异常交给 _with_retry 判断
+
         try:
-            kwargs = dict(
-                model=self.model_id,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
-            )
-            if temperature is not None:
-                kwargs["temperature"] = temperature
-            response = self.client.chat.completions.create(**kwargs)
-            # 记录 token 消耗
-            if hasattr(response, 'usage'):
-                self._record_tokens(
-                    getattr(response.usage, 'prompt_tokens', 0),
-                    getattr(response.usage, 'completion_tokens', 0)
-                )
-            return response.choices[0].message.content or ""
+            return _with_retry(_do_call, label=f"OpenAI/{self.model_id}")
+        except RuntimeError:
+            raise
         except Exception as e:
             err = str(e)
-            if "401" in err or "authentication" in err.lower() or "invalid api key" in err.lower():
-                raise RuntimeError(
-                    f"❌ {self.info['display_name']} API Key 无效，"
-                    f"请检查 .env 中的 {self.info['api_key_env']}"
-                )
             if "429" in err or "rate limit" in err.lower():
                 raise RuntimeError("⚠️ API 调用频率超限，请稍后重试")
             raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
 
     def _stream_openai(self, system_prompt: str, user_prompt: str,
                         max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
+        """
+        流式生成：对首次建立连接阶段加重试；yield 开始后不重试（避免重复输出）。
+        """
         kwargs = dict(
             model=self.model_id,
             max_tokens=max_tokens,
@@ -619,7 +727,11 @@ class NovelLLM:
         )
         if temperature is not None:
             kwargs["temperature"] = temperature
-        stream = self.client.chat.completions.create(**kwargs)
+
+        def _open_stream():
+            return self.client.chat.completions.create(**kwargs)
+
+        stream = _with_retry(_open_stream, label=f"OpenAI-stream/{self.model_id}")
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
