@@ -4,7 +4,6 @@ UI 工具函数
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_ace import st_ace
 
 from core.models import get_db, Novel
@@ -192,4 +191,4 @@ def render_stream_preview(stream_text: str, chapter_num: int, height: int = 400)
     }})();
     </script>
     """
-    components.html(html, height=height + 4, scrolling=False)
+    st.iframe(html, height=height + 4)
