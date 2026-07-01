@@ -11,28 +11,101 @@ from ui.components.model_selector import build_model_options
 
 
 def page_project_management():
-    st.title("🏠 项目管理")
+    st.markdown(
+        """
+        <div style="
+            padding: 2.4rem 0 0.6rem 0;
+            border-bottom: 1px solid rgba(232,226,216,0.1);
+            margin-bottom: 2rem;
+        ">
+            <div style="
+                font-size: 0.6rem;
+                letter-spacing: 0.22em;
+                color: #8a8278;
+                text-transform: uppercase;
+                margin-bottom: 0.5rem;
+            ">Studio</div>
+            <div style="
+                font-family: 'Cormorant Garamond', serif;
+                font-size: 2.4rem;
+                font-weight: 300;
+                letter-spacing: 0.06em;
+                color: #e8e2d8;
+                line-height: 1.1;
+            ">Projects</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    tab1, tab2, tab3 = st.tabs(["📚 我的项目", "➕ 新建项目", "💡 灵感对话"])
+    tab1, tab2, tab3 = st.tabs(["我的项目", "新建项目", "灵感对话"])
 
     with tab1:
         novels = get_all_novels()
         if not novels:
-            st.info("还没有任何小说项目，点击「新建项目」开始创作吧！")
+            st.markdown(
+                """
+                <div style="
+                    padding: 3rem 0;
+                    text-align: center;
+                    color: #8a8278;
+                    font-size: 0.85rem;
+                    letter-spacing: 0.08em;
+                    border: 1px solid rgba(232,226,216,0.06);
+                    border-radius: 2px;
+                    margin-top: 1rem;
+                ">尚无项目 — 从下方「新建项目」开始</div>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
-            st.markdown(f"共有 **{len(novels)}** 个项目")
+            st.markdown(
+                f"""<div style="
+                    font-size: 0.65rem;
+                    letter-spacing: 0.16em;
+                    color: #8a8278;
+                    text-transform: uppercase;
+                    margin-bottom: 1.4rem;
+                ">{len(novels)} Projects</div>""",
+                unsafe_allow_html=True,
+            )
             for novel in novels:
                 with st.container(border=True):
                     col1, col2, col3 = st.columns([4, 2, 1])
                     with col1:
-                        st.markdown(f"### {novel.title}")
-                        if novel.logline:
-                            st.caption(novel.logline[:80] + "..." if len(novel.logline) > 80 else novel.logline)
-                        tags = []
+                        st.markdown(
+                            f"""
+                            <div style="padding: 0.2rem 0 0.6rem 0;">
+                                <div style="
+                                    font-family: 'Cormorant Garamond', serif;
+                                    font-size: 1.5rem;
+                                    font-weight: 300;
+                                    letter-spacing: 0.04em;
+                                    color: #e8e2d8;
+                                    line-height: 1.2;
+                                    margin-bottom: 0.4rem;
+                                ">{novel.title}</div>
+                                <div style="
+                                    font-size: 0.75rem;
+                                    color: #8a8278;
+                                    letter-spacing: 0.03em;
+                                    line-height: 1.5;
+                                ">{(novel.logline[:90] + '…') if novel.logline and len(novel.logline) > 90 else (novel.logline or '')}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        meta = []
                         if novel.genre:
-                            tags.append(f"`{novel.genre}`")
-                        tags.append(format_status(novel.status))
-                        st.markdown(" ".join(tags))
+                            meta.append(novel.genre)
+                        meta.append(format_status(novel.status))
+                        st.markdown(
+                            " &nbsp;·&nbsp; ".join(
+                                f'<span style="font-size:0.65rem;letter-spacing:0.12em;color:#8a8278;text-transform:uppercase;">{m}</span>'
+                                for m in meta
+                            ),
+                            unsafe_allow_html=True,
+                        )
                     with col2:
                         db = get_db()
                         ch_count = db.query(Chapter).filter(

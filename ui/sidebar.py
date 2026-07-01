@@ -13,25 +13,88 @@ from ui.components.global_chat import render_global_chat
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown("# ✒️ Neupen")
+        # ── 品牌标题：杂志风，细衬线 + 装饰线 ──
+        st.markdown(
+            """
+            <div style="padding: 1.4rem 0 1rem 0;">
+                <div style="
+                    width: 24px; height: 1px;
+                    background: #c9a96e;
+                    margin-bottom: 0.75rem;
+                "></div>
+                <div style="
+                    font-family: 'Cormorant Garamond', 'Cormorant', Georgia, serif;
+                    font-size: 1.45rem;
+                    font-weight: 300;
+                    letter-spacing: 0.2em;
+                    color: #e8e2d8;
+                    text-transform: uppercase;
+                    line-height: 1;
+                ">Neupen</div>
+                <div style="
+                    font-size: 0.6rem;
+                    letter-spacing: 0.24em;
+                    color: #8a8278;
+                    text-transform: uppercase;
+                    margin-top: 0.3rem;
+                ">AI Novel Studio</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.divider()
 
-        # 当前项目显示
+        # ── 当前项目显示 ──
         if st.session_state.novel_id:
             db = get_db()
             novel = db.query(Novel).filter(Novel.id == st.session_state.novel_id).first()
             db.close()
             if novel:
-                st.markdown(f"**当前项目**")
-                st.markdown(f"📚 {novel.title}")
-                st.caption(format_status(novel.status))
+                # 项目信息块
+                st.markdown(
+                    f"""
+                    <div style="margin-bottom: 0.8rem;">
+                        <div style="
+                            font-size: 0.6rem;
+                            letter-spacing: 0.18em;
+                            color: #8a8278;
+                            text-transform: uppercase;
+                            margin-bottom: 0.3rem;
+                        ">当前项目</div>
+                        <div style="
+                            font-family: 'Cormorant Garamond', serif;
+                            font-size: 1.1rem;
+                            font-weight: 300;
+                            color: #e8e2d8;
+                            letter-spacing: 0.04em;
+                            line-height: 1.3;
+                        ">{novel.title}</div>
+                        <div style="
+                            font-size: 0.68rem;
+                            color: #8a8278;
+                            margin-top: 0.2rem;
+                            letter-spacing: 0.06em;
+                        ">{format_status(novel.status)}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
                 # 身份显示
                 identity = get_current_identity()
                 if identity and identity.get("novel_id") == novel.id:
-                    role_icon = "👑" if identity["role"] == "owner" else "👁"
                     role_label = "主笔" if identity["role"] == "owner" else "审阅者"
-                    st.markdown(f"{role_icon} **{role_label}** {identity['display_name']}")
+                    st.markdown(
+                        f"""
+                        <div style="
+                            font-size: 0.68rem;
+                            letter-spacing: 0.08em;
+                            color: #c9a96e;
+                            margin-bottom: 0.6rem;
+                        ">{role_label} · {identity['display_name']}</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                     # Owner 显示邀请码
                     if identity["role"] == "owner" and novel.invite_code:
@@ -44,11 +107,11 @@ def render_sidebar():
                         online = get_online_collaborators(db, novel.id)
                         db.close()
                         if online:
-                            with st.expander(f"👥 在线协作者 ({len(online)})"):
+                            with st.expander(f"在线协作者 ({len(online)})"):
                                 for c in online:
-                                    c_icon = "👑" if c["role"] == "owner" else "👁"
+                                    role_tag = "主笔" if c["role"] == "owner" else "审阅"
                                     page_info = f" · {c['current_page']}" if c.get("current_page") else ""
-                                    st.markdown(f"{c_icon} {c['display_name']}{page_info}")
+                                    st.caption(f"{role_tag} {c['display_name']}{page_info}")
                     except Exception:
                         pass
 
@@ -59,31 +122,36 @@ def render_sidebar():
                     st.rerun()
                 st.divider()
 
-        # 页面导航（仅在选择项目后显示完整菜单）
+        # ── 页面导航 ──
         pages = ["项目管理"]
         if st.session_state.novel_id:
             pages += ["设定管理", "大纲管理", "写作", "可视化", "导出"]
 
+        # 导航标签：去 emoji，纯文字 + 大写字母，靠装饰线区分选中态
+        _NAV_LABELS = {
+            "项目管理": "Projects",
+            "设定管理": "Settings",
+            "大纲管理": "Outline",
+            "写作":    "Write",
+            "可视化":  "Visualize",
+            "导出":    "Export",
+            "平台风格": "Platforms",
+        }
+
         for page in pages:
-            icon = {
-                "项目管理": "🏠",
-                "设定管理": "⚙️",
-                "大纲管理": "🗂",
-                "写作":    "✍️",
-                "可视化":  "📊",
-                "导出":    "📤",
-            }.get(page, "")
+            label = _NAV_LABELS.get(page, page)
             is_current = st.session_state.page == page
             btn_type = "primary" if is_current else "secondary"
-            if st.button(f"{icon} {page}", use_container_width=True, type=btn_type):
+            if st.button(label, use_container_width=True, type=btn_type, key=f"nav_{page}"):
                 st.session_state.page = page
                 st.rerun()
 
-        # 全局配置（不依赖项目）
+        # 平台风格（全局配置）
         st.divider()
         is_ps = st.session_state.page == "平台风格"
-        if st.button("📺 平台风格配置", use_container_width=True,
-                     type="primary" if is_ps else "secondary"):
+        if st.button("Platforms", use_container_width=True,
+                     type="primary" if is_ps else "secondary",
+                     key="nav_platform"):
             st.session_state.page = "平台风格"
             st.rerun()
 
@@ -92,7 +160,19 @@ def render_sidebar():
             render_global_chat(st.session_state.novel_id)
 
         st.divider()
-        st.caption("Powered by Claude & Anthropic")
+        st.markdown(
+            """
+            <div style="
+                font-size: 0.58rem;
+                letter-spacing: 0.14em;
+                color: #4a4641;
+                text-transform: uppercase;
+                text-align: center;
+                padding-bottom: 0.4rem;
+            ">Powered by Claude</div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_status_report():
