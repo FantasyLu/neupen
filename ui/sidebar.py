@@ -127,29 +127,17 @@ def render_sidebar():
         if st.session_state.novel_id:
             pages += ["设定管理", "大纲管理", "写作", "可视化", "导出"]
 
-        # 导航标签：去 emoji，纯文字 + 大写字母，靠装饰线区分选中态
-        _NAV_LABELS = {
-            "项目管理": "Projects",
-            "设定管理": "Settings",
-            "大纲管理": "Outline",
-            "写作":    "Write",
-            "可视化":  "Visualize",
-            "导出":    "Export",
-            "平台风格": "Platforms",
-        }
-
         for page in pages:
-            label = _NAV_LABELS.get(page, page)
             is_current = st.session_state.page == page
             btn_type = "primary" if is_current else "secondary"
-            if st.button(label, width="stretch", type=btn_type, key=f"nav_{page}"):
+            if st.button(page, width="stretch", type=btn_type, key=f"nav_{page}"):
                 st.session_state.page = page
                 st.rerun()
 
         # 平台风格（全局配置）
         st.divider()
         is_ps = st.session_state.page == "平台风格"
-        if st.button("Platforms", width="stretch",
+        if st.button("平台风格", width="stretch",
                      type="primary" if is_ps else "secondary",
                      key="nav_platform"):
             st.session_state.page = "平台风格"
