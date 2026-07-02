@@ -32,6 +32,7 @@ from core.config import (
     LOW_SCORE_REWRITE_THRESHOLD,
     MAX_TOTAL_ATTEMPTS,
     WORD_COUNT_TOLERANCE,
+    MAX_PARALLEL_REVIEW_ROUNDS,
 )
 
 
@@ -493,61 +494,44 @@ class NovelWorkflow:
 
             # Step 3: 并行四审核流水线
             # 流程：4个 Reviewer 并行 → 合并 REJECT feedback → WriterAgent 一次性修正润色后文本
-            #        → 仅未通过的 Reviewer 重审（已通过的跳过），最多2轮
+            #        → 仅未通过的 Reviewer 重审（已通过的跳过），循环直到全通过或达到最大轮数
+            # 最大轮数：quality_config > 全局默认 MAX_PARALLEL_REVIEW_ROUNDS
+            _max_review_rounds = int(
+                _q.get("max_parallel_review_rounds", MAX_PARALLEL_REVIEW_ROUNDS)
+            )
             all_gate_results_dicts = []
             final_passed = False
             final_score = 0.0
             last_parallel_result: dict = {}
-            _MAX_PARALLEL_ROUNDS = 2  # 整体最多2轮（初审 + 1次修正重审）
 
-            for attempt in range(_MAX_PARALLEL_ROUNDS):
-                last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
-                    chapter_number,
-                    current_content,
-                    progress_callback=progress_callback,
-                )
+            last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
+                chapter_number,
+                current_content,
+                progress_callback=progress_callback,
+                max_rounds=_max_review_rounds,
+                writer_agent=self.writer_agent,
+                word_target=word_target,
+                word_count_tolerance=_tolerance,
+            )
 
-                all_gate_results_dicts = last_parallel_result["all_gate_results"]
-                final_score = last_parallel_result["final_score"]
+            all_gate_results_dicts = last_parallel_result["all_gate_results"]
+            final_score = last_parallel_result["final_score"]
+            final_passed = last_parallel_result["passed"]
+            # 若经过多轮修正，内容已更新
+            current_content = last_parallel_result.get("content", current_content)
 
-                if last_parallel_result["passed"]:
-                    final_passed = True
-                    if progress_callback:
-                        progress_callback(
-                            f"✅ 四审全通过！最终加权得分：{final_score:.1f}/10"
-                        )
-                    break
-
-                # 有 Reviewer 未通过：合并所有 REJECT feedback，WriterAgent 一次性修正
-                reject_feedbacks = last_parallel_result["reject_feedbacks"]
-                if attempt < _MAX_PARALLEL_ROUNDS - 1:
-                    if progress_callback:
-                        failed = last_parallel_result.get("failed_gate_names", set())
-                        progress_callback(
-                            f"❌ 审核未通过（{len(failed)}项），正在根据合并反馈进行修正"
-                            f"（第{attempt + 1}/{_MAX_PARALLEL_ROUNDS}次）..."
-                        )
-                    fix_prompt = (
-                        f"【并行审核反馈（请针对以下所有问题统筹修改，保留无问题的内容）】\n\n"
-                        f"{reject_feedbacks}\n\n"
-                        f"请根据以上所有批注修改章节正文，统筹解决各类问题，"
-                        f"直接输出修改后的完整正文。"
+            if final_passed:
+                if progress_callback:
+                    progress_callback(
+                        f"✅ 四审全通过！最终加权得分：{final_score:.1f}/10"
+                        f"（共 {last_parallel_result.get('rounds', 1)} 轮）"
                     )
-                    try:
-                        current_content = self.writer_agent.write_chapter(
-                            chapter_number=chapter_number,
-                            word_target=word_target,
-                            word_count_tolerance=_tolerance,
-                            review_feedback=fix_prompt,
-                        )
-                    except Exception:
-                        pass
-                else:
-                    if progress_callback:
-                        progress_callback(
-                            f"⚠️ 审核重试{_MAX_PARALLEL_ROUNDS}轮仍有问题未通过"
-                            f"（{final_score:.1f}/10），使用当前版本继续"
-                        )
+            else:
+                if progress_callback:
+                    progress_callback(
+                        f"⚠️ 审核 {last_parallel_result.get('rounds', _max_review_rounds)} 轮仍有问题未通过"
+                        f"（{final_score:.1f}/10），使用当前版本继续"
+                    )
 
             # 保存审核结果到数据库
             last_gates = last_parallel_result.get("gates", [])
