@@ -91,24 +91,49 @@ def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
                 count += 1
             except Exception:
                 pass
+        # timeline_events → TimelineEvent 表
+        for te in sync_checks.get("timeline_events", []):
+            try:
+                involved = te.get("characters_involved", [])
+                event_data = {
+                    "event_name": te.get("event_name", ""),
+                    "event_description": te.get("event_description", ""),
+                    "in_story_time": te.get("in_story_time", ""),
+                    "characters_involved": (
+                        json.dumps(involved, ensure_ascii=False)
+                        if isinstance(involved, list)
+                        else involved
+                    ),
+                    "impact": te.get("impact", ""),
+                }
+                wf.memory.global_mem.add_timeline_event(event_data)
+                count += 1
+            except Exception:
+                pass
+        # foreshadowing_updates → Foreshadowing 表（只新增，不修改已有）
+        for fs in sync_checks.get("foreshadowing_updates", []):
+            try:
+                fs_data = {
+                    "name": fs.get("name", ""),
+                    "description": fs.get("description", ""),
+                    "importance": fs.get("importance", "medium"),
+                    "collect_by_chapter": fs.get("collect_by_chapter") or None,
+                    "notes": fs.get("notes", "") or None,
+                    "status": "active",
+                }
+                wf.memory.global_mem.save_foreshadowing(fs_data)
+                count += 1
+            except Exception:
+                pass
+        # outline_updates → 纯替换（不追加），仅处理 merged_content
         for upd in sync_checks.get("outline_updates", []):
             try:
                 field = upd.get("field", "")
                 merged = upd.get("merged_content", "")
-                suggestion = upd.get("suggestion", "")
-                if not field:
+                if not field or not merged:
                     continue
-                outline = wf.memory.global_mem.get_outline()
-                current = (getattr(outline, field, "") or "") if outline else ""
-                if merged:
-                    # LLM 已产出合并后的完整文本，直接替换
-                    wf.memory.global_mem.save_outline({field: merged.strip()})
-                    count += 1
-                elif suggestion and suggestion.strip() not in (current or ""):
-                    # 回退：去重追加（仅当 suggestion 不在当前内容中）
-                    new_val = (current + "\n\n" + suggestion).strip()
-                    wf.memory.global_mem.save_outline({field: new_val})
-                    count += 1
+                wf.memory.global_mem.save_outline({field: merged.strip()})
+                count += 1
             except Exception:
                 pass
         wf.close()
@@ -445,6 +470,14 @@ def page_writing():
                                             len(sync_checks.get("new_characters", []))
                                             + len(
                                                 sync_checks.get("character_updates", [])
+                                            )
+                                            + len(
+                                                sync_checks.get("timeline_events", [])
+                                            )
+                                            + len(
+                                                sync_checks.get(
+                                                    "foreshadowing_updates", []
+                                                )
                                             )
                                             + len(
                                                 sync_checks.get("outline_updates", [])
@@ -848,12 +881,14 @@ def page_writing():
                         total = (
                             len(sync_checks.get("new_characters", []))
                             + len(sync_checks.get("character_updates", []))
+                            + len(sync_checks.get("timeline_events", []))
+                            + len(sync_checks.get("foreshadowing_updates", []))
                             + len(sync_checks.get("outline_updates", []))
                             + len(sync_checks.get("world_setting_updates", []))
                         )
                         if total:
                             st.info(
-                                f"🔄 发现 {total} 条同步建议（含人物状态），已在「审核」标签页等待确认"
+                                f"🔄 发现 {total} 条同步建议（含人物状态、时间线、伏笔），已在「审核」标签页等待确认"
                             )
 
                     # 清除编辑区缓存，确保显示新生成的内容
@@ -1341,11 +1376,17 @@ def page_writing():
                 if sync_result and not _sync_is_done:
                     new_chars = list(sync_result.get("new_characters", []))
                     char_upds = list(sync_result.get("character_updates", []))
+                    timeline_evts = list(sync_result.get("timeline_events", []))
+                    foreshadowing_upds = list(
+                        sync_result.get("foreshadowing_updates", [])
+                    )
                     outline_upds = list(sync_result.get("outline_updates", []))
                     ws_upds = list(sync_result.get("world_setting_updates", []))
                     total = (
                         len(new_chars)
                         + len(char_upds)
+                        + len(timeline_evts)
+                        + len(foreshadowing_upds)
                         + len(outline_upds)
                         + len(ws_upds)
                     )
@@ -1517,7 +1558,7 @@ def page_writing():
                                         st.session_state[sync_key] = sync_result
                                         st.rerun()
 
-                        # —— 大纲字段更新 ——
+                        # —— 大纲字段更新（仅全书级结构性变化，替换写入）——
                         for i, upd in enumerate(outline_upds):
                             with st.container(border=True):
                                 field_label = {
@@ -1529,14 +1570,17 @@ def page_writing():
                                     "story_structure": "三幕结构",
                                 }.get(upd.get("field", ""), upd.get("field", ""))
                                 st.markdown(f"📖 **大纲更新：{field_label}**")
+                                merged = upd.get("merged_content", "")
                                 st.caption(
-                                    f"建议内容：{upd.get('suggestion', '')[:120]}"
+                                    f"新内容：{merged[:200]}{'…' if len(merged) > 200 else ''}"
                                 )
                                 st.caption(f"原因：{upd.get('reason', '')}")
+                                if upd.get("_truncated"):
+                                    st.warning("⚠️ 内容超出 300 字已自动截断")
                                 ob1, ob2 = st.columns(2)
                                 with ob1:
                                     if st.button(
-                                        "✅ 追加到大纲",
+                                        "✅ 更新大纲",
                                         key=f"sync_outline_add_{novel_id}_{selected_ch_num}_{i}",
                                         use_container_width=True,
                                         type="primary",
@@ -1544,19 +1588,8 @@ def page_writing():
                                         try:
                                             wf = load_novel(novel_id)
                                             field = upd.get("field", "")
-                                            outline = wf.memory.global_mem.get_outline()
-                                            current = (
-                                                (getattr(outline, field, "") or "")
-                                                if outline
-                                                else ""
-                                            )
-                                            new_val = (
-                                                current
-                                                + "\n\n"
-                                                + upd.get("suggestion", "")
-                                            ).strip()
                                             wf.memory.global_mem.save_outline(
-                                                {field: new_val}
+                                                {field: merged.strip()}
                                             )
                                             wf.close()
                                             outline_upds.pop(i)
@@ -1564,7 +1597,7 @@ def page_writing():
                                                 outline_upds
                                             )
                                             st.session_state[sync_key] = sync_result
-                                            st.success("已追加到大纲")
+                                            st.success("已更新大纲（替换原内容）")
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"更新失败：{e}")
@@ -1576,6 +1609,151 @@ def page_writing():
                                     ):
                                         outline_upds.pop(i)
                                         sync_result["outline_updates"] = outline_upds
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 时间线事件 ——
+                        for i, te in enumerate(timeline_evts):
+                            with st.container(border=True):
+                                st.markdown(
+                                    f"⏱️ **时间线事件：{te.get('event_name', '')}**"
+                                )
+                                if te.get("in_story_time"):
+                                    st.caption(f"时间：{te['in_story_time']}")
+                                st.caption(
+                                    f"描述：{te.get('event_description', '')[:200]}"
+                                )
+                                if te.get("characters_involved"):
+                                    involved = te["characters_involved"]
+                                    if isinstance(involved, list):
+                                        involved = "、".join(involved)
+                                    st.caption(f"涉及人物：{involved}")
+                                if te.get("impact"):
+                                    st.caption(f"影响：{te['impact']}")
+                                te1, te2 = st.columns(2)
+                                with te1:
+                                    if st.button(
+                                        "✅ 写入时间线",
+                                        key=f"sync_te_add_{novel_id}_{selected_ch_num}_{i}",
+                                        use_container_width=True,
+                                        type="primary",
+                                    ):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            involved = te.get("characters_involved", [])
+                                            event_data = {
+                                                "event_name": te.get("event_name", ""),
+                                                "event_description": te.get(
+                                                    "event_description", ""
+                                                ),
+                                                "in_story_time": te.get(
+                                                    "in_story_time", ""
+                                                ),
+                                                "characters_involved": (
+                                                    json.dumps(
+                                                        involved, ensure_ascii=False
+                                                    )
+                                                    if isinstance(involved, list)
+                                                    else involved
+                                                ),
+                                                "impact": te.get("impact", ""),
+                                            }
+                                            wf.memory.global_mem.add_timeline_event(
+                                                event_data
+                                            )
+                                            wf.close()
+                                            timeline_evts.pop(i)
+                                            sync_result["timeline_events"] = (
+                                                timeline_evts
+                                            )
+                                            st.session_state[sync_key] = sync_result
+                                            st.success("已写入时间线")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"写入失败：{e}")
+                                with te2:
+                                    if st.button(
+                                        "❌ 跳过",
+                                        key=f"sync_te_skip_{novel_id}_{selected_ch_num}_{i}",
+                                        use_container_width=True,
+                                    ):
+                                        timeline_evts.pop(i)
+                                        sync_result["timeline_events"] = timeline_evts
+                                        st.session_state[sync_key] = sync_result
+                                        st.rerun()
+
+                        # —— 新增伏笔 ——
+                        _importance_labels = {
+                            "high": "重要",
+                            "medium": "一般",
+                            "low": "次要",
+                        }
+                        for i, fs in enumerate(foreshadowing_upds):
+                            with st.container(border=True):
+                                imp_label = _importance_labels.get(
+                                    fs.get("importance", "medium"),
+                                    fs.get("importance", ""),
+                                )
+                                st.markdown(
+                                    f"🎭 **新增伏笔：{fs.get('name', '')}**（{imp_label}）"
+                                )
+                                st.caption(f"描述：{fs.get('description', '')[:200]}")
+                                if fs.get("collect_by_chapter"):
+                                    st.caption(
+                                        f"最晚回收：第{fs['collect_by_chapter']}章"
+                                    )
+                                if fs.get("notes"):
+                                    st.caption(f"备注：{fs['notes']}")
+                                fs1, fs2 = st.columns(2)
+                                with fs1:
+                                    if st.button(
+                                        "✅ 写入伏笔库",
+                                        key=f"sync_fs_add_{novel_id}_{selected_ch_num}_{i}",
+                                        use_container_width=True,
+                                        type="primary",
+                                    ):
+                                        try:
+                                            wf = load_novel(novel_id)
+                                            fs_data = {
+                                                "name": fs.get("name", ""),
+                                                "description": fs.get(
+                                                    "description", ""
+                                                ),
+                                                "importance": fs.get(
+                                                    "importance", "medium"
+                                                ),
+                                                "collect_by_chapter": fs.get(
+                                                    "collect_by_chapter"
+                                                )
+                                                or None,
+                                                "notes": fs.get("notes", "") or None,
+                                                "status": "active",
+                                            }
+                                            wf.memory.global_mem.save_foreshadowing(
+                                                fs_data
+                                            )
+                                            wf.close()
+                                            foreshadowing_upds.pop(i)
+                                            sync_result["foreshadowing_updates"] = (
+                                                foreshadowing_upds
+                                            )
+                                            st.session_state[sync_key] = sync_result
+                                            st.success(
+                                                f"已写入伏笔《{fs.get('name')}》"
+                                            )
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"写入失败：{e}")
+                                with fs2:
+                                    if st.button(
+                                        "❌ 跳过",
+                                        key=f"sync_fs_skip_{novel_id}_{selected_ch_num}_{i}",
+                                        use_container_width=True,
+                                    ):
+                                        foreshadowing_upds.pop(i)
+                                        sync_result["foreshadowing_updates"] = (
+                                            foreshadowing_upds
+                                        )
                                         st.session_state[sync_key] = sync_result
                                         st.rerun()
 
@@ -1631,6 +1809,8 @@ def page_writing():
                         remaining = (
                             len(new_chars)
                             + len(char_upds)
+                            + len(timeline_evts)
+                            + len(foreshadowing_upds)
                             + len(outline_upds)
                             + len(ws_upds)
                         )

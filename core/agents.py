@@ -439,9 +439,20 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             {
               "new_characters": [{"name", "role", "personality", "background", "reason"}],
               "character_updates": [{"name", "field", "new_value", "reason"}],
-              "outline_updates": [{"field", "merged_content", "added_info", "reason"}],
+              "timeline_events": [{"event_name", "event_description", "in_story_time",
+                                   "characters_involved", "impact"}],
+              "foreshadowing_updates": [{"name", "description", "importance",
+                                         "collect_by_chapter", "notes"}],
+              "outline_updates": [{"field", "merged_content", "reason"}],
               "world_setting_updates": [{"key", "value", "reason"}]
             }
+
+        归属规则（严格执行）：
+          - 人物身体/状态/能力/关系变化  → character_updates
+          - 本章重要事件（谁做了什么）   → timeline_events
+          - 新揭示的伏笔/情报/线索       → foreshadowing_updates
+          - 全书矛盾/弧光的结构性变化    → outline_updates（仅在根本性转折时）
+          - 新揭示的世界观规则/设定      → world_setting_updates
         """
         # 从章纲提取关键词，过滤无关世界观/伏笔
         chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
@@ -473,7 +484,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             char_state_lines.append("  ".join(parts))
         char_state_summary = "\n".join(char_state_lines) or "（无）"
 
-        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要新增或更新的内容。
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要同步记录的内容。
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
@@ -484,7 +495,19 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 【已有人物及当前状态】
 {char_state_summary}
 
-请按以下 JSON 格式输出检测结果，只列出章节中实际发生且需要记录的变化，不要虚构：
+## 内容归属规则（必须严格遵守）
+
+| 内容类型 | 放入哪个字段 |
+|---|---|
+| 人物身体状态、受伤、能力获得/失去、关系变化 | character_updates |
+| 本章发生的重要事件（谁做了什么、结果如何） | timeline_events |
+| 新埋下的伏笔、暗示、线索、情报 | foreshadowing_updates |
+| 全书矛盾结构或主角弧光发生**根本性转折**（如主线矛盾从A变成B、主角价值观彻底颠覆） | outline_updates |
+| 新揭示的世界运行规则、地名、势力、体系 | world_setting_updates |
+
+**禁止将单章事件细节、人物状态变化、伏笔情报塞入 outline_updates！**
+
+请按以下 JSON 格式输出，只列出章节中实际发生的变化，不要虚构：
 
 {{
   "new_characters": [
@@ -493,7 +516,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
       "role": "主角/配角/反派等",
       "personality": "性格特点",
       "background": "背景信息（从章节推断）",
-      "relationships": {{"已有人物A": "关系描述", "已有人物B": "关系描述"}},
+      "relationships": {{"已有人物A": "关系描述"}},
       "reason": "为什么需要新增"
     }}
   ],
@@ -501,16 +524,33 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
     {{
       "name": "已有人物的姓名（必须在已有人物列表中）",
       "field": "current_state 或 growth_arc 或 abilities 或 relationships 之一",
-      "new_value": "更新后的完整内容",
+      "new_value": "更新后的完整内容（替换旧值，非追加）",
       "reason": "本章中发生了什么导致此变化"
+    }}
+  ],
+  "timeline_events": [
+    {{
+      "event_name": "事件名称（15字以内）",
+      "event_description": "事件描述（谁在哪里做了什么，结果如何，100字以内）",
+      "in_story_time": "故事内时间（如：第三年春、日落时分，不确定可留空）",
+      "characters_involved": ["人物A", "人物B"],
+      "impact": "事件对后续剧情的影响（50字以内）"
+    }}
+  ],
+  "foreshadowing_updates": [
+    {{
+      "name": "伏笔名称（15字以内）",
+      "description": "伏笔内容详细描述（100字以内）",
+      "importance": "high 或 medium 或 low",
+      "collect_by_chapter": null,
+      "notes": "回收建议或关联线索（可留空）"
     }}
   ],
   "outline_updates": [
     {{
       "field": "main_conflict 或 protagonist_arc 或 ending_summary 等字段名",
-      "merged_content": "将本章新信息有机融入原有内容后的完整文本（不要把新旧内容拆成两段，必须融合成一段连贯文字）",
-      "added_info": "本章新增的关键信息（一句话概括）",
-      "reason": "为什么需要更新"
+      "merged_content": "替换原字段的完整新文本（≤300字，必须是一段连贯文字，体现结构性变化）",
+      "reason": "为什么全书级矛盾/弧光发生了根本性变化（必须说明是结构性转折，不是单章细节）"
     }}
   ],
   "world_setting_updates": [
@@ -524,7 +564,7 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
 只返回 JSON，不包含其他文字。某类没有需要更新时对应数组留空 []。
 
-重要约束：outline_updates 的 merged_content 必须是一段完整的、连贯的文本，将大纲中原有的内容与本章新增的信息有机融合。禁止只写"新增：xxx"这样拆成两段的格式。"""
+**outline_updates 极其严格**：绝大多数章节 outline_updates 应为 []。只有当本章造成全书矛盾的根本性结构改变（如：敌人变成盟友、主线目标彻底转变）时，才填写 outline_updates，且 merged_content 字数不超过 300 字。"""
 
         response = self.llm.generate(
             self.SYSTEM_PROMPT,
@@ -543,10 +583,21 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                     for u in result.get("character_updates", [])
                     if u.get("name") in existing_chars
                 ]
+            # 确保新字段存在（兼容旧版 LLM 未输出的情况）
+            result.setdefault("timeline_events", [])
+            result.setdefault("foreshadowing_updates", [])
+            # outline_updates 字数兜底：超过 350 字的 merged_content 截断并警告
+            for upd in result.get("outline_updates", []):
+                mc = upd.get("merged_content", "")
+                if len(mc) > 350:
+                    upd["merged_content"] = mc[:350]
+                    upd["_truncated"] = True
             return result
         return {
             "new_characters": [],
             "character_updates": [],
+            "timeline_events": [],
+            "foreshadowing_updates": [],
             "outline_updates": [],
             "world_setting_updates": [],
         }
