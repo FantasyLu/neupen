@@ -901,6 +901,7 @@ def page_settings():
                 MAX_REVIEW_ITERATIONS as _DEF_ITER,
                 MAX_TOTAL_ATTEMPTS as _DEF_TOTAL,
                 WORD_COUNT_TOLERANCE as _DEF_TOLERANCE,
+                MAX_PARALLEL_REVIEW_ROUNDS as _DEF_REVIEW_ROUNDS,
             )
 
             db = get_db()
@@ -945,6 +946,15 @@ def page_settings():
                 )
 
                 st.markdown("#### 迭代次数")
+                max_review_rounds = st.number_input(
+                    f"审核最大轮数（默认 {_DEF_REVIEW_ROUNDS}）",
+                    min_value=1, max_value=20,
+                    value=int(q_cfg.get("max_parallel_review_rounds", _DEF_REVIEW_ROUNDS)),
+                    step=1,
+                    help="每轮包含一次并行四审核 + 一次 WriterAgent 修正。"
+                         "所有关卡全部通过后提前结束，不会等满最大轮数。"
+                         "达到上限后使用当前版本继续保存。"
+                )
                 max_iter = st.number_input(
                     f"最大修改轮次（默认 {_DEF_ITER}）",
                     min_value=1, max_value=20,
@@ -968,6 +978,7 @@ def page_settings():
                     "auto_approve_threshold":    auto_approve,
                     "review_score_threshold":    review_score,
                     "low_score_rewrite_threshold": rewrite_score,
+                    "max_parallel_review_rounds": max_review_rounds,
                     "max_review_iterations":     max_iter,
                     "max_total_attempts":        max_total,
                     "word_count_tolerance":      word_tol / 100,
@@ -993,6 +1004,7 @@ def page_settings():
                 st.metric("触发重写评分", f"{float(q2.get('low_score_rewrite_threshold', _DEF_REWRITE)):.1f}")
                 st.metric("字数容差", f"{int(float(q2.get('word_count_tolerance', _DEF_TOLERANCE)) * 100)}%")
             with col_b:
+                st.metric("审核最大轮数", int(q2.get("max_parallel_review_rounds", _DEF_REVIEW_ROUNDS)))
                 st.metric("最大修改轮次", int(q2.get("max_review_iterations", _DEF_ITER)))
                 st.metric("全局审核次数上限", int(q2.get("max_total_attempts", _DEF_TOTAL)))
             if not q2:

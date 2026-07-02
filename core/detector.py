@@ -861,7 +861,7 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
   "action": "PASS",
   "feedback": "精确说明扣分原因和具体修改方案。PASS 时也要指出瑕疵。"
 }
-action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
+action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 
         user_prompt = f"""【本章章纲】
 {outline_text}
@@ -959,7 +959,7 @@ action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
   "action": "PASS",
   "feedback": "精确引用原文违规片段，说明违背了哪条人设/世界观规则，给出具体修改建议。"
 }
-action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
+action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 
         user_prompt = f"""【出场人物档案】
 {char_text}
@@ -1040,7 +1040,7 @@ action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
   "action": "PASS",
   "feedback": "精确引用原文矛盾位置，指出与哪一章的状态/时空记录相矛盾，给出具体修改建议。"
 }
-action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
+action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
 
         user_prompt = f"""【人物当前状态面板】
 {char_states}

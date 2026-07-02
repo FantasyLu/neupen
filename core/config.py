@@ -158,13 +158,16 @@ LOW_SCORE_REWRITE_THRESHOLD = float(os.getenv("LOW_SCORE_REWRITE_THRESHOLD", "7.
 # 流水线审核配置（三关卡漏斗式）
 # ======================================
 # 关卡1 局部校对官熔断阈值（大纲+人设一致性）
-GATE_CONTEXT_THRESHOLD = float(os.getenv("GATE_CONTEXT_THRESHOLD", "8.5"))
+GATE_CONTEXT_THRESHOLD = float(os.getenv("GATE_CONTEXT_THRESHOLD", "8.0"))
 # 关卡2 全局场记熔断阈值（状态+世界观+时空逻辑）
-GATE_CONTINUITY_THRESHOLD = float(os.getenv("GATE_CONTINUITY_THRESHOLD", "9.0"))
+GATE_CONTINUITY_THRESHOLD = float(os.getenv("GATE_CONTINUITY_THRESHOLD", "8.5"))
 # 关卡3 文风打磨官熔断阈值（去AI痕迹+文风）
 GATE_STYLISTIC_THRESHOLD = float(os.getenv("GATE_STYLISTIC_THRESHOLD", "8.0"))
 # 每个关卡的最大重试次数
 MAX_GATE_RETRIES = int(os.getenv("MAX_GATE_RETRIES", "2"))
+# 并行四审核流水线的最大审核轮数（每轮 = 审核 + 修正，全部通过提前退出）
+# 用户可在设置页「写作质量」中按项目覆盖此默认值
+MAX_PARALLEL_REVIEW_ROUNDS = int(os.getenv("MAX_PARALLEL_REVIEW_ROUNDS", "5"))
 # 最终得分权重
 FINAL_SCORE_WEIGHTS = (0.3, 0.4, 0.3)  # (局部校对, 全局场记, 文风打磨)
 

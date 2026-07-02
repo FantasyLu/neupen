@@ -1822,13 +1822,24 @@ class ReviewerAgent:
         chapter_number: int,
         content: str,
         progress_callback=None,
+        max_rounds: int | None = None,
+        writer_agent=None,
+        word_target: int = 3000,
+        word_count_tolerance: float = 0.3,
     ) -> dict:
         """
         并行四审核流水线（新版，替换三关卡串行方案）。
 
         四个 Reviewer 并行执行，合并所有 REJECT 的 feedback 后由 WriterAgent 一次性修正。
         已通过的 Reviewer 在后续轮次中不再重复审核。
-        每个 Reviewer 最多参与 2 次审核（初审 + 1次重审）。
+        循环直到全部关卡通过或达到 max_rounds 为止。
+
+        Args:
+            max_rounds: 最大审核轮数（每轮含审核+修正）。None 时读取全局默认。
+            writer_agent: WriterAgent 实例，用于审核未通过时修正内容。
+                          为 None 时仅审核不修正（兼容旧调用）。
+            word_target: 修正时的目标字数（传给 WriterAgent）。
+            word_count_tolerance: 修正时的字数容差（传给 WriterAgent）。
 
         Returns:
             {
@@ -1838,9 +1849,10 @@ class ReviewerAgent:
                 "all_gate_results": list[dict], # 所有轮次所有关卡结果
                 "reject_feedbacks": str | None, # 最终仍未通过的 feedback（供调用方记录）
                 "rounds": int,                  # 实际执行轮数
+                "content": str,                 # 最终内容（可能经过多轮修正）
             }
         """
-        from core.detector import GateResult
+        from core.config import MAX_PARALLEL_REVIEW_ROUNDS
 
         _GATE_LABELS = {
             "plot_aligner": "🎯 剧情对齐",
@@ -1848,24 +1860,23 @@ class ReviewerAgent:
             "continuity_tracker": "🔗 时空状态",
             "style_refiner": "✨ 文风去AI",
         }
-        _MAX_ROUNDS = 2  # 每个 Reviewer 最多参与2次（初审+1次重审）
+        _MAX_ROUNDS = max_rounds if max_rounds is not None else MAX_PARALLEL_REVIEW_ROUNDS
 
         all_gate_results: list[dict] = []
-        passed_gate_names: set[str] = set()
         final_score = 0.0
         last_review: dict = {}
+        current_content = content
 
         for round_idx in range(_MAX_ROUNDS):
             if progress_callback:
-                skip_info = (
-                    f"（跳过已通过：{', '.join(_GATE_LABELS.get(g, g) for g in passed_gate_names)}）"
-                    if passed_gate_names
-                    else ""
+                progress_callback(
+                    f"🔍 第{round_idx + 1}/{_MAX_ROUNDS}轮全量并行审核..."
                 )
-                progress_callback(f"🔍 第{round_idx + 1}轮并行审核{skip_info}...")
 
+            # 每轮始终全量审核（不 skip 已通过关卡），
+            # 避免修正 B 时悄悄破坏 A 却因 A 被跳过而察觉不到
             last_review = self.detector.run_parallel_review(
-                chapter_number, content, skip_gates=passed_gate_names
+                chapter_number, current_content, skip_gates=set()
             )
 
             # 记录本轮结果
@@ -1874,8 +1885,6 @@ class ReviewerAgent:
                     {**gate_result.to_dict(), "round": round_idx + 1}
                 )
 
-            # 更新已通过的关卡
-            passed_gate_names = last_review["passed_gate_names"]
             final_score = last_review["weighted_score"]
 
             # 打印每个关卡结果
@@ -1900,41 +1909,49 @@ class ReviewerAgent:
             if last_review["all_passed"]:
                 break
 
-        # 补全未执行到的关卡（被 skip 的）用满分占位，保证 gates 始终有4条
-        executed_names = {g.gate_name for g in last_review.get("gates", [])}
-        all_four_gates = list(last_review.get("gates", []))
-        for gate_name, label in _GATE_LABELS.items():
-            if gate_name not in executed_names:
-                # 该关卡在本轮被跳过（已通过），补一条满分占位
-                all_four_gates.append(
-                    GateResult(
-                        gate_name=gate_name,
-                        total_score=10.0,
-                        breakdown={},
-                        action="PASS",
-                        feedback="本轮已通过，跳过",
-                        passed=True,
+            # 审核未通过且还有剩余轮次：若有 writer_agent 则修正内容，否则仅继续重审
+            remaining = _MAX_ROUNDS - round_idx - 1
+            if remaining > 0 and writer_agent is not None:
+                reject_feedbacks = last_review.get("reject_feedbacks") or ""
+                if reject_feedbacks:
+                    fix_prompt = (
+                        f"【并行审核反馈（请针对以下所有问题统筹修改，保留无问题的内容）】\n\n"
+                        f"{reject_feedbacks}\n\n"
+                        f"请根据以上所有批注修改章节正文，统筹解决各类问题，"
+                        f"直接输出修改后的完整正文。"
                     )
+                    if progress_callback:
+                        failed_labels = ", ".join(
+                            _GATE_LABELS.get(g, g)
+                            for g in last_review["failed_gate_names"]
+                        )
+                        progress_callback(
+                            f"  ✏️ 根据审核反馈修正内容（{failed_labels}），"
+                            f"剩余 {remaining} 轮..."
+                        )
+                    try:
+                        current_content = writer_agent.write_chapter(
+                            chapter_number=chapter_number,
+                            word_target=word_target,
+                            word_count_tolerance=word_count_tolerance,
+                            review_feedback=fix_prompt,
+                        )
+                    except Exception as e:
+                        if progress_callback:
+                            progress_callback(f"  ⚠️ 修正失败（{e}），跳过本轮修正")
+            elif remaining > 0 and writer_agent is None and progress_callback:
+                progress_callback(
+                    f"  ℹ️ 无 WriterAgent，第{round_idx + 2}轮直接重审（不修正内容）"
                 )
 
         return {
             "passed": last_review.get("all_passed", False),
             "final_score": round(final_score, 2),
-            "gates": all_four_gates,
+            "gates": list(last_review.get("gates", [])),
             "all_gate_results": all_gate_results,
             "reject_feedbacks": last_review.get("reject_feedbacks") or None,
-            "rounds": _MAX_ROUNDS
-            if not last_review.get("all_passed")
-            else (
-                next(
-                    (
-                        i + 1
-                        for i, _ in enumerate(range(_MAX_ROUNDS))
-                        if last_review.get("all_passed")
-                    ),
-                    _MAX_ROUNDS,
-                )
-            ),
+            "rounds": round_idx + 1,  # 实际执行轮数
+            "content": current_content,  # 最终内容（可能经过多轮修正）
         }
 
     def auto_fix_minor_issues(
