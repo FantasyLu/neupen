@@ -361,6 +361,7 @@ class Chapter(Base):
     # 摘要（用于后续章节的上下文注入）
     summary = Column(Text, comment="章节内容摘要")
     key_events = Column(Text, comment="关键事件（JSON数组）")
+    ending_state = Column(Text, comment="章节结尾状态速览（时间/地点/人物状态/悬念，用于下一章衔接）")
 
     # 状态
     status = Column(
@@ -647,6 +648,7 @@ def _migrate_add_columns():
         ("novel_outlines", "main_conflict_compressed",          "TEXT"),
         ("novel_outlines", "protagonist_arc_compressed",        "TEXT"),
         ("novel_outlines", "ending_summary_compressed",         "TEXT"),
+        ("chapters",       "ending_state",                      "TEXT"),
     ]
 
     with engine.connect() as conn:

@@ -927,13 +927,15 @@ class ChapterMemory:
         return chapter
 
     def save_chapter_summary(
-        self, chapter_number: int, summary: str, key_events: list[str]
+        self, chapter_number: int, summary: str, key_events: list[str], ending_state: str = ""
     ):
-        """保存章节摘要和关键事件"""
+        """保存章节摘要、关键事件和结尾状态"""
         chapter = self.get_chapter(chapter_number)
         if chapter:
             chapter.summary = summary
             chapter.key_events = json.dumps(key_events, ensure_ascii=False)
+            if ending_state:
+                chapter.ending_state = ending_state
             self.db.commit()
 
     def build_recent_context(self, current_chapter: int, adaptive: bool = False) -> str:
@@ -988,6 +990,9 @@ class ChapterMemory:
                                 parts.append(f"  • {ev}")
                     except (json.JSONDecodeError, TypeError):
                         pass
+                # 展示结尾状态（仅最近一章，衔接价值最高）
+                if ch == recent[-1] and getattr(ch, "ending_state", None) and ch.ending_state.strip():
+                    parts.append(f"🔗 结尾状态（下章衔接锚点）：\n{ch.ending_state.strip()}")
             elif ch.content:
                 # 无摘要时用正文前300字作为临时标记
                 preview = ch.content[:300]
@@ -1382,6 +1387,31 @@ class MemoryManager:
         )
         if recent_ctx:
             parts.append(recent_ctx)
+
+        # 上一章结尾原文片段（直接取正文末尾500字，保留最真实的衔接锚点）
+        if chapter_number > 1:
+            prev_ch = self.chapter_mem.get_chapter(chapter_number - 1)
+            if prev_ch and prev_ch.content and len(prev_ch.content) > 50:
+                _ENDING_CHARS = 500
+                ending_raw = prev_ch.content[-_ENDING_CHARS:]
+                # 若截断点在段落中间，往前找最近的换行符，避免破坏句子完整性
+                _newline_pos = ending_raw.find("\n")
+                if 0 < _newline_pos < 80:
+                    ending_raw = ending_raw[_newline_pos:].lstrip()
+                ending_state_note = (
+                    prev_ch.ending_state.strip()
+                    if getattr(prev_ch, "ending_state", None)
+                    and prev_ch.ending_state.strip()
+                    else ""
+                )
+                ending_block = (
+                    f"=== 上一章（第{chapter_number - 1}章）结尾原文 ===\n"
+                    f"（⚠️ 本章开头必须自然接续以下内容，时间/地点/人物状态须连贯）\n"
+                    f"{ending_raw}"
+                )
+                if ending_state_note:
+                    ending_block += f"\n【结尾状态速览】{ending_state_note}"
+                parts.append(ending_block)
 
         # Layer 3: 碎片化记忆（上限3片段，相关度门槛0.5）
         # 核心事件重复一次，提升其在向量相似度计算中的权重；
