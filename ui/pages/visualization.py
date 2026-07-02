@@ -16,7 +16,6 @@ def render_character_network(novel_id: int):
     """Tab 1：人物关系网络（pyvis 力导向图，嵌入 HTML）"""
     import tempfile, os
     from pyvis.network import Network
-    import streamlit.components.v1 as components
 
     db = get_db()
     chars = db.query(Character).filter(Character.novel_id == novel_id).all()
@@ -209,7 +208,7 @@ def render_character_network(novel_id: int):
         unsafe_allow_html=True,
     )
 
-    components.html(html_content, height=660, scrolling=False)
+    st.html(html_content)
     st.caption(f"共 {len(net.nodes)} 个人物，{len(net.edges)} 条关系")
 
 
