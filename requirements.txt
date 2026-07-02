@@ -17,7 +17,7 @@ lancedb>=0.20.0
 
 # Streamlit UI
 streamlit>=1.40.0
-streamlit-agraph>=0.0.45
+pyvis>=0.3.2
 streamlit-ace>=0.1.1
 
 # LangChain (CrewAI底层)
