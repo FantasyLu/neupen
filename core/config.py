@@ -26,11 +26,11 @@ LANCEDB_DIR.mkdir(parents=True, exist_ok=True)
 # ======================================
 # 各家 API Key（按需填写，未填的提供商不可用）
 # ======================================
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")   # Claude 系列
-DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY", "")    # DeepSeek V3 / R1
-DOUBAO_API_KEY    = os.getenv("DOUBAO_API_KEY", "")       # 豆包（火山引擎 Ark）
-QWEN_API_KEY      = os.getenv("QWEN_API_KEY", "")         # 通义千问（DashScope）
-GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")       # Google Gemini
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Claude 系列
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")  # DeepSeek V3 / R1
+DOUBAO_API_KEY = os.getenv("DOUBAO_API_KEY", "")  # 豆包（火山引擎 Ark）
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")  # 通义千问（DashScope）
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # Google Gemini
 
 # 默认使用的模型（可被项目级别设置覆盖）
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "claude-opus-4-6")
@@ -182,10 +182,10 @@ COMPRESS_OUTLINE_THRESHOLD = int(os.getenv("COMPRESS_OUTLINE_THRESHOLD", "150"))
 
 # 大纲各字段的压缩目标字数（分字段配置，供 LLM 参考，非硬截断）
 COMPRESS_OUTLINE_TARGETS: dict[str, int] = {
-    "theme":           int(os.getenv("COMPRESS_OUTLINE_THEME_TARGET",    "100")),
-    "main_conflict":   int(os.getenv("COMPRESS_OUTLINE_CONFLICT_TARGET", "300")),
-    "protagonist_arc": int(os.getenv("COMPRESS_OUTLINE_ARC_TARGET",      "500")),
-    "ending_summary":  int(os.getenv("COMPRESS_OUTLINE_ENDING_TARGET",   "500")),
+    "theme": int(os.getenv("COMPRESS_OUTLINE_THEME_TARGET", "100")),
+    "main_conflict": int(os.getenv("COMPRESS_OUTLINE_CONFLICT_TARGET", "300")),
+    "protagonist_arc": int(os.getenv("COMPRESS_OUTLINE_ARC_TARGET", "500")),
+    "ending_summary": int(os.getenv("COMPRESS_OUTLINE_ENDING_TARGET", "500")),
 }
 
 # ======================================
@@ -193,6 +193,21 @@ COMPRESS_OUTLINE_TARGETS: dict[str, int] = {
 # ======================================
 # 每个内容保留的最大历史版本数
 MAX_VERSIONS = 10
+
+# ======================================
+# Agentic 模式配置
+# ======================================
+# 每次任务最多调用工具的次数（超出后强制输出最终结果）
+AGENTIC_MAX_TOOL_CALLS = int(os.getenv("AGENTIC_MAX_TOOL_CALLS", "15"))
+
+# 连续无效查询（重复/空结果）达到此次数时视为停滞，强制终止工具循环
+AGENTIC_STALL_THRESHOLD = int(os.getenv("AGENTIC_STALL_THRESHOLD", "3"))
+
+# 单次工具调用超时秒数（超时则跳过该次调用）
+AGENTIC_TOOL_TIMEOUT = int(os.getenv("AGENTIC_TOOL_TIMEOUT", "30"))
+
+# Token 预算比例（当估算 token 数达到模型窗口的此比例时，强制终止工具循环）
+AGENTIC_TOKEN_BUDGET_RATIO = float(os.getenv("AGENTIC_TOKEN_BUDGET_RATIO", "0.75"))
 
 # ======================================
 # 日志配置

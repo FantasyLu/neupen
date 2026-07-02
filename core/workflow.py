@@ -17,20 +17,33 @@ from dataclasses import dataclass
 
 from core.models import get_db, Novel, NovelOutline
 from core.memory import MemoryManager
-from core.agents import OutlineAgent, CharacterAgent, WriterAgent, ReviewerAgent, PolisherAgent
+from core.agents import (
+    OutlineAgent,
+    CharacterAgent,
+    WriterAgent,
+    ReviewerAgent,
+    PolisherAgent,
+)
 from core.detector import ConflictDetector, ReviewReport
-from core.config import (AUTO_APPROVE_THRESHOLD, MAX_REVIEW_ITERATIONS,
-                         REVIEW_SCORE_THRESHOLD, LOW_SCORE_REWRITE_THRESHOLD,
-                         MAX_TOTAL_ATTEMPTS, WORD_COUNT_TOLERANCE)
+from core.config import (
+    AUTO_APPROVE_THRESHOLD,
+    MAX_REVIEW_ITERATIONS,
+    REVIEW_SCORE_THRESHOLD,
+    LOW_SCORE_REWRITE_THRESHOLD,
+    MAX_TOTAL_ATTEMPTS,
+    WORD_COUNT_TOLERANCE,
+)
 
 
 # ======================================
 # 工作流结果数据结构
 # ======================================
 
+
 @dataclass
 class WorkflowResult:
     """工作流执行结果"""
+
     success: bool
     message: str
     data: dict = None
@@ -44,6 +57,7 @@ class WorkflowResult:
 # 核心工作流类
 # ======================================
 
+
 class NovelWorkflow:
     """
     小说创作工作流编排器
@@ -56,31 +70,45 @@ class NovelWorkflow:
 
         # 读取项目级别的模型选择（覆盖全局默认）
         novel = self.memory.global_mem.get_novel()
-        self.model_id = (novel.llm_model if novel and novel.llm_model else None)
+        self.model_id = novel.llm_model if novel and novel.llm_model else None
 
         # 各 Agent 独立模型（三级回退：per-agent → llm_model → None/全局默认）
         if novel:
-            self.model_outline   = novel.get_agent_model("outline")
+            self.model_outline = novel.get_agent_model("outline")
             self.model_character = novel.get_agent_model("character")
-            self.model_writer    = novel.get_agent_model("writer")
-            self.model_reviewer  = novel.get_agent_model("reviewer")
-            self.model_polisher  = novel.get_agent_model("polisher")
-            self.model_reader    = novel.get_agent_model("reader")
+            self.model_writer = novel.get_agent_model("writer")
+            self.model_reviewer = novel.get_agent_model("reviewer")
+            self.model_polisher = novel.get_agent_model("polisher")
+            self.model_reader = novel.get_agent_model("reader")
         else:
-            self.model_outline = self.model_character = self.model_writer = \
-                self.model_reviewer = self.model_polisher = self.model_reader = None
+            self.model_outline = self.model_character = self.model_writer = (
+                self.model_reviewer
+            ) = self.model_polisher = self.model_reader = None
 
         # 各 Agent 独立 Temperature（三级回退：per-agent Novel列 → config默认 → None/模型默认）
-        from core.config import (TEMPERATURE_OUTLINE, TEMPERATURE_CHARACTER, TEMPERATURE_WRITER,
-                                  TEMPERATURE_REVIEWER, TEMPERATURE_POLISHER, TEMPERATURE_READER,
-                                  TEMPERATURE_CANVAS)
-        self.temp_outline   = self._get_temp(novel, "temp_outline",   TEMPERATURE_OUTLINE)
-        self.temp_character = self._get_temp(novel, "temp_character", TEMPERATURE_CHARACTER)
-        self.temp_writer    = self._get_temp(novel, "temp_writer",    TEMPERATURE_WRITER)
-        self.temp_reviewer  = self._get_temp(novel, "temp_reviewer",  TEMPERATURE_REVIEWER)
-        self.temp_polisher  = self._get_temp(novel, "temp_polisher",  TEMPERATURE_POLISHER)
-        self.temp_reader    = self._get_temp(novel, "temp_reader",    TEMPERATURE_READER)
-        self.temp_canvas    = self._get_temp(novel, "temp_canvas",    TEMPERATURE_CANVAS)
+        from core.config import (
+            TEMPERATURE_OUTLINE,
+            TEMPERATURE_CHARACTER,
+            TEMPERATURE_WRITER,
+            TEMPERATURE_REVIEWER,
+            TEMPERATURE_POLISHER,
+            TEMPERATURE_READER,
+            TEMPERATURE_CANVAS,
+        )
+
+        self.temp_outline = self._get_temp(novel, "temp_outline", TEMPERATURE_OUTLINE)
+        self.temp_character = self._get_temp(
+            novel, "temp_character", TEMPERATURE_CHARACTER
+        )
+        self.temp_writer = self._get_temp(novel, "temp_writer", TEMPERATURE_WRITER)
+        self.temp_reviewer = self._get_temp(
+            novel, "temp_reviewer", TEMPERATURE_REVIEWER
+        )
+        self.temp_polisher = self._get_temp(
+            novel, "temp_polisher", TEMPERATURE_POLISHER
+        )
+        self.temp_reader = self._get_temp(novel, "temp_reader", TEMPERATURE_READER)
+        self.temp_canvas = self._get_temp(novel, "temp_canvas", TEMPERATURE_CANVAS)
 
         # 按需初始化 Agent（避免不必要的资源消耗）
         self._outline_agent = None
@@ -113,38 +141,51 @@ class NovelWorkflow:
     @property
     def outline_agent(self) -> OutlineAgent:
         if not self._outline_agent:
-            self._outline_agent = OutlineAgent(self.novel_id, self.model_outline, temperature=self.temp_outline)
+            self._outline_agent = OutlineAgent(
+                self.novel_id, self.model_outline, temperature=self.temp_outline
+            )
         return self._outline_agent
 
     @property
     def character_agent(self) -> CharacterAgent:
         if not self._character_agent:
-            self._character_agent = CharacterAgent(self.novel_id, self.model_character, temperature=self.temp_character)
+            self._character_agent = CharacterAgent(
+                self.novel_id, self.model_character, temperature=self.temp_character
+            )
         return self._character_agent
 
     @property
     def writer_agent(self) -> WriterAgent:
         if not self._writer_agent:
-            self._writer_agent = WriterAgent(self.novel_id, self.model_writer, temperature=self.temp_writer)
+            self._writer_agent = WriterAgent(
+                self.novel_id, self.model_writer, temperature=self.temp_writer
+            )
         return self._writer_agent
 
     @property
     def reviewer_agent(self) -> ReviewerAgent:
         if not self._reviewer_agent:
-            self._reviewer_agent = ReviewerAgent(self.novel_id, self.model_reviewer, temperature=self.temp_reviewer)
+            self._reviewer_agent = ReviewerAgent(
+                self.novel_id, self.model_reviewer, temperature=self.temp_reviewer
+            )
         return self._reviewer_agent
 
     @property
     def polisher_agent(self) -> PolisherAgent:
         if not self._polisher_agent:
-            self._polisher_agent = PolisherAgent(self.novel_id, self.model_polisher, temperature=self.temp_polisher)
+            self._polisher_agent = PolisherAgent(
+                self.novel_id, self.model_polisher, temperature=self.temp_polisher
+            )
         return self._polisher_agent
 
     @property
     def reader_agent(self):
         if not self._reader_agent:
             from core.agents import ReaderAgent
-            self._reader_agent = ReaderAgent(self.novel_id, self.model_reader, temperature=self.temp_reader)
+
+            self._reader_agent = ReaderAgent(
+                self.novel_id, self.model_reader, temperature=self.temp_reader
+            )
         return self._reader_agent
 
     # ======================================
@@ -152,10 +193,14 @@ class NovelWorkflow:
     # ======================================
 
     @staticmethod
-    def create_novel(title: str, logline: str, genre: str = "",
-                      writing_style: str = "",
-                      llm_model: str = None,
-                      author: str = "") -> int:
+    def create_novel(
+        title: str,
+        logline: str,
+        genre: str = "",
+        writing_style: str = "",
+        llm_model: str = None,
+        author: str = "",
+    ) -> int:
         """
         创建新小说项目
         返回新建项目的 ID
@@ -168,7 +213,7 @@ class NovelWorkflow:
             genre=genre,
             writing_style=writing_style,
             llm_model=llm_model or None,
-            status="planning"
+            status="planning",
         )
         db.add(novel)
         db.commit()
@@ -180,8 +225,9 @@ class NovelWorkflow:
     # 阶段 2: 大纲生成
     # ======================================
 
-    def generate_outline(self, total_chapters: int = 100,
-                           progress_callback: Callable = None) -> WorkflowResult:
+    def generate_outline(
+        self, total_chapters: int = 100, progress_callback: Callable = None
+    ) -> WorkflowResult:
         """
         从一句话灵感生成完整大纲
         自动保存到数据库
@@ -199,7 +245,7 @@ class NovelWorkflow:
                 logline=novel.logline or "",
                 genre=novel.genre or "",
                 world_setting=json.dumps(novel.get_world_setting(), ensure_ascii=False),
-                total_chapters=total_chapters
+                total_chapters=total_chapters,
             )
 
             if progress_callback:
@@ -208,12 +254,14 @@ class NovelWorkflow:
             # 保存总大纲
             total = outline_data.get("total_outline", {})
             world_setting = total.pop("world_setting", {})
-            self.memory.global_mem.save_outline({
-                "novel_id": self.novel_id,
-                **total,
-                "total_chapters": total_chapters,
-                "full_outline_text": json.dumps(outline_data, ensure_ascii=False)
-            })
+            self.memory.global_mem.save_outline(
+                {
+                    "novel_id": self.novel_id,
+                    **total,
+                    "total_chapters": total_chapters,
+                    "full_outline_text": json.dumps(outline_data, ensure_ascii=False),
+                }
+            )
 
             # 更新世界观设定
             if world_setting:
@@ -227,10 +275,15 @@ class NovelWorkflow:
             chapters_data = outline_data.get("chapters", [])
             for ch_data in chapters_data:
                 # 处理JSON数组字段
-                for list_field in ["outline_characters", "outline_foreshadowing_set",
-                                    "outline_foreshadowing_collect"]:
+                for list_field in [
+                    "outline_characters",
+                    "outline_foreshadowing_set",
+                    "outline_foreshadowing_collect",
+                ]:
                     if list_field in ch_data and isinstance(ch_data[list_field], list):
-                        ch_data[list_field] = json.dumps(ch_data[list_field], ensure_ascii=False)
+                        ch_data[list_field] = json.dumps(
+                            ch_data[list_field], ensure_ascii=False
+                        )
                 ch_data["novel_id"] = self.novel_id
                 ch_data["status"] = "outlined"
                 self.memory.global_mem.save_chapter_outline(ch_data)
@@ -250,14 +303,15 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message=f"成功生成大纲：{len(chapters_data)}章详细章纲",
-                data={"chapters_count": len(chapters_data)}
+                data={"chapters_count": len(chapters_data)},
             )
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"大纲生成失败：{e}")
 
-    def generate_characters_from_outline(self,
-                                           progress_callback: Callable = None) -> WorkflowResult:
+    def generate_characters_from_outline(
+        self, progress_callback: Callable = None
+    ) -> WorkflowResult:
         """
         根据大纲自动生成人物档案
         """
@@ -270,12 +324,18 @@ class NovelWorkflow:
 
         try:
             # 构建大纲文本：全局设定 + 轻量章纲单行摘要（避免全量章纲撑爆 context）
-            base_ctx = self.memory.global_mem.build_global_context(include_chapters=False)
+            base_ctx = self.memory.global_mem.build_global_context(
+                include_chapters=False
+            )
             chapter_outlines = self.memory.global_mem.get_chapter_outlines()
             if chapter_outlines:
                 ch_lines = [
                     f"第{ch.chapter_number}章《{ch.title or ''}》：{ch.outline_core_event or ''}"
-                    + (f"  出场：{', '.join(ch.get_outline_characters())}" if ch.get_outline_characters() else "")
+                    + (
+                        f"  出场：{', '.join(ch.get_outline_characters())}"
+                        if ch.get_outline_characters()
+                        else ""
+                    )
                     for ch in chapter_outlines
                 ]
                 chapters_summary = "\n=== 章节大纲概览 ===\n" + "\n".join(ch_lines)
@@ -290,10 +350,16 @@ class NovelWorkflow:
             for char_data in characters_data:
                 # 处理JSON字段
                 for json_field in ["abilities", "relationships"]:
-                    if json_field in char_data and not isinstance(char_data[json_field], str):
-                        char_data[json_field] = json.dumps(char_data[json_field], ensure_ascii=False)
+                    if json_field in char_data and not isinstance(
+                        char_data[json_field], str
+                    ):
+                        char_data[json_field] = json.dumps(
+                            char_data[json_field], ensure_ascii=False
+                        )
                 if "aliases" in char_data and not isinstance(char_data["aliases"], str):
-                    char_data["aliases"] = json.dumps(char_data["aliases"], ensure_ascii=False)
+                    char_data["aliases"] = json.dumps(
+                        char_data["aliases"], ensure_ascii=False
+                    )
                 char_data["novel_id"] = self.novel_id
                 self.memory.global_mem.save_character(char_data)
 
@@ -303,7 +369,7 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message=f"成功创建 {len(characters_data)} 个人物档案",
-                data={"count": len(characters_data)}
+                data={"count": len(characters_data)},
             )
 
         except Exception as e:
@@ -320,7 +386,8 @@ class NovelWorkflow:
         word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
-        stream_callback: Callable = None
+        stream_callback: Callable = None,
+        prefilled_content: str = None,
     ) -> WorkflowResult:
         """
         完整的章节生成流水线（三关卡漏斗式审核）：
@@ -335,6 +402,7 @@ class NovelWorkflow:
             auto_polish: 是否自动润色（已由关卡3覆盖，保留兼容）
             progress_callback: 进度回调 (message: str)
             stream_callback: 流式输出回调 (chunk: str)
+            prefilled_content: 预填充内容（Agentic 模式使用，跳过写作步骤直接进入润色+审核）
 
         Returns:
             WorkflowResult，包含最终内容和审核报告
@@ -361,6 +429,7 @@ class NovelWorkflow:
                 auto_polish=auto_polish,
                 progress_callback=progress_callback,
                 stream_callback=stream_callback,
+                prefilled_content=prefilled_content,
             )
         finally:
             ch_lock.release()
@@ -372,7 +441,8 @@ class NovelWorkflow:
         word_count_tolerance: float = None,
         auto_polish: bool = True,
         progress_callback: Callable = None,
-        stream_callback: Callable = None
+        stream_callback: Callable = None,
+        prefilled_content: str = None,
     ) -> WorkflowResult:
         """write_and_review_chapter 的实际实现（由幂等包装层调用）"""
         import json as json_module
@@ -381,19 +451,30 @@ class NovelWorkflow:
             _novel = self.memory.global_mem.get_novel()
             # 字数容差：UI 传入 > quality_config > 全局默认
             _q = _novel.get_quality_config() if _novel else {}
-            _tolerance = word_count_tolerance if word_count_tolerance is not None \
-                         else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
-
-            # Step 1: 生成章节草稿
-            if progress_callback:
-                progress_callback(f"✍️ 正在写作第{chapter_number}章...")
-
-            current_content = self.writer_agent.write_chapter(
-                chapter_number=chapter_number,
-                word_target=word_target,
-                word_count_tolerance=_tolerance,
-                stream_callback=stream_callback
+            _tolerance = (
+                word_count_tolerance
+                if word_count_tolerance is not None
+                else float(_q.get("word_count_tolerance", WORD_COUNT_TOLERANCE))
             )
+
+            # Step 1: 生成章节草稿（若已有预填充内容则跳过）
+            if prefilled_content:
+                # Agentic 模式：使用外部已生成的内容
+                if progress_callback:
+                    progress_callback(
+                        f"📥 已接收 Agentic 生成内容（{len(prefilled_content)} 字）"
+                    )
+                current_content = prefilled_content
+            else:
+                if progress_callback:
+                    progress_callback(f"✍️ 正在写作第{chapter_number}章...")
+
+                current_content = self.writer_agent.write_chapter(
+                    chapter_number=chapter_number,
+                    word_target=word_target,
+                    word_count_tolerance=_tolerance,
+                    stream_callback=stream_callback,
+                )
             draft_content = current_content
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
@@ -404,7 +485,9 @@ class NovelWorkflow:
                 if progress_callback:
                     progress_callback(f"✨ 润色草稿...")
                 try:
-                    current_content = self.polisher_agent.polish_chapter(current_content)
+                    current_content = self.polisher_agent.polish_chapter(
+                        current_content
+                    )
                 except Exception:
                     pass  # 润色失败则继续用草稿
 
@@ -419,7 +502,8 @@ class NovelWorkflow:
 
             for attempt in range(_MAX_PARALLEL_ROUNDS):
                 last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
-                    chapter_number, current_content,
+                    chapter_number,
+                    current_content,
                     progress_callback=progress_callback,
                 )
 
@@ -475,32 +559,47 @@ class NovelWorkflow:
                     "gates": [g.to_dict() for g in last_gates],
                     "all_gate_results": all_gate_results_dicts,
                 }
-                chapter.review_report = json_module.dumps(pipeline_report, ensure_ascii=False)
+                chapter.review_report = json_module.dumps(
+                    pipeline_report, ensure_ascii=False
+                )
                 chapter.review_score = final_score
                 chapter.status = "reviewed" if final_passed else "review_pending"
                 self.db.commit()
 
             # Step 4: 保存最终内容（润色已在审核前完成，current_content 即为最终版本）
             final_content = current_content
-            self.memory.chapter_mem.save_chapter_content(chapter_number, final_content, "content")
+            self.memory.chapter_mem.save_chapter_content(
+                chapter_number, final_content, "content"
+            )
             import threading
             from core.memory import FragmentMemory
-            _nid, _cnum, _ctitle, _ccontent = self.novel_id, chapter_number, \
-                (chapter.title if chapter else ""), final_content
+
+            _nid, _cnum, _ctitle, _ccontent = (
+                self.novel_id,
+                chapter_number,
+                (chapter.title if chapter else ""),
+                final_content,
+            )
 
             def _rebuild_vectors():
                 try:
-                    FragmentMemory(_nid).add_chapter(_cnum, title=_ctitle, content=_ccontent)
+                    FragmentMemory(_nid).add_chapter(
+                        _cnum, title=_ctitle, content=_ccontent
+                    )
                 except Exception:
                     pass
 
             threading.Thread(target=_rebuild_vectors, daemon=True).start()
 
             if chapter:
-                self.memory.chapter_mem.save_version(chapter.id, draft_content, "draft", "AI初稿")
                 self.memory.chapter_mem.save_version(
-                    chapter.id, final_content, "polished",
-                    f"并行四审核{'✅通过' if final_passed else '⚠️部分通过'}，得分 {final_score:.1f}"
+                    chapter.id, draft_content, "draft", "AI初稿"
+                )
+                self.memory.chapter_mem.save_version(
+                    chapter.id,
+                    final_content,
+                    "polished",
+                    f"并行四审核{'✅通过' if final_passed else '⚠️部分通过'}，得分 {final_score:.1f}",
                 )
                 chapter.status = "published"
                 chapter.word_count = len(final_content)
@@ -515,7 +614,9 @@ class NovelWorkflow:
                     chapter_number, chapter.title or "", final_content
                 )
                 if summary_text:
-                    self.memory.chapter_mem.save_chapter_summary(chapter_number, summary_text, key_events)
+                    self.memory.chapter_mem.save_chapter_summary(
+                        chapter_number, summary_text, key_events
+                    )
             except Exception:
                 pass
 
@@ -531,7 +632,9 @@ class NovelWorkflow:
                 pass
 
             if progress_callback:
-                progress_callback(f"✅ 第{chapter_number}章完成！字数：{len(final_content)}，得分：{final_score:.1f}/10")
+                progress_callback(
+                    f"✅ 第{chapter_number}章完成！字数：{len(final_content)}，得分：{final_score:.1f}/10"
+                )
 
             return WorkflowResult(
                 success=True,
@@ -548,22 +651,21 @@ class NovelWorkflow:
                     "review_passed": final_passed,
                     "overall_score": final_score,
                     "sync_checks": sync_checks,
-                }
+                },
             )
 
         except Exception as e:
             return WorkflowResult(
-                success=False,
-                message=f"第{chapter_number}章写作失败：{e}"
+                success=False, message=f"第{chapter_number}章写作失败：{e}"
             )
 
     # ======================================
     # 阶段 4: 修改与更新
     # ======================================
 
-    def update_chapter_content(self, chapter_number: int,
-                                 new_content: str,
-                                 change_summary: str = "用户修改") -> WorkflowResult:
+    def update_chapter_content(
+        self, chapter_number: int, new_content: str, change_summary: str = "用户修改"
+    ) -> WorkflowResult:
         """
         用户修改章节内容后的处理
         - 保存修改
@@ -582,7 +684,9 @@ class NovelWorkflow:
             )
 
             # SQLite 写入（立即完成，< 1ms）
-            self.memory.chapter_mem.save_chapter_content(chapter_number, new_content, "content")
+            self.memory.chapter_mem.save_chapter_content(
+                chapter_number, new_content, "content"
+            )
 
             # 重置审批状态
             chapter.approval_status = "pending"
@@ -591,10 +695,11 @@ class NovelWorkflow:
             # 向量索引异步更新，不阻塞 UI
             import threading
             from core.memory import FragmentMemory
-            _novel_id   = self.novel_id
-            _ch_num     = chapter_number
-            _title      = chapter.title or ""
-            _content    = new_content
+
+            _novel_id = self.novel_id
+            _ch_num = chapter_number
+            _title = chapter.title or ""
+            _content = new_content
 
             def _rebuild_vectors():
                 try:
@@ -617,7 +722,9 @@ class NovelWorkflow:
         try:
             chapter = self.memory.chapter_mem.get_chapter(chapter_number)
             if not chapter or not chapter.content:
-                return WorkflowResult(success=True, message="无内容", data={"synced_count": 0})
+                return WorkflowResult(
+                    success=True, message="无内容", data={"synced_count": 0}
+                )
 
             rel_list = self.outline_agent.extract_relationships(
                 chapter_number, chapter.content
@@ -636,27 +743,36 @@ class NovelWorkflow:
                     # 合并到现有关系（新关系覆盖旧描述）
                     existing_rels = char.get_relationships()
                     existing_rels.update(new_rels)
-                    self.memory.global_mem.save_character({
-                        "name": char_name,
-                        "relationships": json.dumps(existing_rels, ensure_ascii=False),
-                    })
+                    self.memory.global_mem.save_character(
+                        {
+                            "name": char_name,
+                            "relationships": json.dumps(
+                                existing_rels, ensure_ascii=False
+                            ),
+                        }
+                    )
                     count += 1
                 except Exception:
                     pass
 
-            return WorkflowResult(success=True, message=f"同步{count}条", data={"synced_count": count})
+            return WorkflowResult(
+                success=True, message=f"同步{count}条", data={"synced_count": count}
+            )
         except Exception as e:
-            return WorkflowResult(success=False, message=f"同步失败：{e}", data={"synced_count": 0})
+            return WorkflowResult(
+                success=False, message=f"同步失败：{e}", data={"synced_count": 0}
+            )
 
-    def update_character(self, character_name: str,
-                           updates: dict) -> WorkflowResult:
+    def update_character(self, character_name: str, updates: dict) -> WorkflowResult:
         """
         更新人物设定并检测影响
         """
         try:
             char = self.memory.global_mem.get_character(character_name)
             if not char:
-                return WorkflowResult(success=False, message=f"找不到人物：{character_name}")
+                return WorkflowResult(
+                    success=False, message=f"找不到人物：{character_name}"
+                )
 
             # 保存更新
             for k, v in updates.items():
@@ -666,7 +782,9 @@ class NovelWorkflow:
 
             # 检测设定冲突
             detector = ConflictDetector(self.novel_id, self.model_reviewer)
-            conflicts = detector.detect_setting_conflict(updates, f"人物【{character_name}】")
+            conflicts = detector.detect_setting_conflict(
+                updates, f"人物【{character_name}】"
+            )
             detector.close()
 
             msg = "人物设定已更新"
@@ -676,7 +794,7 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message=msg,
-                data={"conflicts": [c.__dict__ for c in conflicts]}
+                data={"conflicts": [c.__dict__ for c in conflicts]},
             )
 
         except Exception as e:
@@ -704,16 +822,22 @@ class NovelWorkflow:
 
             # 计算实际变更（过滤掉未修改的字段）
             old_setting = novel.get_world_setting()
-            changes = {k: v for k, v in new_setting.items()
-                       if v.strip() and old_setting.get(k, "").strip() != v.strip()}
+            changes = {
+                k: v
+                for k, v in new_setting.items()
+                if v.strip() and old_setting.get(k, "").strip() != v.strip()
+            }
 
             # 保存新设定
             self.memory.global_mem.save_world_setting(new_setting)
 
             # 无实质变更时直接返回
             if not changes:
-                return WorkflowResult(success=True, message="世界观设定已保存（内容无变更）",
-                                      data={"changes": {}, "impact": None})
+                return WorkflowResult(
+                    success=True,
+                    message="世界观设定已保存（内容无变更）",
+                    data={"changes": {}, "impact": None},
+                )
 
             # 分析对已写章节的影响
             detector = ConflictDetector(self.novel_id, self.model_reviewer)
@@ -726,17 +850,15 @@ class NovelWorkflow:
                 msg += f"，{len(affected)} 个已完成章节可能受影响，请查看影响报告"
 
             return WorkflowResult(
-                success=True,
-                message=msg,
-                data={"changes": changes, "impact": impact}
+                success=True, message=msg, data={"changes": changes, "impact": impact}
             )
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"设定更新失败：{e}")
 
-    def update_chapter_outline(self, chapter_number: int,
-                                updates: dict,
-                                reason: str = "") -> WorkflowResult:
+    def update_chapter_outline(
+        self, chapter_number: int, updates: dict, reason: str = ""
+    ) -> WorkflowResult:
         """
         修改章节章纲，处理以下情况：
         - 若该章尚未写作：直接更新章纲
@@ -755,16 +877,24 @@ class NovelWorkflow:
         try:
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
             if not chapter:
-                return WorkflowResult(success=False, message=f"第{chapter_number}章章纲不存在")
+                return WorkflowResult(
+                    success=False, message=f"第{chapter_number}章章纲不存在"
+                )
 
             old_outline_text = chapter.to_outline_text()
-            was_published = (chapter.status == "published")
+            was_published = chapter.status == "published"
 
             # 保存章纲更新
             allowed_fields = {
-                "title", "outline_core_event", "outline_conflict",
-                "outline_characters", "outline_scene", "outline_foreshadowing_set",
-                "outline_foreshadowing_collect", "outline_emotion", "outline_ending"
+                "title",
+                "outline_core_event",
+                "outline_conflict",
+                "outline_characters",
+                "outline_scene",
+                "outline_foreshadowing_set",
+                "outline_foreshadowing_collect",
+                "outline_emotion",
+                "outline_ending",
             }
             for k, v in updates.items():
                 if k in allowed_fields and hasattr(chapter, k):
@@ -777,8 +907,12 @@ class NovelWorkflow:
             self.db.commit()
 
             # 分析对后续已写章节的影响（仅当核心内容发生变化时）
-            core_change_keys = {"outline_core_event", "outline_conflict",
-                                "outline_characters", "outline_ending"}
+            core_change_keys = {
+                "outline_core_event",
+                "outline_conflict",
+                "outline_characters",
+                "outline_ending",
+            }
             affected_chapters = []
             if core_change_keys & set(updates.keys()):
                 detector = ConflictDetector(self.novel_id, self.model_reviewer)
@@ -799,8 +933,8 @@ class NovelWorkflow:
                 data={
                     "was_published": was_published,
                     "affected_chapters": affected_chapters,
-                    "reason": reason
-                }
+                    "reason": reason,
+                },
             )
 
         except Exception as e:
@@ -816,8 +950,12 @@ class NovelWorkflow:
         """
         try:
             outline_fields = {
-                "title", "outline_core_event", "outline_conflict",
-                "outline_scene", "outline_emotion", "outline_ending",
+                "title",
+                "outline_core_event",
+                "outline_conflict",
+                "outline_scene",
+                "outline_emotion",
+                "outline_ending",
             }
             updated = created = 0
             for data in outlines:
@@ -838,7 +976,9 @@ class NovelWorkflow:
                     updated += 1
                 else:
                     # 章节不存在，新建章节槽
-                    new_data = {k: v for k, v in data.items() if k in outline_fields and v}
+                    new_data = {
+                        k: v for k, v in data.items() if k in outline_fields and v
+                    }
                     new_data["chapter_number"] = ch_num
                     new_data["status"] = "outlined"
                     if "title" not in new_data:
@@ -860,8 +1000,9 @@ class NovelWorkflow:
     # 风格迁移
     # ======================================
 
-    def analyze_writing_style(self, reference_text: str,
-                               progress_callback: Callable = None) -> WorkflowResult:
+    def analyze_writing_style(
+        self, reference_text: str, progress_callback: Callable = None
+    ) -> WorkflowResult:
         """
         分析参考文本的写作风格，提取结构化特征，保存为风格档案。
 
@@ -898,19 +1039,21 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message="风格分析完成，已生成风格档案",
-                data={"profile": profile}
+                data={"profile": profile},
             )
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"风格分析失败：{e}")
 
-    def auto_learn_style_from_chapters(self, sample_chapters: int = 5,
-                                        progress_callback: Callable = None) -> WorkflowResult:
+    def auto_learn_style_from_chapters(
+        self, sample_chapters: int = 5, progress_callback: Callable = None
+    ) -> WorkflowResult:
         """
         从已完成章节中自动学习写作风格。
         取最近 sample_chapters 篇已审核章节的正文，合并后调用 analyze_writing_style。
         """
         from core.models import Chapter
+
         db = get_db()
         chapters = (
             db.query(Chapter)
@@ -927,19 +1070,24 @@ class NovelWorkflow:
         db.close()
 
         if not chapters:
-            return WorkflowResult(success=False, message="暂无已审核的章节，请先完成并审核至少一章。")
+            return WorkflowResult(
+                success=False, message="暂无已审核的章节，请先完成并审核至少一章。"
+            )
 
         # 按章节顺序拼接
         chapters_sorted = sorted(chapters, key=lambda c: c.chapter_number)
         combined = "\n\n".join(
-            f"【第{c.chapter_number}章 {c.title or ''}】\n{c.content}" for c in chapters_sorted
+            f"【第{c.chapter_number}章 {c.title or ''}】\n{c.content}"
+            for c in chapters_sorted
         )
         count = len(chapters_sorted)
 
         if progress_callback:
             progress_callback(f"📖 已收集 {count} 章内容，正在分析风格特征…")
 
-        result = self.analyze_writing_style(combined, progress_callback=progress_callback)
+        result = self.analyze_writing_style(
+            combined, progress_callback=progress_callback
+        )
         if result.success:
             result.message = f"已从 {count} 章内容中学习风格，档案已保存。"
         return result
@@ -989,9 +1137,12 @@ class NovelWorkflow:
     # 读者模拟
     # ======================================
 
-    def reader_test_chapter(self, chapter_number: int,
-                             reader_types: list[str] = None,
-                             progress_callback: Callable = None) -> WorkflowResult:
+    def reader_test_chapter(
+        self,
+        chapter_number: int,
+        reader_types: list[str] = None,
+        progress_callback: Callable = None,
+    ) -> WorkflowResult:
         """
         对指定章节运行读者模拟测试，保存反馈到 Chapter。
         reader_types: 默认全部三种 ["power_fantasy", "literary", "light_novel"]
@@ -1015,7 +1166,7 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message=f"读者模拟完成，综合评分：{feedback.get('overall_score', 0):.1f}/10",
-                data={"feedback": feedback}
+                data={"feedback": feedback},
             )
         except Exception as e:
             return WorkflowResult(success=False, message=f"读者模拟失败：{e}")
@@ -1062,13 +1213,19 @@ class NovelWorkflow:
                 progress_callback=progress_callback,
             )
 
-            results.append({
-                "chapter_number": ch_num,
-                "success": result.success,
-                "message": result.message,
-                "word_count": result.data.get("word_count", 0) if result.success else 0,
-                "score": result.data.get("overall_score", 0) if result.success else 0,
-            })
+            results.append(
+                {
+                    "chapter_number": ch_num,
+                    "success": result.success,
+                    "message": result.message,
+                    "word_count": result.data.get("word_count", 0)
+                    if result.success
+                    else 0,
+                    "score": result.data.get("overall_score", 0)
+                    if result.success
+                    else 0,
+                }
+            )
 
             if chapter_callback:
                 chapter_callback(ch_num, result)
@@ -1076,8 +1233,11 @@ class NovelWorkflow:
         # 汇总统计
         success_count = sum(1 for r in results if r["success"])
         total_words = sum(r["word_count"] for r in results)
-        avg_score = (sum(r["score"] for r in results if r["success"]) / success_count
-                     if success_count else 0)
+        avg_score = (
+            sum(r["score"] for r in results if r["success"]) / success_count
+            if success_count
+            else 0
+        )
 
         return WorkflowResult(
             success=success_count > 0,
@@ -1088,7 +1248,7 @@ class NovelWorkflow:
                 "fail_count": total - success_count,
                 "total_words": total_words,
                 "avg_score": avg_score,
-            }
+            },
         )
 
     def clear_writing_style(self) -> WorkflowResult:
@@ -1105,7 +1265,9 @@ class NovelWorkflow:
             novel.style_reference_text = None
             db.commit()
             db.close()
-            return WorkflowResult(success=True, message="风格档案已清除，后续润色将恢复默认风格")
+            return WorkflowResult(
+                success=True, message="风格档案已清除，后续润色将恢复默认风格"
+            )
         except Exception as e:
             return WorkflowResult(success=False, message=f"清除失败：{e}")
 
@@ -1122,8 +1284,10 @@ class NovelWorkflow:
             created = self.memory.global_mem.sync_foreshadowings_from_outlines()
             return WorkflowResult(
                 success=True,
-                message=f"同步完成，新增 {created} 条伏笔记录" if created else "无需同步（无新伏笔）",
-                data={"created": created}
+                message=f"同步完成，新增 {created} 条伏笔记录"
+                if created
+                else "无需同步（无新伏笔）",
+                data={"created": created},
             )
         except Exception as e:
             return WorkflowResult(success=False, message=f"同步失败：{e}")
@@ -1139,7 +1303,13 @@ class NovelWorkflow:
         overdue_ids = {f.id for f in overdue}
 
         all_active = gm.get_active_foreshadowings()
-        on_track = [f for f in all_active if f.collect_by_chapter and f.id not in overdue_ids and f.id not in due_soon_ids]
+        on_track = [
+            f
+            for f in all_active
+            if f.collect_by_chapter
+            and f.id not in overdue_ids
+            and f.id not in due_soon_ids
+        ]
         no_deadline = [f for f in all_active if not f.collect_by_chapter]
 
         def _serialize(fs_list):
@@ -1163,17 +1333,24 @@ class NovelWorkflow:
             "total_active": len(all_active),
         }
 
-    def assign_foreshadowing_deadlines(self,
-                                        progress_callback: Callable = None) -> WorkflowResult:
+    def assign_foreshadowing_deadlines(
+        self, progress_callback: Callable = None
+    ) -> WorkflowResult:
         """
         使用 LLM 批量为所有活跃且尚无截止章节的伏笔分配合理截止章节。
         """
         from core.models import Foreshadowing as ForeshadowingModel
 
         gm = self.memory.global_mem
-        active_fs = [f for f in gm.get_active_foreshadowings() if not f.collect_by_chapter]
+        active_fs = [
+            f for f in gm.get_active_foreshadowings() if not f.collect_by_chapter
+        ]
         if not active_fs:
-            return WorkflowResult(success=True, message="所有活跃伏笔已设有截止章节，无需分配", data={"assignments": []})
+            return WorkflowResult(
+                success=True,
+                message="所有活跃伏笔已设有截止章节，无需分配",
+                data={"assignments": []},
+            )
 
         outline = gm.get_outline()
         total_chapters = outline.total_chapters if outline else 100
@@ -1197,7 +1374,7 @@ class NovelWorkflow:
         user_prompt = f"""根据以下小说结构和伏笔信息，为每个伏笔分配合理的最晚回收章节（collect_by_chapter）。
 
 小说共 {total_chapters} 章，故事结构：
-{story_structure or '（未提供三幕结构）'}
+{story_structure or "（未提供三幕结构）"}
 
 待分配伏笔（共{len(active_fs)}条）：
 {fs_list_text}
@@ -1214,18 +1391,24 @@ class NovelWorkflow:
 
         try:
             from core.llm import NovelLLM
+
             llm = NovelLLM(self.model_outline, novel_id=self.novel_id)
-            response = llm.generate(system_prompt, user_prompt, max_tokens=2048, cache_system=False)
+            response = llm.generate(
+                system_prompt, user_prompt, max_tokens=2048, cache_system=False
+            )
 
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             if json_start < 0:
-                return WorkflowResult(success=False, message="LLM 返回格式异常，无法解析")
+                return WorkflowResult(
+                    success=False, message="LLM 返回格式异常，无法解析"
+                )
 
             try:
                 result = json.loads(response[json_start:json_end])
             except json.JSONDecodeError:
                 from json_repair import repair_json
+
                 result = json.loads(repair_json(response[json_start:json_end]))
             assignments = result.get("assignments", [])
 
@@ -1246,7 +1429,7 @@ class NovelWorkflow:
             return WorkflowResult(
                 success=True,
                 message=f"已为 {updated} 个伏笔分配截止章节",
-                data={"assignments": assignments}
+                data={"assignments": assignments},
             )
 
         except Exception as e:
@@ -1289,14 +1472,21 @@ class NovelWorkflow:
 # 便捷工厂函数
 # ======================================
 
-def create_new_novel(title: str, logline: str, genre: str = "",
-                      writing_style: str = "",
-                      llm_model: str = None,
-                      author: str = "") -> "NovelWorkflow":
+
+def create_new_novel(
+    title: str,
+    logline: str,
+    genre: str = "",
+    writing_style: str = "",
+    llm_model: str = None,
+    author: str = "",
+) -> "NovelWorkflow":
     """
     创建新小说项目并返回工作流对象
     """
-    novel_id = NovelWorkflow.create_novel(title, logline, genre, writing_style, llm_model, author=author)
+    novel_id = NovelWorkflow.create_novel(
+        title, logline, genre, writing_style, llm_model, author=author
+    )
     return NovelWorkflow(novel_id)
 
 
@@ -1359,12 +1549,22 @@ class NovelWorkflowImportMixin:
         if any(v for v in total_outline.values() if v):
             existing = mem.get_outline()
             outline_data = {}
-            fields = ["premise", "theme", "main_conflict", "protagonist_arc",
-                      "ending_summary", "story_structure"]
+            fields = [
+                "premise",
+                "theme",
+                "main_conflict",
+                "protagonist_arc",
+                "ending_summary",
+                "story_structure",
+            ]
             for f in fields:
                 val = total_outline.get(f)
                 if val:
-                    outline_data[f] = json.dumps(val, ensure_ascii=False) if isinstance(val, dict) else val
+                    outline_data[f] = (
+                        json.dumps(val, ensure_ascii=False)
+                        if isinstance(val, dict)
+                        else val
+                    )
             if outline_data:
                 if existing:
                     outline_data["novel_id"] = self.novel_id
@@ -1408,9 +1608,15 @@ class NovelWorkflowImportMixin:
             clean = {k: v for k, v in ch_data.items() if v and k != "novel_id"}
             clean["novel_id"] = self.novel_id
             # list 类型字段转 JSON string
-            for list_field in ["outline_characters", "outline_foreshadowing_set", "outline_foreshadowing_collect"]:
+            for list_field in [
+                "outline_characters",
+                "outline_foreshadowing_set",
+                "outline_foreshadowing_collect",
+            ]:
                 if isinstance(clean.get(list_field), list):
-                    clean[list_field] = json.dumps(clean[list_field], ensure_ascii=False)
+                    clean[list_field] = json.dumps(
+                        clean[list_field], ensure_ascii=False
+                    )
             existing_ch = mem.get_chapter_outline(ch_num)
             if not existing_ch:
                 clean.setdefault("status", "outlined")
