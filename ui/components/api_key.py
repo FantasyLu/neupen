@@ -65,7 +65,7 @@ def render_api_key_form(form_key: str = "api_key_form"):
                 st.caption(f"获取地址：{p['url']}")
             st.markdown("")  # spacing
 
-        if st.form_submit_button("💾 保存配置", use_container_width=True, type="primary"):
+        if st.form_submit_button("💾 保存配置", width="stretch", type="primary"):
             to_save = {k: v.strip() for k, v in inputs.items() if v.strip()}
             if to_save:
                 save_api_keys(to_save)

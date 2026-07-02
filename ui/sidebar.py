@@ -115,7 +115,7 @@ def render_sidebar():
                     except Exception:
                         pass
 
-                if st.button("切换项目", use_container_width=True):
+                if st.button("切换项目", width="stretch"):
                     st.session_state.novel_id = None
                     st.session_state.collab_identity = None
                     st.session_state.page = "项目管理"
@@ -142,14 +142,14 @@ def render_sidebar():
             label = _NAV_LABELS.get(page, page)
             is_current = st.session_state.page == page
             btn_type = "primary" if is_current else "secondary"
-            if st.button(label, use_container_width=True, type=btn_type, key=f"nav_{page}"):
+            if st.button(label, width="stretch", type=btn_type, key=f"nav_{page}"):
                 st.session_state.page = page
                 st.rerun()
 
         # 平台风格（全局配置）
         st.divider()
         is_ps = st.session_state.page == "平台风格"
-        if st.button("Platforms", use_container_width=True,
+        if st.button("Platforms", width="stretch",
                      type="primary" if is_ps else "secondary",
                      key="nav_platform"):
             st.session_state.page = "平台风格"

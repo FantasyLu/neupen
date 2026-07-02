@@ -425,7 +425,7 @@ def render_global_chat(novel_id: int):
                                     if st.button(
                                         "↩️ 重新写入",
                                         key=f"global_reapply_{novel_id}_{idx}_{p_idx}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         _apply_content(
                                             "chapter", part["content"], novel_id
@@ -434,7 +434,7 @@ def render_global_chat(novel_id: int):
                                     if st.button(
                                         label,
                                         key=f"global_apply_{novel_id}_{idx}_{p_idx}_{block_type}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         _apply_content(
@@ -458,7 +458,7 @@ def render_global_chat(novel_id: int):
                             if st.button(
                                 "✅ 确认写入",
                                 key=f"fb_apply_{novel_id}_{idx}",
-                                use_container_width=True,
+                                width="stretch",
                                 type="primary",
                             ):
                                 sel_idx = fallback_labels.index(fb_sel)
@@ -657,6 +657,6 @@ def render_global_chat(novel_id: int):
         st.rerun()
 
     if history:
-        if st.button("🗑️ 清空", use_container_width=True, key="clear_global_chat"):
+        if st.button("🗑️ 清空", width="stretch", key="clear_global_chat"):
             st.session_state[chat_key] = []
             st.rerun()

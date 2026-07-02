@@ -69,12 +69,12 @@ def page_platform_styles():
                             help="写作和润色时会把这段描述注入提示词，建议具体描述节奏、语气、读者偏好等。"
                         )
                         c1, c2 = st.columns([3, 1])
-                        if c1.button("💾 保存", key=f"save_{platform}_{tag}", use_container_width=True):
+                        if c1.button("💾 保存", key=f"save_{platform}_{tag}", width="stretch"):
                             styles[platform][tag] = new_desc.strip()
                             save_platform_styles(styles)
                             st.toast(f"✅ 已保存「{tag}」")
                         if c2.button("🗑️", key=f"del_{platform}_{tag}",
-                                     help=f"删除标签「{tag}」", use_container_width=True):
+                                     help=f"删除标签「{tag}」", width="stretch"):
                             del styles[platform][tag]
                             save_platform_styles(styles)
                             st.rerun()
@@ -92,7 +92,7 @@ def page_platform_styles():
                     placeholder="描述该平台此标签下的写作风格要求：节奏、语气、情节偏好、读者期待等…",
                     key=f"new_tag_desc_{platform}"
                 )
-                if st.form_submit_button("新增标签", use_container_width=True):
+                if st.form_submit_button("新增标签", width="stretch"):
                     tag_name = new_tag.strip()
                     if not tag_name:
                         st.warning("请输入标签名称")

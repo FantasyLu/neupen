@@ -32,7 +32,7 @@ def render_character_network(novel_id: int):
         only_main = st.checkbox("只显示主要人物", value=False)
     with ctrl2:
         sync_btn = st.button(
-            "🔄 AI 同步人物关系", use_container_width=True,
+            "🔄 AI 同步人物关系", width="stretch",
             disabled=not can_edit(novel_id),
             help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用"
         )
@@ -331,7 +331,7 @@ def render_foreshadowing_heatmap(novel_id: int):
         )
         chart = chart + deadlines
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
     st.caption(
         "**图例：** 条形 = 伏笔生命周期（从埋下到回收），"
@@ -408,7 +408,7 @@ def render_emotion_curve(novel_id: int):
                     alt.Tooltip("情感基调:N"),
                 ],
             ).properties(height=250)
-            st.altair_chart(word_chart, use_container_width=True)
+            st.altair_chart(word_chart, width="stretch")
         return
 
     # 用户筛选要展示的曲线
@@ -449,7 +449,7 @@ def render_emotion_curve(novel_id: int):
         ],
     ).properties(height=400)
 
-    st.altair_chart(line, use_container_width=True)
+    st.altair_chart(line, width="stretch")
 
     # 字数柱状图（辅助参考）
     if "字数" in df.columns and df["字数"].notna().any():
@@ -466,7 +466,7 @@ def render_emotion_curve(novel_id: int):
                 alt.Tooltip("情感基调:N"),
             ],
         ).properties(height=200)
-        st.altair_chart(word_chart, use_container_width=True)
+        st.altair_chart(word_chart, width="stretch")
 
     # 情感基调文本表（辅助参考）
     emotion_data = [(ch.chapter_number, ch.title or "", ch.outline_emotion or "")
