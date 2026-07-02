@@ -3,6 +3,7 @@
 解析 outline / settings / world / characters / chapter / volume / foreshadowing 类型代码块并提供一键应用。
 AI 未使用类型化代码块时，提供「应用到…」下拉选择器兜底。
 """
+
 import json
 import re
 
@@ -18,26 +19,26 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, Volume
 # ──────────────────────────────────────────────────────────────
 
 _TYPED_BLOCK_RE = re.compile(
-    r'```\s*(outline|settings|world|characters|chapter|volume|foreshadowing|style)\s*\r?\n(.*?)```',
-    re.DOTALL
+    r"```\s*(outline|settings|world|characters|chapter|volume|foreshadowing|style)\s*\r?\n(.*?)```",
+    re.DOTALL,
 )
 
 _APPLY_LABELS = {
-    "outline":       ("📖 应用到大纲",   "大纲管理"),
-    "settings":      ("⚙️ 应用到设定文档", "设定管理"),
-    "world":         ("🌍 应用到世界观",   "设定管理"),
-    "characters":    ("👤 应用到人物档案", "设定管理"),
-    "chapter":       ("✍️ 应用到章节",    "写作"),
-    "volume":        ("📋 应用到卷大纲",   "大纲管理"),
-    "foreshadowing": ("📌 应用到伏笔库",   "设定管理"),
-    "style":         ("🎨 应用到写作风格", "设定管理"),
+    "outline": ("📖 应用到大纲", "大纲管理"),
+    "settings": ("⚙️ 应用到设定文档", "设定管理"),
+    "world": ("🌍 应用到世界观", "设定管理"),
+    "characters": ("👤 应用到人物档案", "设定管理"),
+    "chapter": ("✍️ 应用到章节", "写作"),
+    "volume": ("📋 应用到卷大纲", "大纲管理"),
+    "foreshadowing": ("📌 应用到伏笔库", "设定管理"),
+    "style": ("🎨 应用到写作风格", "设定管理"),
 }
 
 # 兜底应用目标列表（用于未使用类型化代码块时）
 _FALLBACK_TARGETS = [
     ("大纲管理", "outline"),
     ("设定文档", "settings"),
-    ("世界观",   "world"),
+    ("世界观", "world"),
     ("人物档案", "characters"),
     ("章节正文", "chapter"),
 ]
@@ -49,7 +50,7 @@ def _parse_response(text: str):
     last_end = 0
     for m in _TYPED_BLOCK_RE.finditer(text):
         if m.start() > last_end:
-            seg = text[last_end:m.start()].strip()
+            seg = text[last_end : m.start()].strip()
             if seg:
                 parts.append({"type": "text", "content": seg})
         parts.append({"type": m.group(1), "content": m.group(2).strip()})
@@ -80,7 +81,7 @@ def _extract_substantive_content(text: str) -> str:
         return "\n\n".join(block[1].strip() for block in typed_blocks)
 
     # 2. 提取普通 markdown 代码块（``` 或 ```markdown）
-    md_blocks = re.findall(r'```(?:markdown|text)?\s*\r?\n(.*?)```', text, re.DOTALL)
+    md_blocks = re.findall(r"```(?:markdown|text)?\s*\r?\n(.*?)```", text, re.DOTALL)
     if md_blocks:
         return "\n\n".join(b.strip() for b in md_blocks)
 
@@ -93,17 +94,17 @@ def _extract_substantive_content(text: str) -> str:
 
     # 4. 去掉 AI 对话前缀（常见开头模式）
     _CONVERSATION_PREFIXES = [
-        r'^好的[，,]\s*',
-        r'^收到[，,]\s*',
-        r'^了解[，,]\s*',
-        r'^明白了[，,]\s*',
-        r'^根据您[^。\n]*[。\n]',
-        r'^以下[是为][^。\n]*[：:]\s*',
-        r'^现在[，,]?\s*我[^。\n]*[：:]\s*',
-        r'^已[经收][^。\n]*[。\n]',
+        r"^好的[，,]\s*",
+        r"^收到[，,]\s*",
+        r"^了解[，,]\s*",
+        r"^明白了[，,]\s*",
+        r"^根据您[^。\n]*[。\n]",
+        r"^以下[是为][^。\n]*[：:]\s*",
+        r"^现在[，,]?\s*我[^。\n]*[：:]\s*",
+        r"^已[经收][^。\n]*[。\n]",
     ]
     for pattern in _CONVERSATION_PREFIXES:
-        cleaned = re.sub(pattern, '', text.strip(), count=1, flags=re.DOTALL)
+        cleaned = re.sub(pattern, "", text.strip(), count=1, flags=re.DOTALL)
         if cleaned != text.strip():
             return cleaned.strip()
 
@@ -114,6 +115,7 @@ def _extract_substantive_content(text: str) -> str:
 # 应用逻辑
 # ──────────────────────────────────────────────────────────────
 
+
 def _apply_content(block_type: str, content: str, novel_id: int):
     """将内容写入对应目标（session state / 数据库），并跳转到目标页面"""
     if block_type == "outline":
@@ -122,9 +124,14 @@ def _apply_content(block_type: str, content: str, novel_id: int):
         try:
             from core.models import NovelOutline
             from ui.pages.outline import _markdown_to_outline_fields
+
             fields = _markdown_to_outline_fields(content)
             db_w = get_db()
-            outline = db_w.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
+            outline = (
+                db_w.query(NovelOutline)
+                .filter(NovelOutline.novel_id == novel_id)
+                .first()
+            )
             if outline:
                 for k, v in fields.items():
                     if hasattr(outline, k):
@@ -145,16 +152,23 @@ def _apply_content(block_type: str, content: str, novel_id: int):
         # 自动持久化到设定文档数据库
         try:
             db_s = get_db()
-            existing = db_s.query(NovelDocument).filter_by(
-                novel_id=novel_id, doc_type="background"
-            ).first()
+            existing = (
+                db_s.query(NovelDocument)
+                .filter_by(novel_id=novel_id, doc_type="background")
+                .first()
+            )
             if existing:
                 existing.content = content
             else:
-                db_s.add(NovelDocument(
-                    novel_id=novel_id, doc_type="background",
-                    title="背景设定", content=content, sort_order=0
-                ))
+                db_s.add(
+                    NovelDocument(
+                        novel_id=novel_id,
+                        doc_type="background",
+                        title="背景设定",
+                        content=content,
+                        sort_order=0,
+                    )
+                )
             db_s.commit()
             db_s.close()
             st.toast("✅ 设定已保存", icon="⚙️")
@@ -212,17 +226,23 @@ def _apply_content(block_type: str, content: str, novel_id: int):
                 }
                 # 可选字段：别名、人际关系、能力
                 if char.get("aliases"):
-                    char_data["aliases"] = json.dumps(
-                        char["aliases"], ensure_ascii=False
-                    ) if not isinstance(char["aliases"], str) else char["aliases"]
+                    char_data["aliases"] = (
+                        json.dumps(char["aliases"], ensure_ascii=False)
+                        if not isinstance(char["aliases"], str)
+                        else char["aliases"]
+                    )
                 if char.get("abilities"):
-                    char_data["abilities"] = json.dumps(
-                        char["abilities"], ensure_ascii=False
-                    ) if not isinstance(char["abilities"], str) else char["abilities"]
+                    char_data["abilities"] = (
+                        json.dumps(char["abilities"], ensure_ascii=False)
+                        if not isinstance(char["abilities"], str)
+                        else char["abilities"]
+                    )
                 if char.get("relationships"):
-                    char_data["relationships"] = json.dumps(
-                        char["relationships"], ensure_ascii=False
-                    ) if not isinstance(char["relationships"], str) else char["relationships"]
+                    char_data["relationships"] = (
+                        json.dumps(char["relationships"], ensure_ascii=False)
+                        if not isinstance(char["relationships"], str)
+                        else char["relationships"]
+                    )
                 wf.memory.global_mem.save_character(char_data)
                 saved += 1
             parts = []
@@ -322,6 +342,7 @@ def _apply_content(block_type: str, content: str, novel_id: int):
 # 构建上下文辅助
 # ──────────────────────────────────────────────────────────────
 
+
 def _build_doc_context(novel_id: int) -> str:
     """根据当前页面和选中的内容，构建给 AI 的上下文文档"""
     parts = []
@@ -363,6 +384,7 @@ def _build_doc_context(novel_id: int) -> str:
 # 主渲染函数
 # ──────────────────────────────────────────────────────────────
 
+
 def render_global_chat(novel_id: int):
     """在调用处渲染常驻 AI 创作助手（设计为嵌入 sidebar）"""
     chat_key = f"global_chat_{novel_id}"
@@ -394,33 +416,51 @@ def render_global_chat(novel_id: int):
                             label, _ = _APPLY_LABELS.get(block_type, ("应用", ""))
                             with st.container(border=True):
                                 preview = part["content"][:150]
-                                st.markdown(preview + ("…" if len(part["content"]) > 150 else ""))
+                                st.markdown(
+                                    preview
+                                    + ("…" if len(part["content"]) > 150 else "")
+                                )
                                 if block_type == "chapter":
                                     st.caption("✅ 已自动写入编辑器")
-                                    if st.button("↩️ 重新写入",
-                                                 key=f"global_reapply_{novel_id}_{idx}_{p_idx}",
-                                                 use_container_width=True):
-                                        _apply_content("chapter", part["content"], novel_id)
+                                    if st.button(
+                                        "↩️ 重新写入",
+                                        key=f"global_reapply_{novel_id}_{idx}_{p_idx}",
+                                        use_container_width=True,
+                                    ):
+                                        _apply_content(
+                                            "chapter", part["content"], novel_id
+                                        )
                                 else:
-                                    if st.button(label,
-                                                 key=f"global_apply_{novel_id}_{idx}_{p_idx}_{block_type}",
-                                                 use_container_width=True, type="primary"):
-                                        _apply_content(block_type, part["content"], novel_id)
+                                    if st.button(
+                                        label,
+                                        key=f"global_apply_{novel_id}_{idx}_{p_idx}_{block_type}",
+                                        use_container_width=True,
+                                        type="primary",
+                                    ):
+                                        _apply_content(
+                                            block_type, part["content"], novel_id
+                                        )
 
                     # ── 兜底：AI 未使用类型化代码块时，显示「应用到…」选择器 ──
                     if not has_typed and len(msg["content"].strip()) > 80:
                         with st.container(border=True):
                             st.caption("📋 AI 未使用代码块格式，你可以手动选择写入目标")
-                            fallback_targets = [("自动检测", "auto")] + _FALLBACK_TARGETS
+                            fallback_targets = [
+                                ("自动检测", "auto")
+                            ] + _FALLBACK_TARGETS
                             fallback_labels = [t[0] for t in fallback_targets]
                             fb_sel = st.selectbox(
                                 "选择写入目标",
                                 fallback_labels,
                                 key=f"fb_target_{novel_id}_{idx}",
-                                label_visibility="collapsed"
+                                label_visibility="collapsed",
                             )
-                            if st.button("✅ 确认写入", key=f"fb_apply_{novel_id}_{idx}",
-                                         use_container_width=True, type="primary"):
+                            if st.button(
+                                "✅ 确认写入",
+                                key=f"fb_apply_{novel_id}_{idx}",
+                                use_container_width=True,
+                                type="primary",
+                            ):
                                 sel_idx = fallback_labels.index(fb_sel)
                                 target = fallback_targets[sel_idx][1]
                                 if target == "auto":
@@ -434,11 +474,22 @@ def render_global_chat(novel_id: int):
                                         target = "settings"
                                     else:
                                         target = "outline"
-                                content_to_apply = _extract_substantive_content(msg["content"])
+                                content_to_apply = _extract_substantive_content(
+                                    msg["content"]
+                                )
                                 _apply_content(target, content_to_apply, novel_id)
 
                 else:
                     st.markdown(msg["content"])
+
+    # Agentic 模式开关（置于输入框上方）
+    agentic_on = st.toggle(
+        "🧠 Agentic 对话",
+        value=st.session_state.get("canvas_agentic_mode", False),
+        key="canvas_agentic_toggle",
+        help="开启后 AI 会在回复前自主查询角色档案、历史章节、伏笔等信息，回答更准确，但速度稍慢。",
+    )
+    st.session_state["canvas_agentic_mode"] = agentic_on
 
     if user_input := st.chat_input("和 AI 讨论…", key="global_chat_input"):
         history.append({"role": "user", "content": user_input})
@@ -466,8 +517,9 @@ def render_global_chat(novel_id: int):
         from core.config import TEMPERATURE_CANVAS as _DEF_CANVAS_TEMP
 
         agent = CanvasAgent(
-            novel_id=novel_id, role="global",
-            temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP
+            novel_id=novel_id,
+            role="global",
+            temperature=canvas_temp if canvas_temp is not None else _DEF_CANVAS_TEMP,
         )
 
         # ── 进度日志收集（操作类任务用）──────────────────────────
@@ -475,6 +527,34 @@ def render_global_chat(novel_id: int):
 
         def _on_progress(msg: str):
             progress_log.append(msg)
+
+        # ── Agentic 查询步骤收集 ──────────────────────────────────
+        agentic_steps: list[str] = []
+
+        def _on_agentic_step(event_type: str, data: dict):
+            from core.agentic_loop import StepEvent
+
+            if event_type == StepEvent.TOOL_CALL:
+                tool = data.get("tool", "")
+                args = data.get("args", {})
+                idx = data.get("call_index", "?")
+                args_str = "、".join(f"{k}={v}" for k, v in args.items())
+                agentic_steps.append(f"**[{idx}]** 查询 `{tool}` — {args_str}")
+            elif event_type == StepEvent.TOOL_RESULT:
+                result_len = data.get("result_length", 0)
+                if agentic_steps:
+                    agentic_steps[-1] += f" → {result_len} 字"
+            elif event_type == StepEvent.DUPLICATE_SKIP:
+                agentic_steps.append(f"  *(重复查询，使用缓存)*")
+            elif event_type in (
+                StepEvent.STALL_DETECTED,
+                StepEvent.MAX_CALLS_REACHED,
+                StepEvent.BUDGET_EXCEEDED,
+            ):
+                agentic_steps.append("📊 查询完毕，生成回复…")
+
+        # ── 检查是否启用 Agentic Chat 模式 ──────────────────────
+        agentic_chat_enabled = st.session_state.get("canvas_agentic_mode", False)
 
         # ── 执行 dispatch（意图分类 + 路由）──────────────────────
         dispatch_result: dict = {}
@@ -487,6 +567,17 @@ def render_global_chat(novel_id: int):
                     chapter_number=ch_num if page == "写作" else None,
                     progress_callback=_on_progress,
                 )
+
+                # 若 intent 为 chat 且启用了 agentic 模式，改走 chat_agentic
+                if agentic_chat_enabled and dispatch_result.get("intent") == "chat":
+                    agentic_reply = agent.chat_agentic(
+                        messages=history,
+                        page=page,
+                        chapter_number=ch_num if page == "写作" else None,
+                        step_callback=_on_agentic_step,
+                    )
+                    dispatch_result["reply"] = agentic_reply
+
                 agent.close()
             except Exception as e:
                 agent.close()
@@ -509,6 +600,11 @@ def render_global_chat(novel_id: int):
                 log_block += "\n- ⚠️ 已降级为普通回复"
             reply = f"**执行日志**\n{log_block}\n\n---\n\n{reply}"
 
+        # Agentic 模式：若有查询步骤，以折叠块形式附在回复末尾
+        if agentic_steps and intent == "chat":
+            steps_md = "\n".join(agentic_steps)
+            reply = f"{reply}\n\n<details>\n<summary>🔍 查询过程（{len([s for s in agentic_steps if s.startswith('**')])} 次）</summary>\n\n{steps_md}\n</details>"
+
         # 操作类任务且有结果内容：包装为类型化代码块附在回复末尾
         if result_content and result_type in ("chapter", "outline", "character"):
             block_tag = {
@@ -527,12 +623,18 @@ def render_global_chat(novel_id: int):
         for part in _parse_response(reply):
             if part["type"] == "chapter":
                 wc_num = st.session_state.get("writing_chapter") or 1
-                st.session_state[f"writing_pending_{novel_id}_{wc_num}"] = part["content"]
+                st.session_state[f"writing_pending_{novel_id}_{wc_num}"] = part[
+                    "content"
+                ]
                 try:
                     wf = load_novel(novel_id)
-                    wf.update_chapter_content(wc_num, part["content"], "AI 全局助手自动保存")
+                    wf.update_chapter_content(
+                        wc_num, part["content"], "AI 全局助手自动保存"
+                    )
                     wf.close()
-                    st.session_state[f"edit_content_{novel_id}_{wc_num}"] = part["content"]
+                    st.session_state[f"edit_content_{novel_id}_{wc_num}"] = part[
+                        "content"
+                    ]
                 except Exception:
                     pass
             elif part["type"] == "style":

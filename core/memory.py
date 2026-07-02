@@ -21,10 +21,22 @@ import lancedb
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 
-from core.config import LANCEDB_DIR, RECENT_CHAPTERS_COUNT, VECTOR_TOP_K, CHUNK_SIZE, EMBEDDING_MODEL
+from core.config import (
+    LANCEDB_DIR,
+    RECENT_CHAPTERS_COUNT,
+    VECTOR_TOP_K,
+    CHUNK_SIZE,
+    EMBEDDING_MODEL,
+)
 from core.models import (
-    get_db, Novel, Character, Volume, Chapter, Foreshadowing,
-    TimelineEvent, NovelOutline
+    get_db,
+    Novel,
+    Character,
+    Volume,
+    Chapter,
+    Foreshadowing,
+    TimelineEvent,
+    NovelOutline,
 )
 
 
@@ -42,8 +54,10 @@ def _get_embedding_model():
     """获取 Embedding 模型（单例缓存，首次调用时下载模型）"""
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = get_registry().get("sentence-transformers").create(
-            name=EMBEDDING_MODEL, device="cpu"
+        _embedding_model = (
+            get_registry()
+            .get("sentence-transformers")
+            .create(name=EMBEDDING_MODEL, device="cpu")
         )
     return _embedding_model
 
@@ -84,6 +98,7 @@ def _get_chunks_table():
 # Layer 1: 全局记忆操作
 # ======================================
 
+
 class GlobalMemory:
     """
     全局记忆管理器
@@ -116,16 +131,20 @@ class GlobalMemory:
 
     def get_all_characters(self) -> list[Character]:
         """获取所有人物档案"""
-        return self.db.query(Character).filter(
-            Character.novel_id == self.novel_id
-        ).order_by(Character.is_main.desc(), Character.id).all()
+        return (
+            self.db.query(Character)
+            .filter(Character.novel_id == self.novel_id)
+            .order_by(Character.is_main.desc(), Character.id)
+            .all()
+        )
 
     def get_character(self, name: str) -> Optional[Character]:
         """按名称查找人物"""
-        return self.db.query(Character).filter(
-            Character.novel_id == self.novel_id,
-            Character.name == name
-        ).first()
+        return (
+            self.db.query(Character)
+            .filter(Character.novel_id == self.novel_id, Character.name == name)
+            .first()
+        )
 
     def save_character(self, data: dict) -> Character:
         """保存或更新人物档案"""
@@ -137,7 +156,10 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            char = Character(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            char = Character(
+                novel_id=self.novel_id,
+                **{k: v for k, v in data.items() if k != "novel_id"},
+            )
             self.db.add(char)
             self.db.commit()
             self.db.refresh(char)
@@ -154,9 +176,11 @@ class GlobalMemory:
 
     def get_outline(self) -> Optional[NovelOutline]:
         """获取总大纲"""
-        return self.db.query(NovelOutline).filter(
-            NovelOutline.novel_id == self.novel_id
-        ).first()
+        return (
+            self.db.query(NovelOutline)
+            .filter(NovelOutline.novel_id == self.novel_id)
+            .first()
+        )
 
     def save_outline(self, data: dict) -> NovelOutline:
         """保存总大纲，清空旧压缩缓存（压缩在 build_global_context 惰性触发）"""
@@ -171,13 +195,20 @@ class GlobalMemory:
                 if hasattr(existing, k):
                     setattr(existing, k, v)
             # 清空旧压缩缓存
-            for f in ("theme_compressed", "main_conflict_compressed",
-                      "protagonist_arc_compressed", "ending_summary_compressed"):
+            for f in (
+                "theme_compressed",
+                "main_conflict_compressed",
+                "protagonist_arc_compressed",
+                "ending_summary_compressed",
+            ):
                 setattr(existing, f, None)
             self.db.commit()
             outline = existing
         else:
-            outline = NovelOutline(novel_id=self.novel_id, **{k: v for k, v in serialized.items() if k != "novel_id"})
+            outline = NovelOutline(
+                novel_id=self.novel_id,
+                **{k: v for k, v in serialized.items() if k != "novel_id"},
+            )
             self.db.add(outline)
             self.db.commit()
             self.db.refresh(outline)
@@ -185,16 +216,23 @@ class GlobalMemory:
 
     def get_volumes(self) -> list[Volume]:
         """获取所有卷大纲"""
-        return self.db.query(Volume).filter(
-            Volume.novel_id == self.novel_id
-        ).order_by(Volume.volume_number).all()
+        return (
+            self.db.query(Volume)
+            .filter(Volume.novel_id == self.novel_id)
+            .order_by(Volume.volume_number)
+            .all()
+        )
 
     def save_volume(self, data: dict) -> Volume:
         """保存卷大纲"""
-        existing = self.db.query(Volume).filter(
-            Volume.novel_id == self.novel_id,
-            Volume.volume_number == data.get("volume_number")
-        ).first()
+        existing = (
+            self.db.query(Volume)
+            .filter(
+                Volume.novel_id == self.novel_id,
+                Volume.volume_number == data.get("volume_number"),
+            )
+            .first()
+        )
         if existing:
             for k, v in data.items():
                 if hasattr(existing, k):
@@ -202,7 +240,10 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            vol = Volume(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+            vol = Volume(
+                novel_id=self.novel_id,
+                **{k: v for k, v in data.items() if k != "novel_id"},
+            )
             self.db.add(vol)
             self.db.commit()
             self.db.refresh(vol)
@@ -210,16 +251,23 @@ class GlobalMemory:
 
     def get_chapter_outlines(self) -> list[Chapter]:
         """获取所有章纲"""
-        return self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id
-        ).order_by(Chapter.chapter_number).all()
+        return (
+            self.db.query(Chapter)
+            .filter(Chapter.novel_id == self.novel_id)
+            .order_by(Chapter.chapter_number)
+            .all()
+        )
 
     def get_chapter_outline(self, chapter_number: int) -> Optional[Chapter]:
         """获取指定章纲"""
-        return self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id,
-            Chapter.chapter_number == chapter_number
-        ).first()
+        return (
+            self.db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.chapter_number == chapter_number,
+            )
+            .first()
+        )
 
     def save_chapter_outline(self, data: dict) -> Chapter:
         """保存章纲"""
@@ -231,8 +279,9 @@ class GlobalMemory:
             self.db.commit()
             return existing
         else:
-            clean = {k: v for k, v in data.items()
-                     if k != "novel_id" and hasattr(Chapter, k)}
+            clean = {
+                k: v for k, v in data.items() if k != "novel_id" and hasattr(Chapter, k)
+            }
             chap = Chapter(novel_id=self.novel_id, **clean)
             self.db.add(chap)
             self.db.commit()
@@ -241,28 +290,43 @@ class GlobalMemory:
 
     def get_active_foreshadowings(self) -> list[Foreshadowing]:
         """获取所有未回收的伏笔"""
-        return self.db.query(Foreshadowing).filter(
-            Foreshadowing.novel_id == self.novel_id,
-            Foreshadowing.status == "active"
-        ).order_by(Foreshadowing.importance.desc()).all()
+        return (
+            self.db.query(Foreshadowing)
+            .filter(
+                Foreshadowing.novel_id == self.novel_id,
+                Foreshadowing.status == "active",
+            )
+            .order_by(Foreshadowing.importance.desc())
+            .all()
+        )
 
     def get_all_foreshadowings(self) -> list[Foreshadowing]:
         """获取所有伏笔"""
-        return self.db.query(Foreshadowing).filter(
-            Foreshadowing.novel_id == self.novel_id
-        ).all()
+        return (
+            self.db.query(Foreshadowing)
+            .filter(Foreshadowing.novel_id == self.novel_id)
+            .all()
+        )
 
     def save_foreshadowing(self, data: dict) -> Foreshadowing:
         """保存伏笔"""
-        f = Foreshadowing(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+        f = Foreshadowing(
+            novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"}
+        )
         self.db.add(f)
         self.db.commit()
         self.db.refresh(f)
         return f
 
-    def collect_foreshadowing(self, foreshadowing_id: int, chapter_number: int, content: str):
+    def collect_foreshadowing(
+        self, foreshadowing_id: int, chapter_number: int, content: str
+    ):
         """标记伏笔为已回收"""
-        f = self.db.query(Foreshadowing).filter(Foreshadowing.id == foreshadowing_id).first()
+        f = (
+            self.db.query(Foreshadowing)
+            .filter(Foreshadowing.id == foreshadowing_id)
+            .first()
+        )
         if f:
             f.status = "collected"
             f.collect_chapter = chapter_number
@@ -271,36 +335,52 @@ class GlobalMemory:
 
     def get_overdue_foreshadowings(self, current_chapter: int) -> list[Foreshadowing]:
         """获取已过截止章节但尚未回收的伏笔"""
-        return self.db.query(Foreshadowing).filter(
-            Foreshadowing.novel_id == self.novel_id,
-            Foreshadowing.status == "active",
-            Foreshadowing.collect_by_chapter.isnot(None),
-            Foreshadowing.collect_by_chapter < current_chapter
-        ).order_by(Foreshadowing.collect_by_chapter).all()
+        return (
+            self.db.query(Foreshadowing)
+            .filter(
+                Foreshadowing.novel_id == self.novel_id,
+                Foreshadowing.status == "active",
+                Foreshadowing.collect_by_chapter.isnot(None),
+                Foreshadowing.collect_by_chapter < current_chapter,
+            )
+            .order_by(Foreshadowing.collect_by_chapter)
+            .all()
+        )
 
-    def get_due_soon_foreshadowings(self, current_chapter: int, window: int = 10) -> list[Foreshadowing]:
+    def get_due_soon_foreshadowings(
+        self, current_chapter: int, window: int = 10
+    ) -> list[Foreshadowing]:
         """获取即将到期（截止章节在未来 window 章内）的伏笔"""
-        return self.db.query(Foreshadowing).filter(
-            Foreshadowing.novel_id == self.novel_id,
-            Foreshadowing.status == "active",
-            Foreshadowing.collect_by_chapter.isnot(None),
-            Foreshadowing.collect_by_chapter >= current_chapter,
-            Foreshadowing.collect_by_chapter <= current_chapter + window
-        ).order_by(Foreshadowing.collect_by_chapter).all()
+        return (
+            self.db.query(Foreshadowing)
+            .filter(
+                Foreshadowing.novel_id == self.novel_id,
+                Foreshadowing.status == "active",
+                Foreshadowing.collect_by_chapter.isnot(None),
+                Foreshadowing.collect_by_chapter >= current_chapter,
+                Foreshadowing.collect_by_chapter <= current_chapter + window,
+            )
+            .order_by(Foreshadowing.collect_by_chapter)
+            .all()
+        )
 
     def sync_foreshadowings_from_outlines(self) -> int:
         """
         将章纲中 outline_foreshadowing_set 字符串同步到 Foreshadowing 表。
         只创建不存在的记录（按名称去重）。返回新增数量。
         """
-        chapters = self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id
-        ).order_by(Chapter.chapter_number).all()
+        chapters = (
+            self.db.query(Chapter)
+            .filter(Chapter.novel_id == self.novel_id)
+            .order_by(Chapter.chapter_number)
+            .all()
+        )
 
         existing_names = {
-            f.name for f in self.db.query(Foreshadowing).filter(
-                Foreshadowing.novel_id == self.novel_id
-            ).all()
+            f.name
+            for f in self.db.query(Foreshadowing)
+            .filter(Foreshadowing.novel_id == self.novel_id)
+            .all()
         }
         created = 0
         for ch in chapters:
@@ -317,7 +397,7 @@ class GlobalMemory:
                         name=name.strip(),
                         set_chapter=ch.chapter_number,
                         importance="medium",
-                        status="active"
+                        status="active",
                     )
                     self.db.add(new_fs)
                     existing_names.add(name.strip())
@@ -328,22 +408,30 @@ class GlobalMemory:
 
     def get_timeline(self) -> list[TimelineEvent]:
         """获取时间线"""
-        return self.db.query(TimelineEvent).filter(
-            TimelineEvent.novel_id == self.novel_id
-        ).order_by(TimelineEvent.chapter_number).all()
+        return (
+            self.db.query(TimelineEvent)
+            .filter(TimelineEvent.novel_id == self.novel_id)
+            .order_by(TimelineEvent.chapter_number)
+            .all()
+        )
 
     def add_timeline_event(self, data: dict) -> TimelineEvent:
         """添加时间线事件"""
-        event = TimelineEvent(novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"})
+        event = TimelineEvent(
+            novel_id=self.novel_id, **{k: v for k, v in data.items() if k != "novel_id"}
+        )
         self.db.add(event)
         self.db.commit()
         self.db.refresh(event)
         return event
 
-    def build_global_context(self, include_chapters: bool = False,
-                              active_chars: list[str] | None = None,
-                              chapter_keywords: set[str] | None = None,
-                              current_chapter: int | None = None) -> str:
+    def build_global_context(
+        self,
+        include_chapters: bool = False,
+        active_chars: list[str] | None = None,
+        chapter_keywords: set[str] | None = None,
+        current_chapter: int | None = None,
+    ) -> str:
         """
         构建全局上下文字符串，注入到 Agent 提示词中
         包含：世界观设定、主要人物、总大纲概要、未回收伏笔
@@ -368,7 +456,9 @@ class GlobalMemory:
             return ""
 
         # 小说基本信息
-        parts.append(f"=== 小说基本信息 ===\n标题：{novel.title}\n题材：{novel.genre or '未设定'}")
+        parts.append(
+            f"=== 小说基本信息 ===\n标题：{novel.title}\n题材：{novel.genre or '未设定'}"
+        )
         if novel.logline:
             parts.append(f"简介：{novel.logline}")
 
@@ -383,15 +473,20 @@ class GlobalMemory:
                     world = world_raw
             else:
                 # 压缩缓存缺失，惰性同步压缩后写回 DB
-                world = _compress_world_setting_sync(
-                    novel_obj=novel_obj,
-                    world_raw=world_raw,
-                    db=self.db,
-                ) if novel_obj else world_raw
+                world = (
+                    _compress_world_setting_sync(
+                        novel_obj=novel_obj,
+                        world_raw=world_raw,
+                        db=self.db,
+                    )
+                    if novel_obj
+                    else world_raw
+                )
 
             if chapter_keywords:
                 matched = {
-                    k: v for k, v in world.items()
+                    k: v
+                    for k, v in world.items()
                     if any(kw in k or kw in str(v) for kw in chapter_keywords)
                 }
                 skipped = len(world) - len(matched)
@@ -419,20 +514,25 @@ class GlobalMemory:
                 _compress_outline_sync(outline=outline, db=self.db, novel=novel)
 
             parts.append("\n=== 总大纲 ===")
+
             # 对每个字段：有压缩版用压缩版，否则用原文
             def _outline_val(field: str) -> str:
                 compressed = getattr(outline, f"{field}_compressed", None)
                 original = getattr(outline, field, None) or ""
                 return (compressed or original).strip()
 
-            theme_val         = _outline_val("theme")
-            conflict_val      = _outline_val("main_conflict")
-            arc_val           = _outline_val("protagonist_arc")
-            ending_val        = _outline_val("ending_summary")
-            if theme_val:    parts.append(f"核心主题：{theme_val}")
-            if conflict_val: parts.append(f"主要矛盾：{conflict_val}")
-            if arc_val:      parts.append(f"主角弧光：{arc_val}")
-            if ending_val:   parts.append(f"结局概要：{ending_val}")
+            theme_val = _outline_val("theme")
+            conflict_val = _outline_val("main_conflict")
+            arc_val = _outline_val("protagonist_arc")
+            ending_val = _outline_val("ending_summary")
+            if theme_val:
+                parts.append(f"核心主题：{theme_val}")
+            if conflict_val:
+                parts.append(f"主要矛盾：{conflict_val}")
+            if arc_val:
+                parts.append(f"主角弧光：{arc_val}")
+            if ending_val:
+                parts.append(f"结局概要：{ending_val}")
 
         # 人物档案：按出场过滤
         chars = self.get_all_characters()
@@ -450,10 +550,12 @@ class GlobalMemory:
                     for char in appearing:
                         if chapter_keywords:
                             # 按本章关键词做字段级相关性过滤（不截断，只取相关字段）
-                            parts.append(char.to_chapter_relevant_profile(
-                                chapter_keywords=chapter_keywords,
-                                co_appearing_chars=co_chars,
-                            ))
+                            parts.append(
+                                char.to_chapter_relevant_profile(
+                                    chapter_keywords=chapter_keywords,
+                                    co_appearing_chars=co_chars,
+                                )
+                            )
                         else:
                             # 无关键词时退化为全字段输出
                             parts.append(char.to_profile_text())
@@ -473,9 +575,9 @@ class GlobalMemory:
         if foreshadowings:
             if chapter_keywords:
                 # ── 有章节上下文时做相关性过滤 ──────────────────────
-                urgent    = []   # 级别1：到期迫近（≤5章），强制完整注入
-                relevant  = []   # 级别2：关键词命中，完整注入
-                others_fs = []   # 级别3：其余，仅单行汇总
+                urgent = []  # 级别1：到期迫近（≤5章），强制完整注入
+                relevant = []  # 级别2：关键词命中，完整注入
+                others_fs = []  # 级别3：其余，仅单行汇总
 
                 _URGENT_WINDOW = 5
                 for f in foreshadowings:
@@ -490,7 +592,9 @@ class GlobalMemory:
                         continue
 
                     # 关键词命中：伏笔名 / 描述 / notes 中有章节关键词
-                    searchable = " ".join(filter(None, [f.name, f.description, f.notes]))
+                    searchable = " ".join(
+                        filter(None, [f.name, f.description, f.notes])
+                    )
                     if any(kw in searchable for kw in chapter_keywords):
                         relevant.append(f)
                     else:
@@ -549,11 +653,133 @@ class GlobalMemory:
 
         return "\n".join(parts)
 
+    def search_characters_by_trait(self, trait: str) -> list[Character]:
+        """
+        按特征关键词模糊搜索人物档案。
+        在 name / aliases / role / personality / background 字段中匹配关键词。
+        支持空格分隔的多关键词（OR 逻辑）。
+        供 Agentic 工具调用使用。
+        """
+        import re as _re
+
+        keywords = [k.strip() for k in _re.split(r"[\s，,]+", trait) if k.strip()]
+        if not keywords:
+            return []
+
+        all_chars = self.get_all_characters()
+        results = []
+        for char in all_chars:
+            searchable = " ".join(
+                filter(
+                    None,
+                    [
+                        char.name or "",
+                        char.aliases or "",
+                        char.role or "",
+                        char.personality or "",
+                        char.background or "",
+                        char.current_state or "",
+                        char.motivations or "",
+                    ],
+                )
+            )
+            if any(kw in searchable for kw in keywords):
+                results.append(char)
+        return results
+
+    def search_foreshadowings_by_keyword(self, keyword: str) -> list[Foreshadowing]:
+        """
+        在伏笔的 name / description / notes 字段中搜索关键词。
+        返回所有状态的伏笔（active / collected / abandoned）。
+        支持空格分隔的多关键词（OR 逻辑）。
+        供 Agentic 工具调用使用。
+        """
+        import re as _re
+
+        keywords = [k.strip() for k in _re.split(r"[\s，,]+", keyword) if k.strip()]
+        if not keywords:
+            return self.get_all_foreshadowings()
+
+        all_fs = self.get_all_foreshadowings()
+        results = []
+        for f in all_fs:
+            searchable = " ".join(
+                filter(
+                    None,
+                    [
+                        f.name or "",
+                        f.description or "",
+                        f.notes or "",
+                        f.set_content or "",
+                    ],
+                )
+            )
+            if any(kw in searchable for kw in keywords):
+                results.append(f)
+        return results
+
+    def query_world_setting_section(self, section: str) -> dict:
+        """
+        从世界观 JSON 中提取与 section 关键词匹配的条目。
+        支持模糊匹配（key 中包含关键词）。
+        若无匹配则返回完整世界观（兜底）。
+        供 Agentic 工具调用使用。
+        """
+        world = self.get_world_setting()
+        if not world:
+            return {}
+        if not section or section.strip() == "":
+            return world
+
+        keywords = [
+            k.strip().lower()
+            for k in section.replace("，", ",").split(",")
+            if k.strip()
+        ]
+        matched = {
+            k: v
+            for k, v in world.items()
+            if any(kw in k.lower() or kw in str(v).lower() for kw in keywords)
+        }
+        # 若无精确匹配，降级返回完整世界观
+        return matched if matched else world
+
+    def search_timeline_by_keyword(self, keyword: str) -> list[TimelineEvent]:
+        """
+        在时间线事件的 event_name / event_description / characters_involved 中搜索关键词。
+        按章节号升序返回。
+        供 Agentic 工具调用使用。
+        """
+        import re as _re
+
+        keywords = [k.strip() for k in _re.split(r"[\s，,]+", keyword) if k.strip()]
+        all_events = self.get_timeline()
+        if not keywords:
+            return all_events
+
+        results = []
+        for ev in all_events:
+            searchable = " ".join(
+                filter(
+                    None,
+                    [
+                        ev.event_name or "",
+                        ev.event_description or "",
+                        ev.characters_involved or "",
+                        ev.impact or "",
+                    ],
+                )
+            )
+            if any(kw in searchable for kw in keywords):
+                results.append(ev)
+        return results
+
     def close(self):
         self.db.close()
 
 
 # ── 惰性同步压缩辅助函数（模块级，供 build_global_context 调用）─────────────────
+
 
 def _compress_world_setting_sync(novel_obj, world_raw: dict, db) -> dict:
     """
@@ -561,18 +787,23 @@ def _compress_world_setting_sync(novel_obj, world_raw: dict, db) -> dict:
     任何异常均打印警告后回退原文，不抛出。
     """
     import sys
+
     try:
         from core.config import COMPRESS_WORLD_THRESHOLD, COMPRESS_WORLD_TARGET_MAX
         from core.agents import FieldCompressor
 
-        needs_compress = any(len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world_raw.values())
+        needs_compress = any(
+            len(str(v)) > COMPRESS_WORLD_THRESHOLD for v in world_raw.values()
+        )
         if not needs_compress:
             # 所有条目都在阈值内，直接把原文当作压缩版缓存
             novel_obj.world_setting_compressed = novel_obj.world_setting
             db.commit()
             return world_raw
 
-        compressor = FieldCompressor(novel_id=novel_obj.id, model_id=novel_obj.llm_model or None)
+        compressor = FieldCompressor(
+            novel_id=novel_obj.id, model_id=novel_obj.llm_model or None
+        )
         compressed = compressor.compress_world_setting(
             world=world_raw,
             threshold=COMPRESS_WORLD_THRESHOLD,
@@ -592,6 +823,7 @@ def _compress_outline_sync(outline, db, novel) -> None:
     任何异常均打印警告，不抛出。
     """
     import sys
+
     try:
         from core.config import COMPRESS_OUTLINE_THRESHOLD, COMPRESS_OUTLINE_TARGETS
         from core.agents import FieldCompressor
@@ -620,6 +852,7 @@ def _compress_outline_sync(outline, db, novel) -> None:
 # Layer 2: 章节记忆操作
 # ======================================
 
+
 class ChapterMemory:
     """
     章节记忆管理器
@@ -630,34 +863,52 @@ class ChapterMemory:
         self.novel_id = novel_id
         self.db = get_db()
 
-    def get_recent_chapters(self, before_chapter: int, count: int = RECENT_CHAPTERS_COUNT) -> list[Chapter]:
+    def get_recent_chapters(
+        self, before_chapter: int, count: int = RECENT_CHAPTERS_COUNT
+    ) -> list[Chapter]:
         """获取指定章节之前的最近N章"""
-        return self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id,
-            Chapter.chapter_number < before_chapter,
-            Chapter.content.isnot(None)
-        ).order_by(Chapter.chapter_number.desc()).limit(count).all()[::-1]
+        return (
+            self.db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.chapter_number < before_chapter,
+                Chapter.content.isnot(None),
+            )
+            .order_by(Chapter.chapter_number.desc())
+            .limit(count)
+            .all()[::-1]
+        )
 
     def get_chapter(self, chapter_number: int) -> Optional[Chapter]:
         """获取指定章节"""
-        return self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id,
-            Chapter.chapter_number == chapter_number
-        ).first()
+        return (
+            self.db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.chapter_number == chapter_number,
+            )
+            .first()
+        )
 
     def get_chapters_by_range(self, start: int, end: int) -> list[Chapter]:
         """
         获取指定章节范围内的所有章节（含 start 和 end）。
         按章节序号升序排列，只返回已有正文或摘要的章节。
         """
-        return self.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id,
-            Chapter.chapter_number >= start,
-            Chapter.chapter_number <= end,
-        ).order_by(Chapter.chapter_number).all()
+        return (
+            self.db.query(Chapter)
+            .filter(
+                Chapter.novel_id == self.novel_id,
+                Chapter.chapter_number >= start,
+                Chapter.chapter_number <= end,
+            )
+            .order_by(Chapter.chapter_number)
+            .all()
+        )
 
-    def save_chapter_content(self, chapter_number: int, content: str,
-                              content_type: str = "content"):
+    def save_chapter_content(
+        self, chapter_number: int, content: str, content_type: str = "content"
+    ):
         """保存章节内容，自动更新字数统计"""
         chapter = self.get_chapter(chapter_number)
         if not chapter:
@@ -675,8 +926,9 @@ class ChapterMemory:
         self.db.commit()
         return chapter
 
-    def save_chapter_summary(self, chapter_number: int, summary: str,
-                               key_events: list[str]):
+    def save_chapter_summary(
+        self, chapter_number: int, summary: str, key_events: list[str]
+    ):
         """保存章节摘要和关键事件"""
         chapter = self.get_chapter(chapter_number)
         if chapter:
@@ -684,8 +936,7 @@ class ChapterMemory:
             chapter.key_events = json.dumps(key_events, ensure_ascii=False)
             self.db.commit()
 
-    def build_recent_context(self, current_chapter: int,
-                              adaptive: bool = False) -> str:
+    def build_recent_context(self, current_chapter: int, adaptive: bool = False) -> str:
         """
         构建最近N章的上下文摘要，注入到写手Agent提示词。
 
@@ -752,8 +1003,9 @@ class ChapterMemory:
             )
         return "\n".join(parts)
 
-    def save_version(self, chapter_id: int, content: str,
-                      version_type: str, change_summary: str = ""):
+    def save_version(
+        self, chapter_id: int, content: str, version_type: str, change_summary: str = ""
+    ):
         """保存版本历史"""
         from core.models import ContentVersion
         from core.config import MAX_VERSIONS
@@ -761,30 +1013,38 @@ class ChapterMemory:
         from sqlalchemy import func
 
         # 获取当前版本数量（用于判断是否需要淘汰旧版本）
-        version_count = self.db.query(ContentVersion).filter(
-            ContentVersion.chapter_id == chapter_id
-        ).count()
+        version_count = (
+            self.db.query(ContentVersion)
+            .filter(ContentVersion.chapter_id == chapter_id)
+            .count()
+        )
 
         # 如果超出最大版本数，删除最旧的版本
         if version_count >= MAX_VERSIONS:
-            oldest = self.db.query(ContentVersion).filter(
-                ContentVersion.chapter_id == chapter_id
-            ).order_by(ContentVersion.version_number).first()
+            oldest = (
+                self.db.query(ContentVersion)
+                .filter(ContentVersion.chapter_id == chapter_id)
+                .order_by(ContentVersion.version_number)
+                .first()
+            )
             if oldest:
                 self.db.delete(oldest)
                 self.db.flush()
 
         # 用 MAX+1 而非 COUNT+1，避免删除旧版本后版本号与已有记录重复
-        max_num = self.db.query(func.max(ContentVersion.version_number)).filter(
-            ContentVersion.chapter_id == chapter_id
-        ).scalar() or 0
+        max_num = (
+            self.db.query(func.max(ContentVersion.version_number))
+            .filter(ContentVersion.chapter_id == chapter_id)
+            .scalar()
+            or 0
+        )
 
         version = ContentVersion(
             chapter_id=chapter_id,
             version_number=max_num + 1,
             content=content,
             version_type=version_type,
-            change_summary=change_summary
+            change_summary=change_summary,
         )
         self.db.add(version)
         self.db.commit()
@@ -796,6 +1056,7 @@ class ChapterMemory:
 # ======================================
 # Layer 3: 碎片化向量记忆操作
 # ======================================
+
 
 class FragmentMemory:
     """
@@ -867,8 +1128,12 @@ class FragmentMemory:
 
         self.table.add(rows)
 
-    def search_relevant(self, query: str, n_results: int = VECTOR_TOP_K,
-                         exclude_chapter: Optional[int] = None) -> list[dict]:
+    def search_relevant(
+        self,
+        query: str,
+        n_results: int = VECTOR_TOP_K,
+        exclude_chapter: Optional[int] = None,
+    ) -> list[dict]:
         """
         根据查询语义检索最相关的历史内容片段
         返回按相关度排序的片段列表
@@ -891,21 +1156,27 @@ class FragmentMemory:
                 # cosine distance 范围 [0, 2]，转换为相关度 [0, 1]
                 cosine_dist = row.get("_distance", 0)
                 relevance = 1 - cosine_dist / 2
-                fragments.append({
-                    "content": row["text"],
-                    "chapter_number": row["chapter_number"],
-                    "title": row.get("title", ""),
-                    "relevance": relevance,
-                })
+                fragments.append(
+                    {
+                        "content": row["text"],
+                        "chapter_number": row["chapter_number"],
+                        "title": row.get("title", ""),
+                        "relevance": relevance,
+                    }
+                )
 
             return fragments
         except Exception as e:
             print(f"⚠️ 向量检索出错：{e}")
             return []
 
-    def build_relevant_context(self, query: str, current_chapter: int,
-                               n_results: int = 5,
-                               min_relevance: float = 0.0) -> str:
+    def build_relevant_context(
+        self,
+        query: str,
+        current_chapter: int,
+        n_results: int = 5,
+        min_relevance: float = 0.0,
+    ) -> str:
         """
         构建相关历史片段的上下文字符串
 
@@ -913,8 +1184,9 @@ class FragmentMemory:
             n_results: 最多检索并展示的片段数（默认5，写作场景建议传3）
             min_relevance: 相关度门槛 [0, 1]，低于此值的片段丢弃（默认0不过滤）
         """
-        fragments = self.search_relevant(query, n_results=n_results,
-                                         exclude_chapter=current_chapter)
+        fragments = self.search_relevant(
+            query, n_results=n_results, exclude_chapter=current_chapter
+        )
         if not fragments:
             return ""
 
@@ -943,8 +1215,12 @@ class FragmentMemory:
 
     # ── 跨小说检索（新增） ──────────────────────────────────────
 
-    def search_cross_novel(self, query: str, n_results: int = VECTOR_TOP_K,
-                            exclude_novel_id: Optional[int] = None) -> list[dict]:
+    def search_cross_novel(
+        self,
+        query: str,
+        n_results: int = VECTOR_TOP_K,
+        exclude_novel_id: Optional[int] = None,
+    ) -> list[dict]:
         """
         跨小说语义检索——在其他作品中查找相关片段，用于找灵感或复用素材
         """
@@ -994,6 +1270,7 @@ class FragmentMemory:
 # 统一记忆接口
 # ======================================
 
+
 def _extract_chapter_keywords(chapter_outline: "Chapter") -> set[str]:
     """
     从章纲各字段提取关键词集合，用于世界观的相关性过滤。
@@ -1001,6 +1278,7 @@ def _extract_chapter_keywords(chapter_outline: "Chapter") -> set[str]:
     返回长度 >= 2 的词语集合（单字词噪音大，跳过）。
     """
     import json as _json
+
     tokens: set[str] = set()
 
     text_fields = [
@@ -1012,7 +1290,10 @@ def _extract_chapter_keywords(chapter_outline: "Chapter") -> set[str]:
     for field in text_fields:
         # 按标点和空格切分，保留长度>=2的词
         import re as _re
-        for tok in _re.split("[，。！？、；：\u201c\u201d\u2018\u2019【】《》 \t\n\r]+", field):
+
+        for tok in _re.split(
+            "[，。！？、；：\u201c\u201d\u2018\u2019【】《》 \t\n\r]+", field
+        ):
             tok = tok.strip()
             if len(tok) >= 2:
                 tokens.add(tok)
@@ -1054,8 +1335,9 @@ class MemoryManager:
         self.chapter_mem = ChapterMemory(novel_id)
         self.fragment_mem = FragmentMemory(novel_id)
 
-    def build_writing_context(self, chapter_number: int,
-                               chapter_outline: "Chapter") -> str:
+    def build_writing_context(
+        self, chapter_number: int, chapter_outline: "Chapter"
+    ) -> str:
         """
         为写手Agent构建完整的写作上下文
         整合三层记忆：全局设定 + 最近章节 + 相关细节
@@ -1119,8 +1401,7 @@ class MemoryManager:
 
         return "\n\n".join(parts)
 
-    def build_review_context(self, chapter: "Chapter",
-                              content: str) -> str:
+    def build_review_context(self, chapter: "Chapter", content: str) -> str:
         """
         为审核师Agent构建完整的审核上下文。
         - 世界观：按本章章纲关键词过滤，减少无关设定噪音
@@ -1131,6 +1412,7 @@ class MemoryManager:
 
         # 从章纲提取出场人物
         import json as _json
+
         try:
             active_chars = _json.loads(chapter.outline_characters or "[]")
         except Exception:
@@ -1165,8 +1447,9 @@ class MemoryManager:
 
         return "\n\n".join(parts)
 
-    def save_new_chapter(self, chapter_number: int, content: str,
-                          content_type: str = "content"):
+    def save_new_chapter(
+        self, chapter_number: int, content: str, content_type: str = "content"
+    ):
         """保存新章节内容并同步到向量数据库"""
         # 保存到SQLite
         chapter = self.chapter_mem.save_chapter_content(
@@ -1175,11 +1458,7 @@ class MemoryManager:
 
         # 同步到ChromaDB（仅保存正式内容，草稿不索引）
         if content_type == "content":
-            self.fragment_mem.add_chapter(
-                chapter_number,
-                chapter.title or "",
-                content
-            )
+            self.fragment_mem.add_chapter(chapter_number, chapter.title or "", content)
 
         return chapter
 
@@ -1190,9 +1469,12 @@ class MemoryManager:
             return {"error": "小说不存在"}
 
         chars = self.global_mem.get_all_characters()
-        chapters = self.chapter_mem.db.query(Chapter).filter(
-            Chapter.novel_id == self.novel_id
-        ).order_by(Chapter.chapter_number).all()
+        chapters = (
+            self.chapter_mem.db.query(Chapter)
+            .filter(Chapter.novel_id == self.novel_id)
+            .order_by(Chapter.chapter_number)
+            .all()
+        )
         foreshadowings_active = self.global_mem.get_active_foreshadowings()
         foreshadowings_all = self.global_mem.get_all_foreshadowings()
 
@@ -1207,7 +1489,7 @@ class MemoryManager:
             state = {
                 "name": char.name,
                 "role": char.role,
-                "current_state": char.current_state or "未更新"
+                "current_state": char.current_state or "未更新",
             }
             char_states.append(state)
 
@@ -1219,15 +1501,22 @@ class MemoryManager:
             "chapter_stats": chapter_stats,
             "main_characters_states": char_states,
             "active_foreshadowings": [
-                {"name": f.name, "set_chapter": f.set_chapter, "importance": f.importance}
+                {
+                    "name": f.name,
+                    "set_chapter": f.set_chapter,
+                    "importance": f.importance,
+                }
                 for f in foreshadowings_active
             ],
             "total_foreshadowings": len(foreshadowings_all),
-            "collected_foreshadowings": len([f for f in foreshadowings_all if f.status == "collected"]),
+            "collected_foreshadowings": len(
+                [f for f in foreshadowings_all if f.status == "collected"]
+            ),
             "next_chapters": [
-                ch.to_outline_text() for ch in chapters
+                ch.to_outline_text()
+                for ch in chapters
                 if ch.status in ("outline_pending", "outlined")
-            ][:3]
+            ][:3],
         }
 
     def close(self):

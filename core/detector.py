@@ -716,6 +716,7 @@ action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
         """
         关卡3：去AI痕迹与文风打磨官 (Stylistic Refiner)
         熔断阈值 8.0，剜掉 AI 味，进行文风润色。上下文极小。
+        额外注入：近 5 章的高频句式统计，供跨章节重复检测。
         """
         novel = self.memory.global_mem.get_novel()
         deai_rules = ""
@@ -725,12 +726,52 @@ action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
             from core.config import DEFAULT_DEAI_RULES
             deai_rules = DEFAULT_DEAI_RULES
 
+        # ── 构建近 5 章高频句式统计（跨章节重复检测）────────────────────────
+        recent_pattern_block = ""
+        try:
+            import re as _re
+            recent_chs = self.memory.chapter_mem.get_recent_chapters(
+                before_chapter=chapter_number + 1, count=5
+            )
+            # 统计黑名单句式 + 通用高频句式的出现频次
+            TRACKED = [
+                ("不是…而是…/不是…是…", _re.compile(r"不是.{1,20}[，,]?\s*(而是|是).{1,20}")),
+                ("与其说…不如说…",       _re.compile(r"与其说.{1,20}不如说")),
+                ("他/她不知道的是",        _re.compile(r"[他她].{0,4}不知道的是")),
+                ("这意味着",              _re.compile(r"这意味着")),
+                ("更大的.*正在.*逼近",    _re.compile(r"更大的.{0,10}正在.{0,10}逼近")),
+                ("突然",                  _re.compile(r"突然")),
+                ("然而",                  _re.compile(r"然而")),
+                ("不得不",                _re.compile(r"不得不")),
+            ]
+            rows = []
+            for ch in recent_chs:
+                text = (ch.content or "")[:3000]
+                counts = []
+                for label, pat in TRACKED:
+                    n = len(pat.findall(text))
+                    counts.append(f"{label}×{n}" if n else None)
+                row_str = "、".join(c for c in counts if c)
+                if row_str:
+                    rows.append(f"  第{ch.chapter_number}章：{row_str}")
+            if rows:
+                recent_pattern_block = (
+                    "\n【近期章节高频句式统计（供跨章节重复检测）】\n"
+                    + "\n".join(rows)
+                    + "\n说明：若某句式在近 3 章中累计出现 ≥3 次，即视为「跨章节句式滥用」，"
+                    "本章再次出现该句式须额外扣 1.0 分/处。\n"
+                )
+        except Exception:
+            recent_pattern_block = ""
+
         system_prompt = """你是一位犀利的文风打磨官（Stylistic Refiner）。
 你的唯一职责：用文字激光手术剜掉所有"AI 味"，进行脏现实主义文风检查。
 
 评分采用 10 分制硬性扣分标尺：
 - 满分 10 分
-- 违禁句式：每出现一处"不是……而是……"或"与其说……不如说……"，直接扣 1.5 分
+- 违禁句式：每出现一处"不是……而是……"或其省略变体"不是……是……"，或"与其说……不如说……"，直接扣 1.5 分
+  注意："不是A，是B"与"不是A而是B"属于同一禁用句式，须同等对待。
+- 跨章节句式滥用：若【近期章节高频句式统计】中某句式在近 3 章累计 ≥3 次，本章再出现该句式额外扣 1.0 分/处
 - 说书人腔调/上帝视角：段尾/章尾出现总结性、预言性发言（如"这意味着…""更大的危机正在逼近""他不知道的是"），一处扣 1.5 分
 - 机械连接词堆砌：过度使用"突然、竟然、然而、不得不"，每处扣 0.5 分
 - 直说情绪：未做到"Show, Don't Tell"（直写"他很恐慌"而非通过生理细节表现），一处扣 1.0 分
@@ -751,11 +792,14 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 
         user_prompt = f"""【去AI味规则（逐条对照检测）】
 {deai_rules[:3000]}
-
+{recent_pattern_block}
 【待审核正文】
 {content[:5000]}{'...(已截断)' if len(content) > 5000 else ''}
 
-请逐条对照规则检查正文，不要放过任何违规。"""
+请逐条对照规则检查正文，特别注意：
+1. "不是……是……"（无"而"字的变体）与"不是……而是……"同等禁用；
+2. 若【近期章节高频句式统计】显示某句式已累计出现 ≥3 次，本章再出现须额外扣分。
+不要放过任何违规。"""
         try:
             response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
             return self._parse_gate_response(response, "stylistic_refiner")
@@ -1043,13 +1087,52 @@ action 为 "PASS" 表示 total_score >= 9.0，"REJECT" 表示不达标。"""
                 style_lines = [f"- {k}：{v}" for k, v in style_profile.items() if v]
                 style_text = "\n".join(style_lines[:10])
 
+        # ── 构建近 5 章高频句式统计（跨章节重复检测）────────────────────────
+        recent_pattern_block = ""
+        try:
+            import re as _re
+            recent_chs = self.memory.chapter_mem.get_recent_chapters(
+                before_chapter=chapter_number + 1, count=5
+            )
+            TRACKED = [
+                ("不是…而是…/不是…是…", _re.compile(r"不是.{1,20}[，,]?\s*(而是|是).{1,20}")),
+                ("与其说…不如说…",       _re.compile(r"与其说.{1,20}不如说")),
+                ("他/她不知道的是",        _re.compile(r"[他她].{0,4}不知道的是")),
+                ("这意味着",              _re.compile(r"这意味着")),
+                ("更大的.*正在.*逼近",    _re.compile(r"更大的.{0,10}正在.{0,10}逼近")),
+                ("突然",                  _re.compile(r"突然")),
+                ("然而",                  _re.compile(r"然而")),
+                ("不得不",                _re.compile(r"不得不")),
+            ]
+            rows = []
+            for ch in recent_chs:
+                text = (ch.content or "")[:3000]
+                counts = []
+                for label, pat in TRACKED:
+                    n = len(pat.findall(text))
+                    counts.append(f"{label}×{n}" if n else None)
+                row_str = "、".join(c for c in counts if c)
+                if row_str:
+                    rows.append(f"  第{ch.chapter_number}章：{row_str}")
+            if rows:
+                recent_pattern_block = (
+                    "\n【近期章节高频句式统计（供跨章节重复检测）】\n"
+                    + "\n".join(rows)
+                    + "\n说明：若某句式在近 3 章中累计出现 ≥3 次，即视为「跨章节句式滥用」，"
+                    "本章再次出现该句式须额外扣 1.0 分/处。\n"
+                )
+        except Exception:
+            recent_pattern_block = ""
+
         system_prompt = """你是一位犀利的文风打磨官（StyleRefiner）。
 你的唯一职责：检测并标注所有"AI味"违规，提供精准修改建议。
 不要评价剧情、人设、时空逻辑。
 
 评分采用 10 分制硬性扣分标尺：
 - 满分 10 分
-- 违禁句式（"不是…而是…"/"与其说…不如说…"等）：每处扣 1.5 分
+- 违禁句式：每出现一处"不是……而是……"或其省略变体"不是……是……"，或"与其说……不如说……"，直接扣 1.5 分
+  注意："不是A，是B"与"不是A而是B"属于同一禁用句式，须同等对待。
+- 跨章节句式滥用：若【近期章节高频句式统计】中某句式在近 3 章累计 ≥3 次，本章再出现该句式额外扣 1.0 分/处
 - 说书人腔调/上帝视角（段尾总结性/预言性发言，如"这意味着…""更大的危机正在逼近"）：每处扣 1.5 分
 - 机械连接词堆砌（过度使用"突然、竟然、然而、不得不"）：每处扣 0.5 分
 - 直说情绪而非Show（"他很恐慌"而非通过生理细节表现）：每处扣 1.0 分
@@ -1071,11 +1154,14 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
         style_block = f"\n【风格档案参考】\n{style_text}" if style_text else ""
         user_prompt = f"""【去AI味规则（逐条对照检测）】
 {deai_rules[:3000]}{'...(已截断)' if len(deai_rules) > 3000 else ''}{style_block}
-
+{recent_pattern_block}
 【待审核正文】
 {content[:5000]}{'...(已截断)' if len(content) > 5000 else ''}
 
-请逐条对照规则检查正文，不要放过任何违规。"""
+请逐条对照规则检查正文，特别注意：
+1. "不是……是……"（无"而"字的变体）与"不是……而是……"同等禁用；
+2. 若【近期章节高频句式统计】显示某句式已累计出现 ≥3 次，本章再出现须额外扣分。
+不要放过任何违规。"""
 
         try:
             response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
