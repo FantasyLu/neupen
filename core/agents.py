@@ -1853,7 +1853,6 @@ class ReviewerAgent:
             }
         """
         from core.config import MAX_PARALLEL_REVIEW_ROUNDS
-        from core.detector import GateResult
 
         _GATE_LABELS = {
             "plot_aligner": "🎯 剧情对齐",
@@ -1864,24 +1863,20 @@ class ReviewerAgent:
         _MAX_ROUNDS = max_rounds if max_rounds is not None else MAX_PARALLEL_REVIEW_ROUNDS
 
         all_gate_results: list[dict] = []
-        passed_gate_names: set[str] = set()
         final_score = 0.0
         last_review: dict = {}
         current_content = content
 
         for round_idx in range(_MAX_ROUNDS):
             if progress_callback:
-                skip_info = (
-                    f"（跳过已通过：{', '.join(_GATE_LABELS.get(g, g) for g in passed_gate_names)}）"
-                    if passed_gate_names
-                    else ""
-                )
                 progress_callback(
-                    f"🔍 第{round_idx + 1}/{_MAX_ROUNDS}轮并行审核{skip_info}..."
+                    f"🔍 第{round_idx + 1}/{_MAX_ROUNDS}轮全量并行审核..."
                 )
 
+            # 每轮始终全量审核（不 skip 已通过关卡），
+            # 避免修正 B 时悄悄破坏 A 却因 A 被跳过而察觉不到
             last_review = self.detector.run_parallel_review(
-                chapter_number, current_content, skip_gates=passed_gate_names
+                chapter_number, current_content, skip_gates=set()
             )
 
             # 记录本轮结果
@@ -1890,8 +1885,6 @@ class ReviewerAgent:
                     {**gate_result.to_dict(), "round": round_idx + 1}
                 )
 
-            # 更新已通过的关卡
-            passed_gate_names = last_review["passed_gate_names"]
             final_score = last_review["weighted_score"]
 
             # 打印每个关卡结果
@@ -1951,27 +1944,10 @@ class ReviewerAgent:
                     f"  ℹ️ 无 WriterAgent，第{round_idx + 2}轮直接重审（不修正内容）"
                 )
 
-        # 补全未执行到的关卡（被 skip 的）用满分占位，保证 gates 始终有4条
-        executed_names = {g.gate_name for g in last_review.get("gates", [])}
-        all_four_gates = list(last_review.get("gates", []))
-        for gate_name, label in _GATE_LABELS.items():
-            if gate_name not in executed_names:
-                # 该关卡在本轮被跳过（已通过），补一条满分占位
-                all_four_gates.append(
-                    GateResult(
-                        gate_name=gate_name,
-                        total_score=10.0,
-                        breakdown={},
-                        action="PASS",
-                        feedback="本轮已通过，跳过",
-                        passed=True,
-                    )
-                )
-
         return {
             "passed": last_review.get("all_passed", False),
             "final_score": round(final_score, 2),
-            "gates": all_four_gates,
+            "gates": list(last_review.get("gates", [])),
             "all_gate_results": all_gate_results,
             "reject_feedbacks": last_review.get("reject_feedbacks") or None,
             "rounds": round_idx + 1,  # 实际执行轮数
