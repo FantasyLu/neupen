@@ -118,14 +118,23 @@ def page_sync():
 3. 点击「保存配置」
 4. 切换到「推送 / 拉取」Tab，点击「推送」完成首次备份
 
-**SSH vs HTTPS**
+**SSH 方式（推荐）**
 
-| 方式 | 配置 | 推荐场景 |
-|------|------|---------|
-| SSH | `git@github.com:user/repo.git` | 已配置 SSH Key，免密推送 |
-| HTTPS + Token | `https://<token>@github.com/user/repo.git` | 无 SSH 环境 |
+仓库地址格式：`git@github.com:yourname/neupen-data.git`
 
-GitHub Token 申请：Settings → Developer settings → Personal access tokens → Fine-grained tokens（需要 repo 读写权限）
+需要提前配置 SSH Key：
+1. 生成密钥：`ssh-keygen -t ed25519`
+2. 复制公钥内容：`cat ~/.ssh/id_ed25519.pub`
+3. 粘贴到 GitHub → 头像 → Settings → SSH and GPG keys → New SSH key
+4. 验证：`ssh -T git@github.com`，看到 "Hi yourname!" 即成功
+
+**HTTPS 方式**
+
+仓库地址格式：`https://<token>@github.com/yourname/neupen-data.git`
+
+申请 Token 路径（GitHub）：
+头像 → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
+→ 勾选 `repo`（完整仓库读写权限）→ 生成后立即复制保存（页面关闭后不可再查看）
 
 **多设备同步**
 
@@ -285,8 +294,12 @@ GitHub Token 申请：Settings → Developer settings → Personal access tokens
 def _show_push_tips():
     with st.expander("常见推送失败原因"):
         st.markdown("""
-- **Authentication failed**：Token 过期或权限不足，请在 GitHub 重新生成 Token 并更新仓库地址
-- **rejected — non-fast-forward**：远端有本地没有的提交，先执行「拉取」再推送
-- **remote: Repository not found**：仓库地址错误或无读写权限
-- **SSL certificate problem**：企业内网代理问题，尝试 SSH 方式替代 HTTPS
+- **fatal: Could not read from remote repository**：SSH Key 未配置或未添加到 GitHub。
+  执行 `ssh -T git@github.com` 测试，若失败请按「使用说明」中的步骤配置 SSH Key。
+  也可改用 HTTPS + Token 方式。
+- **Authentication failed**：Token 填写错误、已过期或权限不足。
+  重新申请：GitHub → 头像 → Settings → Developer settings → Personal access tokens → Tokens (classic)，勾选 `repo` 权限。
+- **rejected — non-fast-forward**：远端有本地没有的提交，先执行「拉取」再推送。
+- **remote: Repository not found**：仓库地址错误，或账号无该仓库的读写权限。
+- **SSL certificate problem**：企业内网代理问题，尝试改用 SSH 方式。
 """)

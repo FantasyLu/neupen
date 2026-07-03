@@ -601,7 +601,9 @@ Neupen 支持将创作数据同步到你的**私有 Git 仓库**（GitHub / GitL
 
 点击「🔌 测试连接」确认可达，再点「💾 保存配置」。
 
-> **SSH vs HTTPS**：SSH 需要提前在 GitHub 添加本机的 SSH 公钥（`~/.ssh/id_ed25519.pub`），之后推送无需输入密码。HTTPS 方式需将 Personal Access Token 内嵌在 URL 中（Token 需有 `repo` 读写权限）。
+> **SSH 方式**：需要提前将本机 SSH 公钥添加到 GitHub。生成公钥：`ssh-keygen -t ed25519`，然后将 `~/.ssh/id_ed25519.pub` 的内容复制到 GitHub → 头像 → Settings → SSH and GPG keys → New SSH key。配置完成后执行 `ssh -T git@github.com` 验证，看到 "Hi yourname!" 即代表成功。
+>
+> **HTTPS 方式**：需要申请 Personal Access Token 并内嵌在 URL 中。申请路径：GitHub → 头像 → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token，勾选 `repo` 权限（需要完整读写仓库），生成后将 Token 填入 URL：`https://<token>@github.com/yourname/neupen-data.git`。Token 请妥善保存，页面关闭后无法再次查看。
 
 **3. 首次推送**
 
