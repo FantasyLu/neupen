@@ -588,6 +588,8 @@ class NovelWorkflow:
                 chapter.status = "published"
                 chapter.word_count = len(final_content)
                 chapter.approval_status = "pending"
+                # 自动更新小说状态
+                self._update_novel_status()
                 self.db.commit()
 
             # Step 5: 生成章节摘要
@@ -1427,6 +1429,38 @@ class NovelWorkflow:
         """生成当前小说完整状态报告"""
         return self.memory.get_status_report()
 
+    def _update_novel_status(self):
+        """
+        根据已发布章节数自动更新 novel.status：
+          - 有任何章节 published → writing
+          - 已发布章节数 >= 大纲规划总章数 → completed
+        调用方须自行 commit。
+        """
+        from core.models import Chapter, Outline
+        novel = self.memory.global_mem.get_novel()
+        if not novel:
+            return
+        published_count = (
+            self.db.query(Chapter)
+            .filter(Chapter.novel_id == self.novel_id, Chapter.status == "published")
+            .count()
+        )
+        if published_count == 0:
+            return  # 没有已发布章节，不改变状态
+        # 获取大纲规划总章数
+        outline = (
+            self.db.query(Outline)
+            .filter(Outline.novel_id == self.novel_id)
+            .first()
+        )
+        total_planned = outline.total_chapters if outline and outline.total_chapters else 0
+        if total_planned and published_count >= total_planned:
+            new_status = "completed"
+        else:
+            new_status = "writing"
+        if novel.status != new_status:
+            novel.status = new_status
+
     def get_novel_info(self) -> Optional[Novel]:
         """获取小说基本信息"""
         return self.memory.global_mem.get_novel()
@@ -1476,9 +1510,12 @@ def create_new_novel(
 
 def load_novel(novel_id: int) -> "NovelWorkflow":
     """
-    加载已有小说项目
+    加载已有小说项目，并自动修正 novel.status（兼容历史数据）
     """
-    return NovelWorkflow(novel_id)
+    wf = NovelWorkflow(novel_id)
+    wf._update_novel_status()
+    wf.db.commit()
+    return wf
 
 
 def delete_novel(novel_id: int):
