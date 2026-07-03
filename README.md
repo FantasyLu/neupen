@@ -595,17 +595,11 @@ Neupen 支持将创作数据同步到你的**私有 Git 仓库**（GitHub / GitL
 
 ### 首次设置
 
-**1. 安装依赖**
-
-```bash
-pip install gitpython cryptography
-```
-
-**2. 创建私有仓库**
+**1. 创建私有仓库**
 
 在 GitHub / GitLab / Gitee 创建一个**空的私有仓库**（不要勾选初始化 README）。
 
-**3. 配置仓库地址**
+**2. 配置仓库地址**
 
 在 Neupen 侧边栏点击「☁️ 云同步」→「⚙️ 仓库配置」，填写：
 
@@ -619,7 +613,7 @@ pip install gitpython cryptography
 
 > **SSH vs HTTPS**：SSH 需要提前在 GitHub 添加本机的 SSH 公钥（`~/.ssh/id_ed25519.pub`），之后推送无需输入密码。HTTPS 方式需将 Personal Access Token 内嵌在 URL 中（Token 需有 `repo` 读写权限）。
 
-**4. 首次推送**
+**3. 首次推送**
 
 切换到「🔄 推送 / 拉取」Tab，点击「推送」完成首次备份。
 
