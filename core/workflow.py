@@ -594,12 +594,12 @@ class NovelWorkflow:
             if progress_callback:
                 progress_callback(f"📝 生成章节摘要...")
             try:
-                summary_text, key_events = self.writer_agent.summarize_chapter(
+                summary_text, key_events, ending_state = self.writer_agent.summarize_chapter(
                     chapter_number, chapter.title or "", final_content
                 )
                 if summary_text:
                     self.memory.chapter_mem.save_chapter_summary(
-                        chapter_number, summary_text, key_events
+                        chapter_number, summary_text, key_events, ending_state
                     )
             except Exception:
                 pass

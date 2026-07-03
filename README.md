@@ -19,6 +19,8 @@
 - [快速开始](#快速开始)
 - [功能使用指南](#功能使用指南)
 - [多模型分工](#多模型分工)
+  - [推荐配置](#推荐配置)
+  - [接入本地模型](#接入本地模型)
 - [功能特性](#功能特性)
   - [风格迁移](#风格迁移)
   - [平台风格适配](#平台风格适配)
@@ -30,6 +32,12 @@
   - [去 AI 味写作](#去-ai-味写作)
 - [导出格式](#导出格式)
 - [配置项说明](#配置项说明)
+- [云同步](#云同步)
+  - [首次设置](#首次设置)
+  - [日常同步流程](#日常同步流程)
+  - [多设备使用](#多设备使用)
+  - [冲突处理](#冲突处理)
+  - [同步范围说明](#同步范围说明)
 - [常见问题](#常见问题)
 - [系统架构](#系统架构)
 - [核心模块详解](#核心模块详解)
@@ -223,7 +231,7 @@ streamlit run app.py
 
 ## 多模型分工
 
-支持 5 家提供商 12 个模型，可为每个 Agent 单独配置：
+支持 5 家云端提供商 12 个模型，以及任意 OpenAI 兼容本地模型（Ollama / LM Studio / vLLM 等），可为每个 Agent 单独配置：
 
 | 提供商 | 模型 | 上下文 | 速度 | 成本 | 特色 |
 |-------|------|--------|------|------|------|
@@ -239,6 +247,7 @@ streamlit run app.py
 | 阿里通义千问 | Qwen Turbo | 1M | 极快 | 极低 | 超长上下文 |
 | Google | Gemini 2.0 Flash | 1M | 快 | 低 | 创意世界观构建 |
 | Google | Gemini 1.5 Pro | 1M | 中 | 中 | 多线叙事 |
+| **本地模型** | 任意 Ollama / LM Studio 模型 | 取决于模型 | 取决于硬件 | **免费** | 数据不出本机 |
 
 ### 推荐配置
 
@@ -252,6 +261,105 @@ streamlit run app.py
 | 读者模拟 | Sonnet | 按需调用，Sonnet 足够 |
 
 三级回退链：Agent 独立配置 → 项目默认模型 → `.env` 全局默认。
+
+### 接入本地模型
+
+Neupen 支持接入任何提供 OpenAI 兼容接口的本地推理服务。本地模型**无需 API Key**，数据完全不出本机，零调用费用。
+
+#### 方式一：Ollama（推荐）
+
+[Ollama](https://ollama.com) 是最便捷的本地模型运行方案，支持 Llama、Qwen、Mistral、Gemma 等主流模型。
+
+**1. 安装 Ollama**
+
+```bash
+# macOS
+brew install ollama
+
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+或从 [ollama.com](https://ollama.com/download) 下载安装包。
+
+**2. 拉取模型**
+
+```bash
+# 中文写作推荐（按显存选择）
+ollama pull qwen2.5:7b      # 需要约 5 GB 显存，平衡性能与质量
+ollama pull qwen2.5:14b     # 需要约 9 GB 显存，质量更高
+ollama pull qwen2.5:32b     # 需要约 20 GB 显存，接近云端质量
+
+# 其他可选模型
+ollama pull llama3.1:8b     # Meta Llama 3.1，英文较强
+ollama pull mistral:7b      # 速度快，中文一般
+ollama pull deepseek-r1:7b  # DeepSeek R1 本地版，推理能力强
+
+# 查看已下载的模型
+ollama list
+```
+
+**3. 启动 Ollama 服务**
+
+```bash
+ollama serve   # 默认监听 http://localhost:11434
+```
+
+安装后通常会自动作为后台服务运行，无需手动启动。
+
+**4. 在 Neupen 中添加本地模型**
+
+进入「设定管理 → 🤖 模型 → 🖥️ 本地模型管理」，点击展开，填写：
+
+| 字段 | 填写示例 | 说明 |
+|------|---------|------|
+| 模型 ID | `qwen2.5:7b` | 与 `ollama list` 中显示的名称完全一致 |
+| 显示名称 | `Qwen2.5 7B（本地）` | UI 中显示的友好名称，可自定义 |
+| Base URL | `http://localhost:11434/v1` | Ollama 默认地址，无需修改 |
+| API Key | （留空） | Ollama 不需要 Key |
+| 上下文长度 | `128K` | 仅用于显示，填 Ollama 模型实际支持的长度 |
+
+点击「🔌 测试连接」确认服务可达后，点击「➕ 添加模型」。
+
+添加成功后，在「项目默认模型」或「各 Agent 分工配置」的下拉列表中可以看到 🖥️ 标记的本地模型，选择并保存即可。
+
+#### 方式二：LM Studio
+
+[LM Studio](https://lmstudio.ai) 提供图形界面，适合不熟悉命令行的用户。
+
+1. 下载并安装 LM Studio
+2. 在 LM Studio 中下载所需模型（Models 标签页搜索）
+3. 切换到 Local Server 标签，点击「Start Server」（默认端口 1234）
+4. 在 Neupen 本地模型管理中填写：
+   - Base URL：`http://localhost:1234/v1`
+   - 模型 ID：LM Studio 中加载的模型名称（在 Local Server 页面可以看到）
+   - API Key：留空
+
+#### 方式三：vLLM / 其他 OpenAI 兼容服务
+
+任何提供 OpenAI 兼容接口（`/v1/chat/completions`）的服务均可接入：
+
+```bash
+# vLLM 示例
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --port 8000
+
+# 在 Neupen 中配置
+# Base URL: http://localhost:8000/v1
+# 模型 ID: Qwen/Qwen2.5-7B-Instruct
+```
+
+#### 本地模型性能参考
+
+| 模型 | 显存需求 | 写作质量 | 速度（M2 Max） |
+|------|---------|---------|--------------|
+| Qwen2.5:7B | ~5 GB | ⭐⭐⭐ | ~30 tok/s |
+| Qwen2.5:14B | ~9 GB | ⭐⭐⭐⭐ | ~15 tok/s |
+| Qwen2.5:32B | ~20 GB | ⭐⭐⭐⭐⭐ | ~8 tok/s |
+| DeepSeek-R1:7B | ~5 GB | ⭐⭐⭐ | ~25 tok/s |
+
+> **注意**：本地模型的写作质量受硬件和模型大小影响较大，7B 及以下模型的长篇连贯性和去 AI 味能力通常弱于云端大模型，建议 14B 以上用于正式写作，7B 以下用于初稿或辅助任务。
 
 ---
 
@@ -478,6 +586,89 @@ WriterAgent 内置分三级的去 AI 味规则，从生成阶段即消除 AI 痕
 
 ---
 
+## 云同步
+
+Neupen 支持将创作数据同步到你的**私有 Git 仓库**（GitHub / GitLab / Gitee 等），实现跨设备备份与多设备切换写作。
+
+同步内容：`novels.db`（小说全库）、`api_keys.json`（加密）、`local_models.json`、`exports/`
+不同步：`lancedb/`（向量索引，体积大，可从 novels.db 自动重建）、`sync_config.json`（含密码，仅本地保留）
+
+### 首次设置
+
+**1. 安装依赖**
+
+```bash
+pip install gitpython cryptography
+```
+
+**2. 创建私有仓库**
+
+在 GitHub / GitLab / Gitee 创建一个**空的私有仓库**（不要勾选初始化 README）。
+
+**3. 配置仓库地址**
+
+在 Neupen 侧边栏点击「☁️ 云同步」→「⚙️ 仓库配置」，填写：
+
+| 字段 | 说明 |
+|------|------|
+| 仓库地址 | SSH：`git@github.com:yourname/neupen-data.git`（推荐）<br>HTTPS：`https://<token>@github.com/yourname/neupen-data.git` |
+| 分支名 | 默认 `main` |
+| 同步密码 | 用于加密 api_keys.json，留空则不同步 API Key |
+
+点击「🔌 测试连接」确认可达，再点「💾 保存配置」。
+
+> **SSH vs HTTPS**：SSH 需要提前在 GitHub 添加本机的 SSH 公钥（`~/.ssh/id_ed25519.pub`），之后推送无需输入密码。HTTPS 方式需将 Personal Access Token 内嵌在 URL 中（Token 需有 `repo` 读写权限）。
+
+**4. 首次推送**
+
+切换到「🔄 推送 / 拉取」Tab，点击「推送」完成首次备份。
+
+### 日常同步流程
+
+```
+写作结束 → 点「推送」→ 数据备份到云端
+换到新设备 → 点「拉取」→ 数据还原到本地
+```
+
+每次推送会自动生成一条 git commit，提交说明默认为 `sync: Neupen backup YYYY-MM-DD HH:MM`，也可在推送前自定义说明。
+
+### 多设备使用
+
+设备 A 写作后推送，设备 B 写作前先拉取，保持单向流转可完全避免冲突：
+
+```
+设备 A：写作 → 推送
+设备 B：拉取 → 写作 → 推送
+设备 A：拉取 → 继续写作
+```
+
+如果两台设备同时写作，下次同步时会检测到冲突，参见 [冲突处理](#冲突处理)。
+
+### 冲突处理
+
+当本地和远端都有新的提交时，Neupen 会弹出冲突对话框，提供三个选项：
+
+| 选项 | 行为 | 适用场景 |
+|------|------|---------|
+| **保留本地** | 忽略远端变更，本地数据在下次推送时覆盖远端 | 确定本地版本更新、更重要 |
+| **使用远端** | 用远端数据完全覆盖本地 data/ 目录 | 确定远端版本更新、更重要 |
+| **取消** | 不做任何操作，保持现状 | 需要手动检查后再决定 |
+
+> ⚠️ novels.db 是 SQLite 二进制文件，git 无法做行级合并。选择「使用远端」前请确认本地数据已无重要改动，或提前手动备份 `data/novels.db`。
+
+### 同步范围说明
+
+| 文件 | 同步 | 说明 |
+|------|------|------|
+| `novels.db` | ✅ | 所有小说、章节、大纲、人物数据 |
+| `api_keys.json` | ✅（AES-256-GCM 加密） | 明文不进仓库，需设置同步密码 |
+| `local_models.json` | ✅ | 本地模型配置 |
+| `exports/` | ✅ | 已导出的 txt / docx / epub / pdf |
+| `lancedb/` | ❌ | 向量索引，体积大（可达数百 MB），拉取后首次使用时自动重建 |
+| `sync_config.json` | ❌ | 包含同步密码，仅保留在本地 |
+
+---
+
 ## 常见问题
 
 **Q: 生成速度很慢？**
@@ -504,7 +695,30 @@ pip install python-docx EbookLib
 
 **Q: 如何完整备份？**
 
-复制 `data/` 目录即可。SQLite 在 `data/novels.db`，向量库在 `data/lancedb/`（Lance 格式，支持版本快照），导出文件在 `data/exports/`，API Key 在 `data/api_keys.json`。
+复制 `data/` 目录即可。SQLite 在 `data/novels.db`，向量库在 `data/lancedb/`（Lance 格式，支持版本快照），导出文件在 `data/exports/`，API Key 在 `data/api_keys.json`，本地模型配置在 `data/local_models.json`。
+
+**Q: 支持接入本地大模型吗？**
+
+支持。Neupen 兼容任何提供 OpenAI 兼容接口的本地服务（Ollama / LM Studio / vLLM 等）。在「设定管理 → 🤖 模型 → 🖥️ 本地模型管理」中填写 Base URL 和模型名称即可，无需 API Key，详见 [接入本地模型](#接入本地模型)。
+
+**Q: 本地模型写出来的质量够用吗？**
+
+取决于模型大小和硬件。Qwen2.5-14B 及以上在中文创作中表现较好，可用于正式写作；7B 以下建议用于初稿生成或辅助任务。Agentic 写作模式（多轮工具调用）对模型的指令跟随能力要求较高，小参数模型可能无法稳定输出正确的工具调用格式，建议先用标准模式测试。
+
+**Q: Ollama 连接失败怎么办？**
+
+1. 确认 Ollama 正在运行：`curl http://localhost:11434/api/tags`，应返回模型列表
+2. 确认模型已下载：`ollama list`，若没有目标模型先执行 `ollama pull <model-name>`
+3. 若在 Docker 部署中访问宿主机 Ollama，需将 Base URL 改为 `http://host.docker.internal:11434/v1`（macOS/Windows）或宿主机 IP（Linux）
+4. 在本地模型管理界面点击「🔌 测试连接」查看详细错误信息
+
+**Q: 云同步推送失败，提示 "rejected — non-fast-forward"？**
+
+远端有本地没有的提交，先在「☁️ 云同步 → 🔄 推送 / 拉取」中执行「拉取」，处理冲突后再推送。
+
+**Q: 换新设备拉取后，向量检索很慢或报错？**
+
+lancedb 不参与同步，新设备拉取后首次执行涉及向量检索的操作（如写作时的相关片段检索）会触发自动重建，速度取决于章节数量，属正常现象，重建完成后恢复正常。
 
 **Q: 修改世界观/人物后要全部重写吗？**
 

@@ -336,6 +336,47 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
 }
 
+# ── 本地模型支持 ──────────────────────────────────────────────────────────
+
+_LOCAL_MODEL_PREFIX = "__local__"  # 内部标记，不对外暴露
+
+
+def _build_local_model_entry(m: dict) -> dict:
+    """根据 local_models.json 中的一条记录构建 MODEL_REGISTRY 条目"""
+    return {
+        "display_name": m.get("display") or m.get("id", "本地模型"),
+        "provider": "openai_compatible",
+        "provider_name": "本地模型",
+        "base_url": m.get("base_url", "http://localhost:11434/v1").rstrip("/"),
+        "api_key_env": "",          # 本地模型无固定 Key 环境变量
+        "api_key_override": m.get("api_key", "").strip() or "local",  # 空 Key 用占位符
+        "local": True,
+        "supports_caching": False,
+        "supports_streaming": True,
+        "context_window": m.get("context_window", "未知"),
+        "speed": "本地",
+        "cost_level": "免费",
+        "strengths": ["完全离线", "数据不出本机", "无调用费用"],
+        "best_genres": ["所有题材"],
+        "note": m.get("note", "") or f"本地模型，Base URL: {m.get('base_url', 'http://localhost:11434/v1')}",
+        "writing_style": "取决于具体模型",
+    }
+
+
+def _load_local_models_into_registry():
+    """从 local_models.json 加载本地模型到 MODEL_REGISTRY（模块初始化时调用）"""
+    try:
+        from core.config import load_local_models
+        for m in load_local_models():
+            mid = m.get("id", "").strip()
+            if mid:
+                MODEL_REGISTRY[mid] = _build_local_model_entry(m)
+    except Exception:
+        pass  # 初始化阶段失败静默处理
+
+
+_load_local_models_into_registry()
+
 # 默认模型（无项目级别配置时使用）
 DEFAULT_MODEL_ID = os.getenv("DEFAULT_MODEL", "claude-opus-4-6")
 
@@ -359,8 +400,10 @@ def list_models_by_provider() -> dict[str, list[tuple[str, dict]]]:
 
 
 def get_api_key(model_id: str) -> str:
-    """从环境变量读取指定模型的 API Key"""
+    """从环境变量读取指定模型的 API Key；本地模型返回配置的 override 值"""
     info = get_model_info(model_id)
+    if info.get("local"):
+        return info.get("api_key_override", "local") or "local"
     return os.getenv(info["api_key_env"], "").strip()
 
 
@@ -371,6 +414,9 @@ def check_api_key(model_id: str) -> tuple[bool, str]:
         (ok: bool, message: str)
     """
     info = get_model_info(model_id)
+    # 本地模型：无需 API Key，直接放行
+    if info.get("local"):
+        return True, ""
     key = get_api_key(model_id)
     if not key:
         return False, (
@@ -423,10 +469,10 @@ class NovelLLM:
             except ImportError:
                 raise RuntimeError(
                     "请先安装 openai 包：pip install openai\n"
-                    "（DeepSeek / 豆包 / 千问 / Gemini 都通过 OpenAI 兼容接口调用）"
+                    "（DeepSeek / 豆包 / 千问 / Gemini / 本地模型 都通过 OpenAI 兼容接口调用）"
                 )
             return _openai.OpenAI(
-                api_key=api_key,
+                api_key=api_key or "local",   # OpenAI SDK 要求非空，本地服务不校验
                 base_url=self.info["base_url"]
             )
 
@@ -442,11 +488,7 @@ class NovelLLM:
             return
 
         def _trunc(s: str, head: int = 2000, tail: int = 500) -> str:
-            total = head + tail
-            if len(s) <= total:
-                return s
-            skipped = len(s) - total
-            return s[:head] + f"\n... [省略 {skipped} 字符] ...\n" + s[-tail:]
+            return s
 
         sep = "=" * 80
         sys.stderr.write(f"\n{sep}\n")

@@ -17,8 +17,11 @@ def build_model_options() -> tuple[list[str], dict[str, str]]:
     label_map = {}
     for provider_name, models in list_models_by_provider().items():
         for model_id, info in models:
-            ok, _ = check_api_key(model_id)
-            key_badge = "✅" if ok else "🔑"
+            if info.get("local"):
+                key_badge = "🖥️"
+            else:
+                ok, _ = check_api_key(model_id)
+                key_badge = "✅" if ok else "🔑"
             speed = info.get("speed", "")
             cost = info.get("cost_level", "")
             label = f"{key_badge} {info['display_name']}（{provider_name}）· 速度:{speed} · 成本:{cost}"
@@ -30,7 +33,7 @@ def build_model_options() -> tuple[list[str], dict[str, str]]:
 def render_model_card(model_id: str):
     """展示单个模型的详细信息卡片"""
     info = get_model_info(model_id)
-    ok, err_msg = check_api_key(model_id)
+    is_local = info.get("local", False)
 
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
@@ -38,15 +41,22 @@ def render_model_card(model_id: str):
             st.markdown(f"**{info['display_name']}**  `{model_id}`")
             st.caption(info.get("writing_style", ""))
         with col2:
-            if ok:
-                st.success("API Key ✅")
+            if is_local:
+                st.info("本地模型 🖥️")
             else:
-                st.error("未配置 🔑")
+                ok, err_msg = check_api_key(model_id)
+                if ok:
+                    st.success("API Key ✅")
+                else:
+                    st.error("未配置 🔑")
 
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("速度", info.get("speed", "-"))
         col_b.metric("成本", info.get("cost_level", "-"))
         col_c.metric("上下文", info.get("context_window", "-"))
+
+        if is_local:
+            st.caption(f"Base URL: `{info.get('base_url', '')}`")
 
         if info.get("best_genres"):
             st.markdown("**适合题材：** " + " · ".join(info["best_genres"]))

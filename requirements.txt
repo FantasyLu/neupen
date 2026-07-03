@@ -17,7 +17,7 @@ lancedb>=0.20.0
 
 # Streamlit UI
 streamlit>=1.40.0
-streamlit-agraph>=0.0.45
+pyvis>=0.3.2
 streamlit-ace>=0.1.1
 
 # LangChain (CrewAI底层)
@@ -47,3 +47,7 @@ sqlalchemy>=2.0.0
 
 # JSON 修复（处理 LLM 输出的格式瑕疵）
 json-repair>=0.30.0
+
+# 数据同步（云同步功能）
+gitpython>=3.1.0
+cryptography>=42.0.0

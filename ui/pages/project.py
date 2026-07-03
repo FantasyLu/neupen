@@ -122,7 +122,7 @@ def page_project_management():
                     with col3:
                         st.write("")
                         st.write("")
-                        if st.button("打开", key=f"open_{novel.id}", use_container_width=True, type="primary"):
+                        if st.button("打开", key=f"open_{novel.id}", width="stretch", type="primary"):
                             db = get_db()
                             collab = db.query(Collaborator).filter_by(
                                 novel_id=novel.id,
@@ -157,7 +157,7 @@ def page_project_management():
                             db.close()
                             is_owner = own_collab is not None
                         if is_owner:
-                            if st.button("🗑️ 删除", key=f"del_{novel.id}", use_container_width=True):
+                            if st.button("🗑️ 删除", key=f"del_{novel.id}", width="stretch"):
                                 st.session_state["confirm_delete_id"] = novel.id
 
                 # 删除确认弹窗（在卡片外渲染，避免嵌套问题）
@@ -181,7 +181,7 @@ def page_project_management():
         st.markdown("### 🔗 通过邀请码加入项目")
         with st.form("join_project_form"):
             invite_input = st.text_input("邀请码", placeholder="输入主笔分享的邀请码")
-            if st.form_submit_button("加入项目", use_container_width=True):
+            if st.form_submit_button("加入项目", width="stretch"):
                 if invite_input.strip():
                     db = get_db()
                     novel_match = db.query(Novel).filter_by(invite_code=invite_input.strip()).first()
@@ -286,7 +286,7 @@ def page_project_management():
             )
 
             generate_outline = st.checkbox("创建后立即生成大纲", value=True)
-            submitted = st.form_submit_button("🚀 创建项目", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("🚀 创建项目", width="stretch", type="primary")
 
         if submitted:
             if not title.strip():
@@ -424,7 +424,7 @@ def page_project_management():
                 st.divider()
                 col_btn, col_clear = st.columns([3, 1])
                 with col_btn:
-                    if st.button("✅ 整理完了，创建项目并生成大纲", type="primary", use_container_width=True):
+                    if st.button("✅ 整理完了，创建项目并生成大纲", type="primary", width="stretch"):
                         with st.spinner("正在从对话中提取项目信息…"):
                             try:
                                 agent = IdeaAgent(model_id=chat_model_id)
@@ -491,6 +491,6 @@ def page_project_management():
                             except Exception as e:
                                 st.error(f"创建失败：{e}")
                 with col_clear:
-                    if st.button("🗑️ 重新开始", use_container_width=True):
+                    if st.button("🗑️ 重新开始", width="stretch"):
                         st.session_state.idea_chat_history = []
                         st.rerun()

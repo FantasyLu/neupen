@@ -19,7 +19,7 @@ def render_identity_dialog():
         st.markdown("请输入你的显示名称以开始使用")
         with st.form("identity_form"):
             display_name = st.text_input("显示名称", placeholder="例如：小明")
-            if st.form_submit_button("进入系统", use_container_width=True, type="primary"):
+            if st.form_submit_button("进入系统", width="stretch", type="primary"):
                 if display_name.strip():
                     st.session_state["collab_display_name"] = display_name.strip()
                     st.rerun()
@@ -54,7 +54,7 @@ def render_chapter_comments(novel_id: int, chapter_id: int):
     if can_comment(novel_id):
         with st.form("add_comment_form", clear_on_submit=True):
             comment_text = st.text_area("写评论", placeholder="对本章的意见或建议...", height=80)
-            if st.form_submit_button("发表评论", use_container_width=True):
+            if st.form_submit_button("发表评论", width="stretch"):
                 if comment_text.strip():
                     db = get_db()
                     new_comment = Comment(
@@ -81,7 +81,7 @@ def render_approval_status(novel_id: int, chapter):
     if can_approve(novel_id):
         btn_cols = st.columns(3)
         with btn_cols[0]:
-            if st.button("✅ 通过", key=f"approve_{chapter.id}", use_container_width=True,
+            if st.button("✅ 通过", key=f"approve_{chapter.id}", width="stretch",
                          disabled=(current_status == "approved")):
                 db = get_db()
                 ch = db.query(Chapter).filter(Chapter.id == chapter.id).first()
@@ -90,7 +90,7 @@ def render_approval_status(novel_id: int, chapter):
                 db.close()
                 st.rerun()
         with btn_cols[1]:
-            if st.button("🟡 需修改", key=f"needs_rev_{chapter.id}", use_container_width=True,
+            if st.button("🟡 需修改", key=f"needs_rev_{chapter.id}", width="stretch",
                          disabled=(current_status == "needs_revision")):
                 db = get_db()
                 ch = db.query(Chapter).filter(Chapter.id == chapter.id).first()
@@ -99,7 +99,7 @@ def render_approval_status(novel_id: int, chapter):
                 db.close()
                 st.rerun()
         with btn_cols[2]:
-            if st.button("❌ 驳回", key=f"reject_{chapter.id}", use_container_width=True,
+            if st.button("❌ 驳回", key=f"reject_{chapter.id}", width="stretch",
                          disabled=(current_status == "rejected")):
                 db = get_db()
                 ch = db.query(Chapter).filter(Chapter.id == chapter.id).first()

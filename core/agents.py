@@ -1036,6 +1036,13 @@ class WriterAgent:
         word_min = int(word_target * (1 - word_count_tolerance))
         word_max = int(word_target * (1 + word_count_tolerance))
 
+        # 取上一章结尾状态，用于 prompt 中的具体衔接指令
+        _prev_ending_state = ""
+        if chapter_number > 1:
+            _prev_ch = self.memory.chapter_mem.get_chapter(chapter_number - 1)
+            if _prev_ch and getattr(_prev_ch, "ending_state", None) and _prev_ch.ending_state.strip():
+                _prev_ending_state = _prev_ch.ending_state.strip()
+
         def _build_prompt(extra_feedback: str = "") -> str:
             """组装 user prompt，extra_feedback 用于重试时注入字数偏差提示。"""
             fb = review_feedback
@@ -1063,7 +1070,7 @@ class WriterAgent:
 2. 【人设一致性】每个出场人物的言行必须与其档案相符。
    寡言的人物对白不能冗长；冷静的人物不能轻易崩溃；能力边界不得超出设定。
 
-3. 【叙事连贯】本章开头需自然衔接上章结尾的时间、地点与人物状态。
+3. 【叙事连贯】{"本章开头必须精准接续上章结尾状态：" + _prev_ending_state if _prev_ending_state else "本章开头需自然衔接上章结尾的时间、地点与人物状态。"}
    章内场景转换须给出合理的物理过渡（不能无缘由地"场景切换"）。
 
 4. 【章节收束】结尾需包含：
@@ -1142,16 +1149,18 @@ class WriterAgent:
 
     def summarize_chapter(
         self, chapter_number: int, title: str, content: str
-    ) -> tuple[str, list[str]]:
+    ) -> tuple[str, list[str], str]:
         """
-        为已写完的章节生成详细摘要和关键事件列表。
+        为已写完的章节生成详细摘要、关键事件列表和结尾状态速览。
         摘要用于后续章节的写作上下文注入 —— 写手Agent不会看到原始正文，
         只会看到这里的摘要，因此必须足够详细和具体。
+        ending_state 是结构化的结尾状态（时间/地点/人物状态/悬念），
+        专门用于下一章的衔接提示。
 
         Returns:
-            (summary: str, key_events: list[str])
+            (summary: str, key_events: list[str], ending_state: str)
         """
-        user_prompt = f"""请为以下小说章节生成详细摘要和关键事件列表。
+        user_prompt = f"""请为以下小说章节生成详细摘要、关键事件列表和结尾状态速览。
 
 ⚠️ 重要：这份摘要是后续章节写作时唯一的前情参考。写手Agent不会看到原始正文，只能通过你的摘要了解之前发生了什么。
 因此摘要必须足够详细、具体、可操作 —— 写手需要知道的不只是"发生了什么"，更是"怎么发生的"和"留下了什么"。
@@ -1175,12 +1184,18 @@ class WriterAgent:
     "关键事件1：具体描述（谁+做了什么+结果如何）",
     "关键事件2：...",
     ...
-  ]
+  ],
+  "ending_state": "50-120字，专门描述章节最后的状态，格式：\\n"
+                  "时间：（具体时刻/时段）\\n"
+                  "地点：（具体场所）\\n"
+                  "人物状态：（主要人物的情绪/身体/处境）\\n"
+                  "悬念/钩子：（下一章必须接住的未解决问题或行动）"
 }}
 
 注意：
 - 摘要不要写成章纲的复述，要写实际正文中发生的具体内容
 - key_events 每一条都应该是可独立理解的动作描述，不要含糊
+- ending_state 要精准，下一章写手靠它来判断应该从哪里开始
 - 如果你看到的内容被截断了，请基于可见部分尽力提炼"""
         system = "你是一位专业的小说编辑，擅长从正文中提炼结构化的情节摘要。输出合法JSON，不要有其他文字。"
 
@@ -1188,7 +1203,7 @@ class WriterAgent:
             response = self.llm.generate(
                 system,
                 user_prompt,
-                max_tokens=1024,
+                max_tokens=1200,
                 cache_system=False,
                 temperature=self.temperature,
             )
@@ -1202,13 +1217,15 @@ class WriterAgent:
                     if isinstance(data, dict):
                         summary = data.get("summary", "")
                         events = data.get("key_events", [])
+                        ending_state = data.get("ending_state", "")
                         if summary and len(summary.strip()) >= 50:
-                            return summary, events
+                            return summary, events, ending_state
                     elif isinstance(data, list) and data and isinstance(data[0], dict):
                         summary = data[0].get("summary", "")
                         events = data[0].get("key_events", [])
+                        ending_state = data[0].get("ending_state", "")
                         if summary and len(summary.strip()) >= 50:
-                            return summary, events
+                            return summary, events, ending_state
                 except Exception as json_err:
                     print(
                         f"⚠️ 第{chapter_number}章 JSON 解析失败：{json_err}，将使用全文作为摘要"
@@ -1235,11 +1252,11 @@ class WriterAgent:
                 fallback = fallback[:800]
             if fallback and len(fallback.strip()) >= 30:
                 print(f"⚠️ 第{chapter_number}章使用 fallback 摘要（{len(fallback)}字）")
-                return fallback.strip(), []
+                return fallback.strip(), [], ""
 
         except Exception as e:
             print(f"⚠️ 第{chapter_number}章摘要生成失败：{e}")
-        return "", []
+        return "", [], ""
 
     def regenerate_chapter_summary(self, chapter_number: int) -> tuple[str, list[str]]:
         """
@@ -1258,12 +1275,12 @@ class WriterAgent:
         if not chapter.content:
             raise ValueError(f"第{chapter_number}章尚未写入正文，无法生成摘要")
 
-        summary_text, key_events = self.summarize_chapter(
+        summary_text, key_events, ending_state = self.summarize_chapter(
             chapter_number, chapter.title or "", chapter.content
         )
         if summary_text:
             self.memory.chapter_mem.save_chapter_summary(
-                chapter_number, summary_text, key_events
+                chapter_number, summary_text, key_events, ending_state
             )
         return summary_text, key_events
 
@@ -1297,12 +1314,12 @@ class WriterAgent:
             try:
                 if progress_callback:
                     progress_callback(f"📝 正在为第{ch.chapter_number}章生成摘要...")
-                summary_text, key_events = self.summarize_chapter(
+                summary_text, key_events, ending_state = self.summarize_chapter(
                     ch.chapter_number, ch.title or "", ch.content
                 )
                 if summary_text:
                     self.memory.chapter_mem.save_chapter_summary(
-                        ch.chapter_number, summary_text, key_events
+                        ch.chapter_number, summary_text, key_events, ending_state
                     )
                     success += 1
                 else:

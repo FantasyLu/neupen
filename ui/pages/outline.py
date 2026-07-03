@@ -157,7 +157,7 @@ def page_outline():
     with tab1:
         btn_c1, btn_c2, btn_c3 = st.columns([2, 2, 1])
         with btn_c1:
-            if st.button("💾 保存", type="primary", use_container_width=True,
+            if st.button("💾 保存", type="primary", width="stretch",
                          disabled=not can_edit(novel_id)):
                 md = st.session_state.get(textarea_key, "").strip()
                 if md:
@@ -168,10 +168,10 @@ def page_outline():
                     except Exception as e:
                         st.error(f"保存失败：{e}")
         with btn_c2:
-            if can_edit(novel_id) and st.button("🤖 重新生成大纲", use_container_width=True):
+            if can_edit(novel_id) and st.button("🤖 重新生成大纲", width="stretch"):
                 st.session_state["confirm_regen_outline"] = True
         with btn_c3:
-            if st.button("↺ 从DB刷新", use_container_width=True, help="丢弃当前编辑，从数据库重新加载"):
+            if st.button("↺ 从DB刷新", width="stretch", help="丢弃当前编辑，从数据库重新加载"):
                 db = get_db()
                 fresh = db.query(NovelOutline).filter(NovelOutline.novel_id == novel_id).first()
                 db.close()
@@ -219,7 +219,7 @@ def page_outline():
         with vol_hdr1:
             st.markdown(f"**卷大纲（共 {len(volumes)} 卷）**")
         with vol_hdr2:
-            if st.button("➕ 新建卷", use_container_width=True, disabled=not can_edit(novel_id)):
+            if st.button("➕ 新建卷", width="stretch", disabled=not can_edit(novel_id)):
                 next_num = max((v.volume_number for v in volumes), default=0) + 1
                 last_end = max((v.end_chapter or 0 for v in volumes), default=0)
                 workflow = load_novel(novel_id)
@@ -239,7 +239,7 @@ def page_outline():
                 with vol_col_up:
                     if st.button("⬆", key=f"vol_up_{vol.id}",
                                  disabled=(idx == 0 or not can_edit(novel_id)),
-                                 use_container_width=True):
+                                 width="stretch"):
                         prev_vol = volumes[idx - 1]
                         db = get_db()
                         a = db.query(Volume).filter_by(id=vol.id).first()
@@ -251,7 +251,7 @@ def page_outline():
                 with vol_col_down:
                     if st.button("⬇", key=f"vol_down_{vol.id}",
                                  disabled=(idx == len(volumes) - 1 or not can_edit(novel_id)),
-                                 use_container_width=True):
+                                 width="stretch"):
                         next_vol = volumes[idx + 1]
                         db = get_db()
                         a = db.query(Volume).filter_by(id=vol.id).first()
@@ -285,7 +285,7 @@ def page_outline():
                                                           min_value=1, key=f"vol_end_{vol.id}")
                         with _edit_col2:
                             if st.button("💾 保存修改", key=f"vol_save_{vol.id}",
-                                         use_container_width=True):
+                                         width="stretch"):
                                 workflow = load_novel(novel_id)
                                 workflow.memory.global_mem.save_volume({
                                     "volume_number": vol.volume_number,
@@ -300,7 +300,7 @@ def page_outline():
                                 st.success("已保存")
                                 st.rerun()
                             if st.button("🗑 删除", key=f"vol_del_{vol.id}",
-                                         use_container_width=True):
+                                         width="stretch"):
                                 db = get_db()
                                 db.delete(db.query(Volume).filter_by(id=vol.id).first())
                                 db.commit()
@@ -375,7 +375,7 @@ def page_outline():
                 )
 
                 gen_btn = st.button(
-                    "✨ AI 生成章纲", type="primary", use_container_width=True,
+                    "✨ AI 生成章纲", type="primary", width="stretch",
                     disabled=not range_desc.strip()
                 )
                 if gen_btn and range_desc.strip():
@@ -403,7 +403,7 @@ def page_outline():
 
             bc1, bc2 = st.columns(2)
             with bc1:
-                if st.button("✅ 确认保存", type="primary", use_container_width=True):
+                if st.button("✅ 确认保存", type="primary", width="stretch"):
                     with st.spinner("保存中…"):
                         workflow = load_novel(novel_id)
                         save_result = workflow.batch_update_chapter_outlines(batch_result)
@@ -415,7 +415,7 @@ def page_outline():
                     else:
                         st.error(save_result.message)
             with bc2:
-                if st.button("❌ 放弃", use_container_width=True):
+                if st.button("❌ 放弃", width="stretch"):
                     st.session_state[batch_result_key] = None
                     st.rerun()
 
@@ -472,7 +472,7 @@ def page_outline():
                             st.caption(f"字数：{chapter.word_count:,}")
                     with _l2:
                         if st.button("✏️ 编辑", key=f"edit_ch_outline_{chapter.id}",
-                                     use_container_width=True):
+                                     width="stretch"):
                             st.session_state[f"editing_outline_ch_{novel_id}"] = chapter.chapter_number
                             st.rerun()
 
@@ -508,7 +508,7 @@ def page_outline():
                             es1, es2 = st.columns(2)
                             with es1:
                                 if st.button("保存", key=f"save_ch_outline_{chapter.id}",
-                                             use_container_width=True):
+                                             width="stretch"):
                                     updates = {}
                                     if new_title.strip() != (chapter.title or ""):
                                         updates["title"] = new_title.strip()
@@ -552,7 +552,7 @@ def page_outline():
                                             st.error(result.message)
                             with es2:
                                 if st.button("取消", key=f"cancel_ch_outline_{chapter.id}",
-                                             use_container_width=True):
+                                             width="stretch"):
                                     st.session_state[f"editing_outline_ch_{novel_id}"] = None
                                     st.rerun()
 
@@ -579,9 +579,9 @@ def page_outline():
             pc1, pc2 = st.columns([2, 1])
             with pc1:
                 parse_btn = st.button("🔍 AI 解析", type="primary",
-                                      disabled=not doc_text.strip(), use_container_width=True)
+                                      disabled=not doc_text.strip(), width="stretch")
             with pc2:
-                if st.button("清空", use_container_width=True):
+                if st.button("清空", width="stretch"):
                     st.session_state["import_doc_text"] = ""
                     st.session_state["import_parsed_result"] = None
                     st.rerun()
@@ -640,7 +640,7 @@ def page_outline():
                     st.warning("未识别到有效内容，请检查文档或换用其他模型。")
                 else:
                     st.divider()
-                    if st.button("✅ 确认导入", type="primary", use_container_width=True):
+                    if st.button("✅ 确认导入", type="primary", width="stretch"):
                         with st.spinner("写入数据库…"):
                             workflow = load_novel(novel_id)
                             result = workflow.import_document_data(parsed_result)

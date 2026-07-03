@@ -40,7 +40,7 @@ def page_export():
             st.markdown("### 📄 TXT 纯文本")
             st.caption("兼容性最强，适合任何设备阅读")
             include_outline_txt = st.checkbox("附上大纲摘要", key="txt_outline")
-            if st.button("导出 TXT", use_container_width=True, type="primary", key="btn_txt"):
+            if st.button("导出 TXT", width="stretch", type="primary", key="btn_txt"):
                 with st.spinner("正在生成TXT文件..."):
                     try:
                         exporter = NovelExporter(novel_id)
@@ -54,7 +54,7 @@ def page_export():
                             data=content.encode("utf-8"),
                             file_name=Path(filepath).name,
                             mime="text/plain",
-                            use_container_width=True
+                            width="stretch"
                         )
                     except Exception as e:
                         st.error(f"导出失败：{e}")
@@ -65,7 +65,7 @@ def page_export():
             st.caption("适合 Obsidian、Typora 等编辑器")
             include_chars_md = st.checkbox("包含人物档案", value=True, key="md_chars")
             include_fs_md = st.checkbox("包含伏笔追踪", key="md_fs")
-            if st.button("导出 Markdown", use_container_width=True, type="primary", key="btn_md"):
+            if st.button("导出 Markdown", width="stretch", type="primary", key="btn_md"):
                 with st.spinner("正在生成Markdown文件..."):
                     try:
                         exporter = NovelExporter(novel_id)
@@ -82,7 +82,7 @@ def page_export():
                             data=content.encode("utf-8"),
                             file_name=Path(filepath).name,
                             mime="text/markdown",
-                            use_container_width=True
+                            width="stretch"
                         )
                     except Exception as e:
                         st.error(f"导出失败：{e}")
@@ -92,7 +92,7 @@ def page_export():
             st.markdown("### 📘 Word 文档")
             st.caption("适合出版投稿，格式规范")
             include_chars_word = st.checkbox("包含人物档案", value=True, key="word_chars")
-            if st.button("导出 Word", use_container_width=True, type="primary", key="btn_word"):
+            if st.button("导出 Word", width="stretch", type="primary", key="btn_word"):
                 with st.spinner("正在生成Word文件..."):
                     try:
                         exporter = NovelExporter(novel_id)
@@ -106,7 +106,7 @@ def page_export():
                             data=content,
                             file_name=Path(filepath).name,
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True
+                            width="stretch"
                         )
                     except ImportError:
                         st.error("请先安装 python-docx：`pip install python-docx`")
@@ -119,7 +119,7 @@ def page_export():
             st.caption("适合 Kindle、Apple Books 等阅读器")
             include_chars_epub = st.checkbox("包含人物档案", value=True, key="epub_chars")
             include_fs_epub = st.checkbox("包含伏笔追踪", key="epub_fs")
-            if st.button("导出 EPUB", use_container_width=True, type="primary", key="btn_epub"):
+            if st.button("导出 EPUB", width="stretch", type="primary", key="btn_epub"):
                 with st.spinner("正在生成EPUB文件..."):
                     try:
                         exporter = NovelExporter(novel_id)
@@ -136,7 +136,7 @@ def page_export():
                             data=content,
                             file_name=Path(filepath).name,
                             mime="application/epub+zip",
-                            use_container_width=True
+                            width="stretch"
                         )
                     except ImportError:
                         st.error("请先安装 EbookLib：`pip install EbookLib`")

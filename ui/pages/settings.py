@@ -91,7 +91,7 @@ def page_settings():
                         )
                         sc1, sc2 = st.columns([3, 1])
                         if sc1.button("💾 保存", key=f"save_{novel_id}_{doc_type}",
-                                      disabled=not can_edit(novel_id), use_container_width=True):
+                                      disabled=not can_edit(novel_id), width="stretch"):
                             new_content = st.session_state.get(textarea_key, "")
                             db = get_db()
                             existing = db.query(NovelDocument).filter_by(
@@ -110,7 +110,7 @@ def page_settings():
                             st.success("✅ 已保存")
                             st.rerun()
                         if sc2.button("↺", key=f"refresh_{novel_id}_{doc_type}",
-                                      help="从数据库重新加载", use_container_width=True):
+                                      help="从数据库重新加载", width="stretch"):
                             db = get_db()
                             d = db.query(NovelDocument).filter_by(novel_id=novel_id, doc_type=doc_type).first()
                             db.close()
@@ -141,7 +141,7 @@ def page_settings():
                             st.text_area("内容", height=250, key=ctk, label_visibility="collapsed")
                             c1, c2 = st.columns([3, 1])
                             if c1.button("💾 保存", key=f"cdsave_{novel_id}_{cdoc.id}",
-                                         disabled=not can_edit(novel_id), use_container_width=True):
+                                         disabled=not can_edit(novel_id), width="stretch"):
                                 db = get_db()
                                 obj = db.query(NovelDocument).filter_by(id=cdoc.id).first()
                                 obj.title   = new_title.strip() or obj.title
@@ -151,7 +151,7 @@ def page_settings():
                                 st.success("✅ 已保存")
                                 st.rerun()
                             if c2.button("🗑️", key=f"cddel_{novel_id}_{cdoc.id}",
-                                         disabled=not can_edit(novel_id), use_container_width=True):
+                                         disabled=not can_edit(novel_id), width="stretch"):
                                 db = get_db()
                                 db.query(NovelDocument).filter_by(id=cdoc.id).delete()
                                 db.commit()
@@ -201,7 +201,7 @@ def page_settings():
 
                 custom_key = st.text_input("新增设定项名称（可选）")
                 custom_val = st.text_area("新增设定内容", height=60)
-                save_btn = st.form_submit_button("💾 保存世界观设定", use_container_width=True,
+                save_btn = st.form_submit_button("💾 保存世界观设定", width="stretch",
                                                   disabled=not can_edit(novel_id))
 
             if save_btn:
@@ -256,7 +256,7 @@ def page_settings():
             with col_header:
                 st.markdown(f"### 人物档案（共 {len(chars)} 位）")
             with col_btn:
-                if st.button("🤖 AI生成人物", use_container_width=True, disabled=not can_edit(novel_id)):
+                if st.button("🤖 AI生成人物", width="stretch", disabled=not can_edit(novel_id)):
                     with st.spinner("根据大纲生成人物档案…"):
                         workflow = load_novel(novel_id)
                         result = workflow.generate_characters_from_outline(
@@ -359,7 +359,7 @@ def page_settings():
                             e_relationships = st.text_area("人际关系（JSON 格式）",
                                                            value=json.dumps(_rels_dict, ensure_ascii=False, indent=2) if _rels_dict else "",
                                                            height=80)
-                            if st.form_submit_button("💾 保存人物档案", use_container_width=True,
+                            if st.form_submit_button("💾 保存人物档案", width="stretch",
                                                       disabled=not can_edit(novel_id)):
                                 updates = {
                                     "name": e_name.strip(),
@@ -421,7 +421,7 @@ def page_settings():
             no_deadline_count = sum(1 for f in active if not f.collect_by_chapter)
             with bc1:
                 if st.button(f"🤖 AI分配截止章节（{no_deadline_count}条待分配）",
-                             use_container_width=True,
+                             width="stretch",
                              disabled=(no_deadline_count == 0 or not can_edit(novel_id))):
                     with st.spinner("AI 分配截止章节…"):
                         workflow = load_novel(novel_id)
@@ -433,7 +433,7 @@ def page_settings():
                     else:
                         st.error(result.message)
             with bc2:
-                if st.button("🔄 同步大纲伏笔", use_container_width=True, disabled=not can_edit(novel_id)):
+                if st.button("🔄 同步大纲伏笔", width="stretch", disabled=not can_edit(novel_id)):
                     with st.spinner("同步中…"):
                         workflow = load_novel(novel_id)
                         result = workflow.sync_outline_foreshadowings()
@@ -562,7 +562,7 @@ def page_settings():
                 current_model = novel.llm_model or DEFAULT_MODEL_ID
                 current_idx = next((i for i, lbl in enumerate(options) if label_map[lbl] == current_model), 0)
                 new_label = st.selectbox("为本项目选择默认大模型", options, index=current_idx)
-                if st.form_submit_button("💾 保存默认模型", use_container_width=True,
+                if st.form_submit_button("💾 保存默认模型", width="stretch",
                                           disabled=not can_edit(novel_id)):
                     new_model_id = label_map.get(new_label, DEFAULT_MODEL_ID)
                     ok, err_msg = check_api_key(new_model_id)
@@ -599,10 +599,10 @@ def page_settings():
             st.caption("写手部用 Sonnet 节省成本，审核师/润色师用 Opus 保障质量")
 
             rc1, rc2 = st.columns(2)
-            if rc1.button("🌟 一键推荐配置", use_container_width=True):
+            if rc1.button("🌟 一键推荐配置", width="stretch"):
                 st.session_state["agent_model_draft"] = dict(_AGENT_RECOMMENDED)
                 st.rerun()
-            if rc2.button("🔄 全部跟随默认", use_container_width=True):
+            if rc2.button("🔄 全部跟随默认", width="stretch"):
                 st.session_state["agent_model_draft"] = {k: "" for k in _AGENT_RECOMMENDED}
                 st.rerun()
 
@@ -623,7 +623,7 @@ def page_settings():
                                            key=f"agent_model_{key}", label_visibility="collapsed")
                         selections[key] = agent_lmap.get(sel, "")
 
-                if st.form_submit_button("💾 保存分工配置", use_container_width=True, type="primary",
+                if st.form_submit_button("💾 保存分工配置", width="stretch", type="primary",
                                           disabled=not can_edit(novel_id)):
                     missing = [mid for k, mid in selections.items() if mid and not check_api_key(mid)[0]]
                     if missing:
@@ -641,6 +641,131 @@ def page_settings():
 
             st.divider()
             st.markdown("### 所有可用模型")
+
+            # ── 本地模型管理 ──────────────────────────────────────────
+            with st.expander("🖥️ 本地模型管理（Ollama / LM Studio / vLLM 等）", expanded=False):
+                st.caption(
+                    "添加本地运行的模型，无需 API Key，数据完全不出本机。"
+                    "兼容任何提供 OpenAI 兼容接口的本地服务。"
+                )
+
+                from core.config import load_local_models, save_local_models
+                from core.llm import MODEL_REGISTRY, _build_local_model_entry
+
+                local_models = load_local_models()
+
+                # ── 已有本地模型列表 ──────────────────────────────────
+                if local_models:
+                    st.markdown("**已配置的本地模型**")
+                    for i, m in enumerate(local_models):
+                        with st.container(border=True):
+                            lc1, lc2, lc3 = st.columns([3, 4, 1])
+                            lc1.markdown(f"**{m.get('display', m['id'])}**")
+                            lc1.caption(f"`{m['id']}`")
+                            lc2.caption(f"Base URL: `{m.get('base_url', '')}`")
+                            if m.get("context_window"):
+                                lc2.caption(f"上下文: {m['context_window']}")
+                            if lc3.button("🗑", key=f"del_local_{i}", help="删除此模型"):
+                                new_list = [x for j, x in enumerate(local_models) if j != i]
+                                save_local_models(new_list)
+                                st.success(f"已删除本地模型 {m['id']}")
+                                st.rerun()
+                    st.divider()
+
+                # ── 添加新本地模型表单 ────────────────────────────────
+                st.markdown("**添加本地模型**")
+                with st.form("add_local_model_form", clear_on_submit=True):
+                    fm1, fm2 = st.columns(2)
+                    new_model_id = fm1.text_input(
+                        "模型 ID *",
+                        placeholder="qwen2.5:7b",
+                        help="Ollama: 运行 `ollama list` 查看；LM Studio: 模型名称",
+                    )
+                    new_display = fm2.text_input(
+                        "显示名称",
+                        placeholder="Qwen2.5 7B（本地）",
+                        help="留空则使用模型 ID 作为显示名",
+                    )
+                    fm3, fm4 = st.columns(2)
+                    new_base_url = fm3.text_input(
+                        "Base URL *",
+                        value="http://localhost:11434/v1",
+                        help="Ollama 默认: http://localhost:11434/v1\nLM Studio 默认: http://localhost:1234/v1",
+                    )
+                    new_api_key = fm4.text_input(
+                        "API Key",
+                        value="",
+                        placeholder="留空（Ollama 无需 Key）",
+                        help="Ollama 无需填写；需要认证的本地服务请填写",
+                        type="password",
+                    )
+                    fm5, fm6 = st.columns(2)
+                    new_ctx = fm5.text_input(
+                        "上下文长度",
+                        placeholder="128K",
+                        help="仅用于显示，不影响实际调用",
+                    )
+                    new_note = fm6.text_input(
+                        "备注",
+                        placeholder="可选描述",
+                    )
+
+                    add_cols = st.columns([1, 1])
+                    submitted = add_cols[0].form_submit_button("➕ 添加模型", type="primary", use_container_width=True)
+                    test_submitted = add_cols[1].form_submit_button("🔌 测试连接", use_container_width=True)
+
+                    if submitted or test_submitted:
+                        mid = new_model_id.strip()
+                        burl = new_base_url.strip()
+                        if not mid:
+                            st.error("模型 ID 不能为空")
+                        elif not burl:
+                            st.error("Base URL 不能为空")
+                        elif any(m["id"] == mid for m in local_models):
+                            st.error(f"模型 ID `{mid}` 已存在，请先删除再添加")
+                        else:
+                            # 测试连接
+                            conn_ok = False
+                            conn_msg = ""
+                            try:
+                                import openai as _oa
+                                _test_client = _oa.OpenAI(
+                                    api_key=new_api_key.strip() or "local",
+                                    base_url=burl,
+                                )
+                                _models = _test_client.models.list()
+                                model_ids = [m2.id for m2 in _models.data]
+                                if mid in model_ids:
+                                    conn_msg = f"连接成功，已确认模型 `{mid}` 存在"
+                                else:
+                                    avail = "、".join(model_ids[:8]) + ("…" if len(model_ids) > 8 else "")
+                                    conn_msg = f"连接成功，但未找到 `{mid}`。服务中可用模型：{avail or '（列表为空）'}"
+                                conn_ok = True
+                            except Exception as _e:
+                                conn_msg = f"连接失败：{_e}"
+
+                            if test_submitted:
+                                if conn_ok:
+                                    st.success(conn_msg)
+                                else:
+                                    st.error(conn_msg)
+                            elif submitted:
+                                if not conn_ok:
+                                    st.warning(f"⚠️ 连接测试失败，但仍已添加模型（可稍后再试）：{conn_msg}")
+                                new_entry = {
+                                    "id": mid,
+                                    "display": new_display.strip() or mid,
+                                    "base_url": burl,
+                                    "api_key": new_api_key.strip(),
+                                    "context_window": new_ctx.strip(),
+                                    "note": new_note.strip(),
+                                }
+                                local_models.append(new_entry)
+                                save_local_models(local_models)
+                                if conn_ok:
+                                    st.success(f"✅ 已添加本地模型 `{mid}`，现在可以在模型选择中使用它了")
+                                st.rerun()
+
             render_all_models_panel()
 
         # ──────────────────────────────────────────────────
@@ -681,10 +806,10 @@ def page_settings():
             st.markdown("#### 🔄 从已完成章节自动学习风格")
             if approved_count == 0:
                 st.caption("暂无已审核的章节，完成并审核章节后可使用此功能。")
-                st.button("🔄 从已完成章节学习", disabled=True, use_container_width=True)
+                st.button("🔄 从已完成章节学习", disabled=True, width="stretch")
             else:
                 st.caption(f"当前已有 **{approved_count}** 章审核通过的内容，AI 将从中提取写作风格特征。")
-                if st.button("🔄 从已完成章节学习", use_container_width=True, type="primary",
+                if st.button("🔄 从已完成章节学习", width="stretch", type="primary",
                              key="auto_learn_style_btn"):
                     with st.spinner(f"正在从 {min(approved_count, 5)} 章内容中学习风格，约需 20-40 秒…"):
                         try:
@@ -727,7 +852,7 @@ def page_settings():
 
             analyze_btn = st.button("🔍 分析写作风格",
                                      disabled=(not reference_text.strip() or not can_edit(novel_id)),
-                                     use_container_width=True, type="primary")
+                                     width="stretch", type="primary")
             if analyze_btn:
                 if len(reference_text.strip()) < 100:
                     st.warning("参考文本太短，建议至少 100 字")
@@ -770,7 +895,7 @@ def page_settings():
                 for key, label, height in STYLE_FIELDS:
                     updated_profile[key] = st.text_area(label, value=draft.get(key, ""), height=height)
 
-                if st.button("💾 保存风格档案", use_container_width=True, type="primary",
+                if st.button("💾 保存风格档案", width="stretch", type="primary",
                               disabled=not can_edit(novel_id)):
                     updated_profile = {k: v for k, v in updated_profile.items() if v.strip()}
                     with st.spinner("保存中…"):
@@ -804,7 +929,7 @@ def page_settings():
             )
             col_deai_save, col_deai_reset = st.columns([3, 1])
             with col_deai_save:
-                if st.button("💾 保存去AI味规则", use_container_width=True,
+                if st.button("💾 保存去AI味规则", width="stretch",
                               disabled=not can_edit(novel_id)):
                     db_s = get_db()
                     obj = db_s.query(Novel).filter(Novel.id == novel_id).first()
@@ -815,7 +940,7 @@ def page_settings():
                     st.success("✅ 去AI味规则已保存")
                     st.rerun()
             with col_deai_reset:
-                if st.button("🔄 恢复默认", use_container_width=True):
+                if st.button("🔄 恢复默认", width="stretch"):
                     db_r = get_db()
                     obj_r = db_r.query(Novel).filter(Novel.id == novel_id).first()
                     obj_r.deai_rules = None
@@ -861,7 +986,7 @@ def page_settings():
                     "目标标签（逗号分隔）",
                     value=", ".join(current_tags) if current_tags else ""
                 )
-                if st.form_submit_button("💾 保存平台配置", use_container_width=True,
+                if st.form_submit_button("💾 保存平台配置", width="stretch",
                                           disabled=not can_edit(novel_id)):
                     db = get_db()
                     obj = db.query(Novel).filter(Novel.id == novel_id).first()
@@ -970,7 +1095,7 @@ def page_settings():
                     help="跨修改轮次和重写轮次的审核总次数上限。达到后自动选历史最高分版本作为终稿。"
                 )
 
-                saved = st.form_submit_button("💾 保存质量参数", use_container_width=True,
+                saved = st.form_submit_button("💾 保存质量参数", width="stretch",
                                               type="primary", disabled=not can_edit(novel_id))
 
             if saved:

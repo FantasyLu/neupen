@@ -13,8 +13,9 @@ from core.permissions import can_edit
 
 
 def render_character_network(novel_id: int):
-    """Tab 1：人物关系网络（streamlit-agraph 力导向图）"""
-    from streamlit_agraph import agraph, Node, Edge, Config
+    """Tab 1：人物关系网络（pyvis 力导向图，嵌入 HTML）"""
+    import tempfile, os
+    from pyvis.network import Network
 
     db = get_db()
     chars = db.query(Character).filter(Character.novel_id == novel_id).all()
@@ -24,14 +25,16 @@ def render_character_network(novel_id: int):
         st.info("暂无人物档案，请前往「设定管理 → 人物档案」添加人物后查看关系网络")
         return
 
-    # 筛选控件 & 同步按钮
+    # ── 控制栏 ────────────────────────────────────────────────────────
     ctrl1, ctrl2 = st.columns([3, 1])
     with ctrl1:
         only_main = st.checkbox("只显示主要人物", value=False)
     with ctrl2:
-        sync_btn = st.button("🔄 AI 同步人物关系", use_container_width=True,
-                             disabled=not can_edit(novel_id),
-                             help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用")
+        sync_btn = st.button(
+            "🔄 AI 同步人物关系", width="stretch",
+            disabled=not can_edit(novel_id),
+            help="逐章调用 AI 分析，章节较多时耗时较长且消耗较多 token，请谨慎使用"
+        )
 
     if sync_btn:
         workflow = load_novel(novel_id)
@@ -73,88 +76,140 @@ def render_character_network(novel_id: int):
         st.info("没有符合条件的人物")
         return
 
-    # 角色名称集合（用于过滤无效边）
     char_names = {c.name for c in chars}
 
-    # 节点颜色映射
+    # ── 颜色映射 ──────────────────────────────────────────────────────
     role_colors = {
-        "主角": "#FF6B6B",
-        "女主": "#FF8E8E",
-        "反派": "#45B7D1",
-        "配角": "#4ECDC4",
+        "主角": "#E05C5C",
+        "女主": "#E07A7A",
+        "反派": "#3A9AC9",
+        "配角": "#3BB8A8",
     }
-    default_color = "#96CEB4"
+    default_color = "#6AAF8A"
 
-    # 构建节点
-    nodes = []
+    # ── 构建 pyvis 网络 ───────────────────────────────────────────────
+    net = Network(
+        height="640px",
+        width="100%",
+        bgcolor="#1a1a2e",          # 深色背景，图形更清晰
+        font_color="#e0e0e0",
+        directed=False,
+    )
+
+    # 关闭默认工具栏（界面更简洁），启用物理引擎选项
+    net.set_options("""
+    {
+      "nodes": {
+        "font": { "size": 14, "face": "Arial", "strokeWidth": 2, "strokeColor": "#1a1a2e" },
+        "borderWidth": 2,
+        "borderWidthSelected": 4,
+        "shadow": { "enabled": true, "size": 8, "x": 2, "y": 2 }
+      },
+      "edges": {
+        "color": { "color": "#555577", "highlight": "#aaaaff", "hover": "#8888ff" },
+        "width": 1.5,
+        "selectionWidth": 3,
+        "smooth": { "type": "dynamic" },
+        "font": { "size": 0 },
+        "shadow": false
+      },
+      "physics": {
+        "enabled": true,
+        "forceAtlas2Based": {
+          "gravitationalConstant": -60,
+          "centralGravity": 0.005,
+          "springLength": 120,
+          "springConstant": 0.08,
+          "damping": 0.6,
+          "avoidOverlap": 0.8
+        },
+        "solver": "forceAtlas2Based",
+        "stabilization": { "iterations": 200, "updateInterval": 25 }
+      },
+      "interaction": {
+        "hover": true,
+        "tooltipDelay": 100,
+        "zoomView": true,
+        "dragView": true,
+        "navigationButtons": false,
+        "keyboard": false
+      }
+    }
+    """)
+
+    # 添加节点
     for c in chars:
         color = role_colors.get(c.role, default_color)
-        size = 30 if c.is_main else 20
-        nodes.append(Node(
-            id=c.name,
-            label=c.name,
-            size=size,
-            color=color,
-            title=f"{c.name}（{c.role or '未设定'}）\n{c.personality or ''}"[:100],
-        ))
+        size = 36 if c.is_main else 22
+        # hover 弹窗：富文本 HTML
+        lines = [f"<b>{c.name}</b>"]
+        if c.role:
+            lines.append(f"角色：{c.role}")
+        if c.personality:
+            lines.append(f"性格：{c.personality[:60]}{'…' if len(c.personality or '') > 60 else ''}")
+        if c.background:
+            lines.append(f"背景：{c.background[:60]}{'…' if len(c.background or '') > 60 else ''}")
+        if c.current_state:
+            lines.append(f"当前状态：{c.current_state[:40]}{'…' if len(c.current_state or '') > 40 else ''}")
+        tooltip = "<br>".join(lines)
 
-    # 构建边（去重：A→B 和 B→A 合并为一条，hover 显示完整双向关系）
-    edges = []
-    edge_data = {}  # {(A,B): {"a_to_b": desc, "b_to_a": desc}}
+        net.add_node(
+            c.name,
+            label=c.name,
+            title=tooltip,
+            color={
+                "background": color,
+                "border": "#ffffff44",
+                "highlight": {"background": color, "border": "#ffffff"},
+                "hover": {"background": color, "border": "#ffffffcc"},
+            },
+            size=size,
+            shape="dot",
+            font={"size": 13 if c.is_main else 11, "color": "#ffffff"},
+        )
+
+    # 收集边（去重：A→B 与 B→A 合并）
+    edge_data: dict[tuple, dict] = {}
     for c in chars:
-        rels = c.get_relationships()
-        for target_name, desc in rels.items():
+        for target_name, desc in c.get_relationships().items():
             if target_name not in char_names:
                 continue
-            edge_key = tuple(sorted([c.name, target_name]))
-            if edge_key not in edge_data:
-                edge_data[edge_key] = {}
-            edge_data[edge_key][f"{c.name}→{target_name}"] = desc
+            key = tuple(sorted([c.name, target_name]))
+            edge_data.setdefault(key, {})[f"{c.name} → {target_name}"] = desc
 
-    for edge_key, rel_map in edge_data.items():
-        # hover 显示完整双向关系
-        hover_lines = [f"{k}：{v}" for k, v in rel_map.items()]
-        hover_text = "\n".join(hover_lines)
-        # 线上只显示最短的关系描述（取最短的一条，截取前4字）
-        shortest = min(rel_map.values(), key=len)
-        label = shortest[:4] if len(shortest) > 4 else shortest
-        edges.append(Edge(
-            source=edge_key[0],
-            target=edge_key[1],
-            title=hover_text,
-            label=label,
-            color="#888888",
-        ))
+    for (src, tgt), rel_map in edge_data.items():
+        # 边 hover：完整双向描述，HTML 格式
+        hover_lines = [f"<b>{k}</b>：{v}" for k, v in rel_map.items()]
+        tooltip = "<br>".join(hover_lines)
+        # 边粗细：双向都有关系时更粗
+        width = 2.5 if len(rel_map) > 1 else 1.5
+        net.add_edge(src, tgt, title=tooltip, width=width)
 
-    if not edges:
-        st.warning("人物档案中尚未设置关系数据，请在人物的 relationships 字段中添加关系描述")
-        # 仍然显示孤立节点
-        config = Config(width=800, height=500, directed=False, physics=True,
-                        hierarchical=False)
-        agraph(nodes=nodes, edges=[], config=config)
-        return
+    # ── 渲染为临时 HTML 再嵌入 Streamlit ─────────────────────────────
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w",
+                                     encoding="utf-8") as f:
+        tmp_path = f.name
+    try:
+        net.save_graph(tmp_path)
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+    finally:
+        os.unlink(tmp_path)
 
-    # 图例
+    # 图例（Markdown）
     st.markdown(
         "**图例：** "
-        "<span style='color:#FF6B6B'>● 主角</span> · "
-        "<span style='color:#4ECDC4'>● 配角</span> · "
-        "<span style='color:#45B7D1'>● 反派</span> · "
-        "<span style='color:#96CEB4'>● 其他</span>　"
-        "节点越大 = 主要人物",
-        unsafe_allow_html=True
+        "<span style='color:#E05C5C'>● 主角</span> · "
+        "<span style='color:#E07A7A'>● 女主</span> · "
+        "<span style='color:#3A9AC9'>● 反派</span> · "
+        "<span style='color:#3BB8A8'>● 配角</span> · "
+        "<span style='color:#6AAF8A'>● 其他</span>　"
+        "节点越大 = 主要人物　**鼠标悬停节点/边查看详情，可拖拽/缩放**",
+        unsafe_allow_html=True,
     )
 
-    config = Config(
-        width=800,
-        height=600,
-        directed=False,
-        physics=True,
-        hierarchical=False,
-    )
-    agraph(nodes=nodes, edges=edges, config=config)
-
-    st.caption(f"共 {len(nodes)} 个人物，{len(edges)} 条关系")
+    st.html(html_content)
+    st.caption(f"共 {len(net.nodes)} 个人物，{len(net.edges)} 条关系")
 
 
 def render_foreshadowing_heatmap(novel_id: int):
@@ -275,7 +330,7 @@ def render_foreshadowing_heatmap(novel_id: int):
         )
         chart = chart + deadlines
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
     st.caption(
         "**图例：** 条形 = 伏笔生命周期（从埋下到回收），"
@@ -352,7 +407,7 @@ def render_emotion_curve(novel_id: int):
                     alt.Tooltip("情感基调:N"),
                 ],
             ).properties(height=250)
-            st.altair_chart(word_chart, use_container_width=True)
+            st.altair_chart(word_chart, width="stretch")
         return
 
     # 用户筛选要展示的曲线
@@ -393,7 +448,7 @@ def render_emotion_curve(novel_id: int):
         ],
     ).properties(height=400)
 
-    st.altair_chart(line, use_container_width=True)
+    st.altair_chart(line, width="stretch")
 
     # 字数柱状图（辅助参考）
     if "字数" in df.columns and df["字数"].notna().any():
@@ -410,7 +465,7 @@ def render_emotion_curve(novel_id: int):
                 alt.Tooltip("情感基调:N"),
             ],
         ).properties(height=200)
-        st.altair_chart(word_chart, use_container_width=True)
+        st.altair_chart(word_chart, width="stretch")
 
     # 情感基调文本表（辅助参考）
     emotion_data = [(ch.chapter_number, ch.title or "", ch.outline_emotion or "")

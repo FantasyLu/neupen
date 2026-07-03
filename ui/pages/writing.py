@@ -266,7 +266,7 @@ def page_writing():
         wc1, wc2 = st.columns(2)
         write_btn = wc1.button(
             "🚀 生成本章",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             disabled=(
                 st.session_state.is_writing
@@ -277,7 +277,7 @@ def page_writing():
         is_published = selected_ch and selected_ch.status == "published"
         rewrite_btn = wc2.button(
             "🔄 重新生成",
-            use_container_width=True,
+            width="stretch",
             disabled=(
                 not is_published
                 or st.session_state.is_writing
@@ -372,22 +372,39 @@ def page_writing():
                         key="batch_agentic",
                         help="启用后每章均走 Agentic 模式：Agent 自主查询所需信息后写作，写完后自动进行 Agentic 审核（含重试修正）。质量更高但耗时更长。",
                     )
-                    if st.button(
-                        "🚀 开始批量写作",
-                        use_container_width=True,
-                        type="primary",
-                        disabled=(
-                            st.session_state.is_writing
-                            or st.session_state.batch_writing
-                            or not can_edit(novel_id)
-                        ),
-                    ):
+                    btn_col1, btn_col2 = st.columns([3, 1])
+                    with btn_col1:
+                        start_batch = st.button(
+                            "🚀 开始批量写作",
+                            width="stretch",
+                            type="primary",
+                            disabled=(
+                                st.session_state.is_writing
+                                or st.session_state.batch_writing
+                                or not can_edit(novel_id)
+                            ),
+                        )
+                    with btn_col2:
+                        if st.button(
+                            "⏹ 停止",
+                            width="stretch",
+                            disabled=not st.session_state.batch_writing,
+                        ):
+                            st.session_state.batch_stop_requested = True
+                    if start_batch:
                         st.session_state.batch_writing = True
+                        st.session_state.batch_stop_requested = False
                         workflow = load_novel(novel_id)
                         with st.status(
                             f"批量写作中 (0/{len(selected_range)})…", expanded=True
                         ) as batch_status:
                             for idx, ch_num in enumerate(selected_range):
+                                if st.session_state.get("batch_stop_requested"):
+                                    batch_status.update(
+                                        label="已停止批量写作", state="error"
+                                    )
+                                    st.write("⏹ 用户已停止批量写作")
+                                    break
                                 batch_status.update(
                                     label=f"批量写作中 ({idx}/{len(selected_range)})…"
                                 )
@@ -519,6 +536,7 @@ def page_writing():
                             )
                         workflow.close()
                         st.session_state.batch_writing = False
+                        st.session_state.batch_stop_requested = False
                         st.rerun()
 
         with st.expander("🔙 批量回退状态", expanded=False):
@@ -568,7 +586,7 @@ def page_writing():
                 )
                 if st.button(
                     f"确认批量回退（{len(rv_range)}章）",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not can_edit(novel_id),
                 ):
                     db = get_db()
@@ -643,7 +661,7 @@ def page_writing():
                 with c1:
                     if st.button(
                         "🔄 重新生成选中",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         disabled=(is_busy or not selected_nums),
                     ):
@@ -671,7 +689,7 @@ def page_writing():
                 with c2:
                     if st.button(
                         "🔄 全部重新生成",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         disabled=is_busy,
                     ):
@@ -944,12 +962,12 @@ def page_writing():
                     btn1, btn2, btn3 = st.columns([2, 1, 1])
                     with btn1:
                         save_clicked = st.button(
-                            "💾 保存", type="primary", use_container_width=True
+                            "💾 保存", type="primary", width="stretch"
                         )
                     with btn2:
                         review_clicked = st.button(
                             "🔍 AI 审核",
-                            use_container_width=True,
+                            width="stretch",
                             help="对当前编辑区内容发起审核，无需先保存",
                         )
                         _rv_score = (st.session_state.get(review_key) or {}).get(
@@ -960,7 +978,7 @@ def page_writing():
                     with btn3:
                         suggest_clicked = st.button(
                             "✨ AI 建议",
-                            use_container_width=True,
+                            width="stretch",
                             help="让 AI 提出改进建议，结果将显示在左侧聊天中",
                         )
 
@@ -1135,7 +1153,7 @@ def page_writing():
                                         else:
                                             if st.button(
                                                 f"✏️ {sol}",
-                                                use_container_width=True,
+                                                width="stretch",
                                                 key=f"qapply_{novel_id}_{selected_ch_num}_{i}_{j}",
                                             ):
                                                 cur = st.session_state.get(
@@ -1229,7 +1247,7 @@ def page_writing():
                                                         if st.button(
                                                             "↩️ 重新写入",
                                                             key=f"ri_{novel_id}_{selected_ch_num}_{i}_{h_idx}",
-                                                            use_container_width=True,
+                                                            width="stretch",
                                                         ):
                                                             _auto_save(
                                                                 novel_id,
@@ -1258,7 +1276,7 @@ def page_writing():
                                     if (
                                         st.button(
                                             "发送",
-                                            use_container_width=True,
+                                            width="stretch",
                                             key=f"isend_{novel_id}_{selected_ch_num}_{i}",
                                         )
                                         and user_idea.strip()
@@ -1327,7 +1345,7 @@ def page_writing():
                     if st.button(
                         "清除审核结果",
                         key="clear_manual_review",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state[review_key] = None
                         # 清除各问题的操作状态
@@ -1356,7 +1374,7 @@ def page_writing():
                     st.divider()
                     if st.button(
                         "🔄 大纲 / 设定同步检测",
-                        use_container_width=True,
+                        width="stretch",
                         help="分析本章内容，检测是否有新角色或情节变化需要同步到大纲 / 设定",
                     ):
                         with st.spinner("AI 分析章节内容…"):
@@ -1405,7 +1423,7 @@ def page_writing():
                             if st.button(
                                 f"⚡ 一键全部通过（{total} 条）",
                                 key=f"sync_approve_all_{novel_id}_{selected_ch_num}",
-                                use_container_width=True,
+                                width="stretch",
                                 type="primary",
                                 help="自动执行所有建议操作：添加新角色、更新人物状态、追加大纲、写入世界观设定",
                             ):
@@ -1421,7 +1439,7 @@ def page_writing():
                             if st.button(
                                 "❌ 全部跳过",
                                 key=f"sync_skip_all_{novel_id}_{selected_ch_num}",
-                                use_container_width=True,
+                                width="stretch",
                                 help="忽略所有建议，标记为已完成",
                             ):
                                 st.session_state[sync_key] = {"_done": True}
@@ -1445,7 +1463,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 添加到人物档案",
                                         key=f"sync_char_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1484,7 +1502,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_char_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         new_chars.pop(i)
                                         sync_result["new_characters"] = new_chars
@@ -1513,7 +1531,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 更新人物档案",
                                         key=f"sync_cu_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1551,7 +1569,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_cu_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         char_upds.pop(i)
                                         sync_result["character_updates"] = char_upds
@@ -1582,7 +1600,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 更新大纲",
                                         key=f"sync_outline_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1605,7 +1623,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_outline_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         outline_upds.pop(i)
                                         sync_result["outline_updates"] = outline_upds
@@ -1635,7 +1653,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 写入时间线",
                                         key=f"sync_te_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1675,7 +1693,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_te_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         timeline_evts.pop(i)
                                         sync_result["timeline_events"] = timeline_evts
@@ -1709,7 +1727,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 写入伏笔库",
                                         key=f"sync_fs_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1748,7 +1766,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_fs_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         foreshadowing_upds.pop(i)
                                         sync_result["foreshadowing_updates"] = (
@@ -1768,7 +1786,7 @@ def page_writing():
                                     if st.button(
                                         "✅ 写入世界观设定",
                                         key=f"sync_ws_add_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         type="primary",
                                     ):
                                         try:
@@ -1798,7 +1816,7 @@ def page_writing():
                                     if st.button(
                                         "❌ 跳过",
                                         key=f"sync_ws_skip_{novel_id}_{selected_ch_num}_{i}",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         ws_upds.pop(i)
                                         sync_result["world_setting_updates"] = ws_upds
@@ -1936,7 +1954,7 @@ def page_writing():
                 st.caption("模拟爽文读者、文学爱好者、轻小说读者三种视角")
 
                 if st.button(
-                    "🎭 运行读者模拟", use_container_width=True, help="约需 30-60 秒"
+                    "🎭 运行读者模拟", width="stretch", help="约需 30-60 秒"
                 ):
                     with st.spinner("模拟读者阅读体验…"):
                         workflow = load_novel(novel_id)
