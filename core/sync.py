@@ -49,6 +49,8 @@ _DEFAULT_GITIGNORE = """\
 # Neupen sync — sensitive files kept local only
 api_keys.json
 sync_config.json
+# lancedb 是可从 novels.db 重建的向量索引，体积大且 git diff 无意义，不同步
+lancedb/
 __pycache__/
 *.pyc
 .DS_Store
