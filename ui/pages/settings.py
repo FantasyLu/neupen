@@ -641,6 +641,131 @@ def page_settings():
 
             st.divider()
             st.markdown("### 所有可用模型")
+
+            # ── 本地模型管理 ──────────────────────────────────────────
+            with st.expander("🖥️ 本地模型管理（Ollama / LM Studio / vLLM 等）", expanded=False):
+                st.caption(
+                    "添加本地运行的模型，无需 API Key，数据完全不出本机。"
+                    "兼容任何提供 OpenAI 兼容接口的本地服务。"
+                )
+
+                from core.config import load_local_models, save_local_models
+                from core.llm import MODEL_REGISTRY, _build_local_model_entry
+
+                local_models = load_local_models()
+
+                # ── 已有本地模型列表 ──────────────────────────────────
+                if local_models:
+                    st.markdown("**已配置的本地模型**")
+                    for i, m in enumerate(local_models):
+                        with st.container(border=True):
+                            lc1, lc2, lc3 = st.columns([3, 4, 1])
+                            lc1.markdown(f"**{m.get('display', m['id'])}**")
+                            lc1.caption(f"`{m['id']}`")
+                            lc2.caption(f"Base URL: `{m.get('base_url', '')}`")
+                            if m.get("context_window"):
+                                lc2.caption(f"上下文: {m['context_window']}")
+                            if lc3.button("🗑", key=f"del_local_{i}", help="删除此模型"):
+                                new_list = [x for j, x in enumerate(local_models) if j != i]
+                                save_local_models(new_list)
+                                st.success(f"已删除本地模型 {m['id']}")
+                                st.rerun()
+                    st.divider()
+
+                # ── 添加新本地模型表单 ────────────────────────────────
+                st.markdown("**添加本地模型**")
+                with st.form("add_local_model_form", clear_on_submit=True):
+                    fm1, fm2 = st.columns(2)
+                    new_model_id = fm1.text_input(
+                        "模型 ID *",
+                        placeholder="qwen2.5:7b",
+                        help="Ollama: 运行 `ollama list` 查看；LM Studio: 模型名称",
+                    )
+                    new_display = fm2.text_input(
+                        "显示名称",
+                        placeholder="Qwen2.5 7B（本地）",
+                        help="留空则使用模型 ID 作为显示名",
+                    )
+                    fm3, fm4 = st.columns(2)
+                    new_base_url = fm3.text_input(
+                        "Base URL *",
+                        value="http://localhost:11434/v1",
+                        help="Ollama 默认: http://localhost:11434/v1\nLM Studio 默认: http://localhost:1234/v1",
+                    )
+                    new_api_key = fm4.text_input(
+                        "API Key",
+                        value="",
+                        placeholder="留空（Ollama 无需 Key）",
+                        help="Ollama 无需填写；需要认证的本地服务请填写",
+                        type="password",
+                    )
+                    fm5, fm6 = st.columns(2)
+                    new_ctx = fm5.text_input(
+                        "上下文长度",
+                        placeholder="128K",
+                        help="仅用于显示，不影响实际调用",
+                    )
+                    new_note = fm6.text_input(
+                        "备注",
+                        placeholder="可选描述",
+                    )
+
+                    add_cols = st.columns([1, 1])
+                    submitted = add_cols[0].form_submit_button("➕ 添加模型", type="primary", use_container_width=True)
+                    test_submitted = add_cols[1].form_submit_button("🔌 测试连接", use_container_width=True)
+
+                    if submitted or test_submitted:
+                        mid = new_model_id.strip()
+                        burl = new_base_url.strip()
+                        if not mid:
+                            st.error("模型 ID 不能为空")
+                        elif not burl:
+                            st.error("Base URL 不能为空")
+                        elif any(m["id"] == mid for m in local_models):
+                            st.error(f"模型 ID `{mid}` 已存在，请先删除再添加")
+                        else:
+                            # 测试连接
+                            conn_ok = False
+                            conn_msg = ""
+                            try:
+                                import openai as _oa
+                                _test_client = _oa.OpenAI(
+                                    api_key=new_api_key.strip() or "local",
+                                    base_url=burl,
+                                )
+                                _models = _test_client.models.list()
+                                model_ids = [m2.id for m2 in _models.data]
+                                if mid in model_ids:
+                                    conn_msg = f"连接成功，已确认模型 `{mid}` 存在"
+                                else:
+                                    avail = "、".join(model_ids[:8]) + ("…" if len(model_ids) > 8 else "")
+                                    conn_msg = f"连接成功，但未找到 `{mid}`。服务中可用模型：{avail or '（列表为空）'}"
+                                conn_ok = True
+                            except Exception as _e:
+                                conn_msg = f"连接失败：{_e}"
+
+                            if test_submitted:
+                                if conn_ok:
+                                    st.success(conn_msg)
+                                else:
+                                    st.error(conn_msg)
+                            elif submitted:
+                                if not conn_ok:
+                                    st.warning(f"⚠️ 连接测试失败，但仍已添加模型（可稍后再试）：{conn_msg}")
+                                new_entry = {
+                                    "id": mid,
+                                    "display": new_display.strip() or mid,
+                                    "base_url": burl,
+                                    "api_key": new_api_key.strip(),
+                                    "context_window": new_ctx.strip(),
+                                    "note": new_note.strip(),
+                                }
+                                local_models.append(new_entry)
+                                save_local_models(local_models)
+                                if conn_ok:
+                                    st.success(f"✅ 已添加本地模型 `{mid}`，现在可以在模型选择中使用它了")
+                                st.rerun()
+
             render_all_models_panel()
 
         # ──────────────────────────────────────────────────

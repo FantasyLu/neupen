@@ -372,22 +372,39 @@ def page_writing():
                         key="batch_agentic",
                         help="启用后每章均走 Agentic 模式：Agent 自主查询所需信息后写作，写完后自动进行 Agentic 审核（含重试修正）。质量更高但耗时更长。",
                     )
-                    if st.button(
-                        "🚀 开始批量写作",
-                        width="stretch",
-                        type="primary",
-                        disabled=(
-                            st.session_state.is_writing
-                            or st.session_state.batch_writing
-                            or not can_edit(novel_id)
-                        ),
-                    ):
+                    btn_col1, btn_col2 = st.columns([3, 1])
+                    with btn_col1:
+                        start_batch = st.button(
+                            "🚀 开始批量写作",
+                            width="stretch",
+                            type="primary",
+                            disabled=(
+                                st.session_state.is_writing
+                                or st.session_state.batch_writing
+                                or not can_edit(novel_id)
+                            ),
+                        )
+                    with btn_col2:
+                        if st.button(
+                            "⏹ 停止",
+                            width="stretch",
+                            disabled=not st.session_state.batch_writing,
+                        ):
+                            st.session_state.batch_stop_requested = True
+                    if start_batch:
                         st.session_state.batch_writing = True
+                        st.session_state.batch_stop_requested = False
                         workflow = load_novel(novel_id)
                         with st.status(
                             f"批量写作中 (0/{len(selected_range)})…", expanded=True
                         ) as batch_status:
                             for idx, ch_num in enumerate(selected_range):
+                                if st.session_state.get("batch_stop_requested"):
+                                    batch_status.update(
+                                        label="已停止批量写作", state="error"
+                                    )
+                                    st.write("⏹ 用户已停止批量写作")
+                                    break
                                 batch_status.update(
                                     label=f"批量写作中 ({idx}/{len(selected_range)})…"
                                 )
@@ -519,6 +536,7 @@ def page_writing():
                             )
                         workflow.close()
                         st.session_state.batch_writing = False
+                        st.session_state.batch_stop_requested = False
                         st.rerun()
 
         with st.expander("🔙 批量回退状态", expanded=False):

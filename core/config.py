@@ -85,6 +85,15 @@ DEFAULT_DEAI_RULES = """
   ❌ "这意味着……" / "更大的危机正在逼近……" / "这就是命运的安排。"
   ✅ 在动作瞬间或突如其来的死寂中猝然中止，用物理结果或环境声响直接收尾。
 
+▶ 【硬性禁止】对比转折句式——零容忍，发现即视为严重违规
+  ❌ "不是……而是……"（所有变体：不是A而是B、不是A，是B、不是A是B）
+  ❌ "与其说……不如说……"
+  ❌ "与其……不如……"
+  这类句式是 AI 生成文本的最强识别标志，任何场合均不得使用，无例外。
+  ✅ 改为直接陈述各自事实，分开成独立句子：
+     × "那不是恐惧，是愤怒。" → ✅ "胸腔里堵着什么，像火。"
+     × "不是他不想说，而是无从开口。" → ✅ "他张了张嘴。什么都没出来。"
+
 ━━━ 第二级：强烈推荐（显著提升文学质感，尽量遵守）━━━
 
 ▶ 生理细节替换 AI 套话
@@ -99,13 +108,6 @@ DEFAULT_DEAI_RULES = """
 ▶ 替换模糊动词
   ❌ "似乎、仿佛、宛如、隐约"
   ✅ 用具有空间位移感的确凿动词；删去无意义的"着、地"及长副词。
-
-▶ 禁用转折句式（绝对禁用，不得以任何变体出现）
-  ❌ "不是……而是……"（含省略"而"的变体"不是……是……"）
-  ❌ "与其说……不如说……"
-  注意："不是A，是B"与"不是A而是B"属于同一句式，同等禁用。
-  ✅ 改为直接陈述各自事实，分开成独立句子：
-     × "那不是恐惧，是愤怒。" → ✅ "胸腔里堵着什么，像火，不是冰。"
 
 ━━━ 第三级：按情节类型适用（有相关场景时执行）━━━
 
@@ -170,6 +172,8 @@ MAX_GATE_RETRIES = int(os.getenv("MAX_GATE_RETRIES", "2"))
 MAX_PARALLEL_REVIEW_ROUNDS = int(os.getenv("MAX_PARALLEL_REVIEW_ROUNDS", "5"))
 # 最终得分权重
 FINAL_SCORE_WEIGHTS = (0.3, 0.4, 0.3)  # (局部校对, 全局场记, 文风打磨)
+# 时空与状态检查官是否使用 Agentic 模式（主动查询历史原文/档案再评分，准确度更高但耗时更长）
+CONTINUITY_TRACKER_AGENTIC = os.getenv("CONTINUITY_TRACKER_AGENTIC", "1") == "1"
 
 # ======================================
 # 内容压缩配置
@@ -225,6 +229,7 @@ DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "0") == "1"
 # 应用内 API Key 持久化
 # ======================================
 _API_KEYS_FILE = DATA_DIR / "api_keys.json"
+_LOCAL_MODELS_FILE = DATA_DIR / "local_models.json"
 
 
 def load_saved_keys() -> dict:
@@ -253,6 +258,58 @@ def apply_saved_keys():
     for key, value in load_saved_keys().items():
         if value and value.strip():
             os.environ[key] = value.strip()
+
+
+# ======================================
+# 本地模型配置（local_models.json）
+# ======================================
+
+def load_local_models() -> list[dict]:
+    """
+    读取本地模型配置列表。
+    每条记录格式：
+    {
+        "id":           "qwen2.5:7b",          # Ollama 模型名 / OpenAI-compatible model name
+        "display":      "Qwen2.5 7B（本地）",   # UI 显示名
+        "base_url":     "http://localhost:11434/v1",
+        "api_key":      "",                     # 留空 = 无需 Key（Ollama 默认）
+        "context_window": "128K",               # 可选
+        "note":         ""                      # 可选备注
+    }
+    """
+    if _LOCAL_MODELS_FILE.exists():
+        try:
+            data = json.loads(_LOCAL_MODELS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def save_local_models(models: list[dict]):
+    """
+    保存本地模型配置列表到 local_models.json，
+    并同步更新 core.llm.MODEL_REGISTRY（热加载，无需重启）。
+    """
+    _LOCAL_MODELS_FILE.write_text(
+        json.dumps(models, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    # 热加载：同步更新已导入的 MODEL_REGISTRY
+    try:
+        from core.llm import MODEL_REGISTRY, _build_local_model_entry, _LOCAL_MODEL_PREFIX
+        # 先移除所有旧的本地模型条目
+        old_keys = [k for k, v in MODEL_REGISTRY.items() if v.get("local")]
+        for k in old_keys:
+            MODEL_REGISTRY.pop(k, None)
+        # 重新注册
+        for m in models:
+            mid = m.get("id", "").strip()
+            if mid:
+                MODEL_REGISTRY[mid] = _build_local_model_entry(m)
+    except Exception:
+        pass  # llm 模块未加载时忽略，下次 import 时会自动读取
 
 
 # 启动时自动应用已保存的 Key

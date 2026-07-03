@@ -27,6 +27,7 @@ def init_session_state():
         "stream_content": "",
         "is_writing": False,
         "batch_writing": False,
+        "batch_stop_requested": False,
         "collab_display_name": None,
         "collab_identity": None,
         "idea_chat_history": [],

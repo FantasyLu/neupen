@@ -932,7 +932,7 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
         for k, v in world_setting.items():
             if v and str(v).strip():
                 world_parts.append(f"【{k}】{v}")
-        world_text = "\n".join(world_parts[:8]) if world_parts else "(无世界观设定)"
+        world_text = "\n".join(world_parts) if world_parts else "(无世界观设定)"
 
         system_prompt = """你是一位严格的人设与世界观守卫（CharacterGuard）。
 你的职责有两项，且只有这两项：
@@ -965,7 +965,7 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 {char_text}
 
 【世界观设定】
-{world_text[:2000]}{'...(已截断)' if len(world_text) > 2000 else ''}
+{world_text}
 
 【待审核正文】
 {content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
@@ -1063,6 +1063,85 @@ action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
                 feedback=f"连续性追踪官调用失败：{e}，自动放行", passed=True
             )
 
+    def run_continuity_tracker_agentic(self, chapter_number: int, content: str) -> GateResult:
+        """
+        Reviewer-C（Agentic 版）：时空与状态连续性追踪官
+        与普通版的区别：不预先注入固定摘要，而是让 LLM 通过工具主动查询
+        所需的历史章节原文、角色详细档案、时间线事件，再给出有据可查的评分。
+
+        工具调用预期行为：
+        - 查询涉及角色的完整档案（伤势/持有物/当前位置）
+        - 按关键词语义检索历史原文片段（确认伤势发生节点、道具得失等）
+        - 查询时间线事件（核对地点移动时间合理性）
+        - 查询章节摘要（了解前情脉络）
+        """
+        from core.agentic_loop import AgenticLoop
+        from core.tool_executor import ToolExecutor, TOOL_DEFINITIONS
+
+        content_preview = content[:8000] + ("...(内容过长已截断)" if len(content) > 8000 else "")
+
+        system_prompt = f"""你是一位严苛的时空与状态连续性追踪官（ContinuityTracker），专职检查小说正文中的连续性硬伤。
+
+你的职责有且只有两项：
+1. **状态连续性**：人物的伤势、持有物品、体力状态是否与历史记录一致（如已断的肢体、已失去的道具、已施放的技能消耗等）
+2. **时空逻辑**：地理位置移动是否合理、时间线是否自洽、事件先后顺序是否矛盾
+
+不要评价人设性格、世界观规则的合理性、文笔风格。
+
+━━━ 工作流程 ━━━
+审核前，请先通过工具主动查询：
+- 本章涉及的每位角色的完整档案（重点看 current_state）
+- 与道具/伤势/位置相关的历史原文片段（用 search_past_chapters 语义检索）
+- 时间线中的地点移动/重大事件记录（用 query_timeline）
+- 关键前置章节的摘要（用 query_chapter_summary）
+
+查询完成后，对照证据给出评分。
+
+━━━ 评分规则（10分制硬性扣分）━━━
+- 满分 10 分
+- 状态硬伤（已废的肢体被正常使用、凭空使用未持有道具）：一处扣 2.5 分
+- 状态软伤（状态描述与前文有细节出入但不影响逻辑）：一处扣 1.0 分
+- 时空硬伤（地理距离不合理、时间线明显矛盾）：一处扣 2.5 分
+- 时空软伤（时间/地点描述模糊但未明确矛盾）：一处扣 0.5 分
+
+━━━ 最终输出格式（查询完毕后输出，不含其他文字）━━━
+{{
+  "gate_name": "continuity_tracker",
+  "total_score": 9.0,
+  "breakdown": {{
+    "state_continuity": 10.0,
+    "spatiotemporal_logic": 8.0
+  }},
+  "action": "PASS",
+  "feedback": "精确引用原文矛盾位置，指出与第几章哪条记录相矛盾，给出具体修改建议。若无问题则简述检查结论。"
+}}
+action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。
+
+{TOOL_DEFINITIONS}"""
+
+        user_prompt = f"""请对以下第{chapter_number}章正文进行时空与状态连续性审核。
+
+【待审核正文（第{chapter_number}章）】
+{content_preview}
+
+请先调用工具查询必要的历史信息，再输出 JSON 评分结果。"""
+
+        loop = AgenticLoop(
+            llm=self.llm,
+            tool_executor=ToolExecutor(self.memory),
+            max_tool_calls=10,
+        )
+
+        try:
+            raw = loop.run(system_prompt, user_prompt, max_tokens_per_call=4096)
+            return self._parse_gate_response(raw, "continuity_tracker")
+        except Exception as e:
+            return GateResult(
+                gate_name="continuity_tracker", total_score=10.0,
+                breakdown={}, action="PASS",
+                feedback=f"Agentic 连续性追踪官调用失败：{e}，自动放行", passed=True
+            )
+
     def run_style_refiner(self, chapter_number: int, content: str) -> GateResult:
         """
         Reviewer-D: 文风打磨官 (StyleRefiner)
@@ -1130,8 +1209,7 @@ action 为 "PASS" 表示 total_score >= 8.5，"REJECT" 表示不达标。"""
 
 评分采用 10 分制硬性扣分标尺：
 - 满分 10 分
-- 违禁句式：每出现一处"不是……而是……"或其省略变体"不是……是……"，或"与其说……不如说……"，直接扣 1.5 分
-  注意："不是A，是B"与"不是A而是B"属于同一禁用句式，须同等对待。
+- 【最高优先级】对比转折句式（"不是……而是……"及所有变体"不是A，是B""不是A是B"，"与其说……不如说……"，"与其……不如……"）：每出现一处扣 2.5 分，这是 AI 生成的最强特征，零容忍
 - 跨章节句式滥用：若【近期章节高频句式统计】中某句式在近 3 章累计 ≥3 次，本章再出现该句式额外扣 1.0 分/处
 - 说书人腔调/上帝视角（段尾总结性/预言性发言，如"这意味着…""更大的危机正在逼近"）：每处扣 1.5 分
 - 机械连接词堆砌（过度使用"突然、竟然、然而、不得不"）：每处扣 0.5 分
@@ -1153,13 +1231,13 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 
         style_block = f"\n【风格档案参考】\n{style_text}" if style_text else ""
         user_prompt = f"""【去AI味规则（逐条对照检测）】
-{deai_rules[:3000]}{'...(已截断)' if len(deai_rules) > 3000 else ''}{style_block}
+{deai_rules}{style_block}
 {recent_pattern_block}
 【待审核正文】
 {content[:5000]}{'...(已截断)' if len(content) > 5000 else ''}
 
 请逐条对照规则检查正文，特别注意：
-1. "不是……是……"（无"而"字的变体）与"不是……而是……"同等禁用；
+1. "不是……是……"（无"而"字的变体）与"不是……而是……"同等禁用，每处扣 2.5 分；
 2. 若【近期章节高频句式统计】显示某句式已累计出现 ≥3 次，本章再出现须额外扣分。
 不要放过任何违规。"""
 
@@ -1198,15 +1276,22 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
             }
         """
         import concurrent.futures
+        from core.config import CONTINUITY_TRACKER_AGENTIC
 
         skip_gates = skip_gates or set()
 
         # 四关卡定义：(gate_name, method, weight, label)
+        # 时空状态关卡根据配置在 agentic / 普通版本间切换
+        continuity_fn = (
+            self.run_continuity_tracker_agentic
+            if CONTINUITY_TRACKER_AGENTIC
+            else self.run_continuity_tracker
+        )
         gate_defs = [
-            ("plot_aligner",       self.run_plot_aligner,       0.25, "剧情对齐"),
-            ("character_guard",    self.run_character_guard,    0.25, "人设世界观"),
-            ("continuity_tracker", self.run_continuity_tracker, 0.25, "时空状态"),
-            ("style_refiner",      self.run_style_refiner,      0.25, "文风去AI"),
+            ("plot_aligner",       self.run_plot_aligner,    0.25, "剧情对齐"),
+            ("character_guard",    self.run_character_guard, 0.25, "人设世界观"),
+            ("continuity_tracker", continuity_fn,            0.25, "时空状态"),
+            ("style_refiner",      self.run_style_refiner,   0.25, "文风去AI"),
         ]
 
         results: list[GateResult] = []
