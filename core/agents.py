@@ -907,6 +907,15 @@ class WriterAgent:
 
     SYSTEM_PROMPT = """你是一位才华横溢的中文小说作家，擅长创作引人入胜的中长篇小说。
 
+⛔ 绝对禁止句式（违反即视为严重缺陷，无论任何理由）：
+  × "不是……而是……"（含"不是A而是B"/"不是A，是B"/"不是A是B"等所有变体）
+  × "与其说……不如说……"
+  × "与其……不如……"
+改写方法：拆成两句独立陈述，只写事实和动作，不写对比评论。
+  × "那不是恐惧，是愤怒。" → ✓ "胸腔里堵着什么，像火。"
+  × "不是他不想说，而是无从开口。" → ✓ "他张了张嘴。什么都没出来。"
+请在下笔前将此禁令默念一遍，并在写完后逐句检查，发现即删改。
+
 你的写作原则：
 - **严格遵守**章纲中的核心事件和主要冲突，不能随意改变
 - **保持人设**：每个人物的言行必须符合其档案设定
@@ -1055,6 +1064,8 @@ class WriterAgent:
             )
             return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ""}》
 
+⛔ 本章写作前再次确认：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式。写完请自查，发现即改。
+
 【字数硬约束】
 - 最少：{word_min} 字（不足会显得情节仓促、铺垫缺失）
 - 最多：{word_max} 字（超过此上限属于硬性违规，系统会截断导致内容残缺）
@@ -1145,7 +1156,69 @@ class WriterAgent:
                 f"字数仍为 {len(content)}（目标 {word_min}~{word_max}），使用当前版本。",
                 file=sys.stderr,
             )
-        return content
+        return self._fix_forbidden_syntax(content, chapter_number)
+
+    def _fix_forbidden_syntax(self, content: str, chapter_number: int) -> str:
+        """
+        后处理：检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        只修改违规句子，保持其余内容不变。
+        """
+        import re, sys
+
+        FORBIDDEN_PATTERNS = [
+            re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
+            re.compile(r"不是.{1,30}[，,]\s*是.{1,30}"),
+            re.compile(r"与其说.{1,30}不如说"),
+            re.compile(r"与其.{1,30}不如.{1,30}"),
+        ]
+
+        hits = []
+        for pat in FORBIDDEN_PATTERNS:
+            hits.extend(pat.findall(content))
+
+        if not hits:
+            return content  # 无违规，直接返回
+
+        hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+        print(
+            f"[WriterAgent] 第{chapter_number}章检测到 {len(hits)} 处禁止句式，"
+            f"发起自动修正…\n{hit_lines}",
+            file=sys.stderr,
+        )
+
+        fix_prompt = f"""以下是一段小说正文，其中存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
+
+【检测到的违规句子】
+{hit_lines}
+
+【需要修改的完整正文】
+{content}
+
+修改规则：
+1. 将所有"不是A而是B"/"不是A，是B"/"不是A是B"/"与其说A不如说B"等句式，拆成两个独立陈述句，只写事实和动作，删去对比评论。
+2. 仅修改违规句子，其余内容原样保留，不得添加、删减、改写其他段落。
+3. 直接输出修改后的完整正文，不加任何说明或标注。"""
+
+        fixed = self.llm.generate(
+            self.SYSTEM_PROMPT,
+            fix_prompt,
+            max_tokens=12000,
+            temperature=0.3,
+        )
+
+        # 二次检测，确认是否已清除
+        remaining = []
+        for pat in FORBIDDEN_PATTERNS:
+            remaining.extend(pat.findall(fixed))
+        if remaining:
+            print(
+                f"[WriterAgent] 修正后仍有 {len(remaining)} 处违规句式，使用修正版本（已尽力）。",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[WriterAgent] 第{chapter_number}章禁止句式已全部清除。", file=sys.stderr)
+
+        return fixed
 
     def summarize_chapter(
         self, chapter_number: int, title: str, content: str
@@ -1507,6 +1580,7 @@ class WriterAgent:
 
 【本章任务】第{chapter_number}章《{chapter.title or ""}》
 【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）
+⛔ 写作前自查：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式，写完请逐句检查，发现即改。
 
 【章纲】
 {chapter.to_outline_text()}
@@ -1515,7 +1589,7 @@ class WriterAgent:
 
         loop = AgenticLoop(
             llm=self.llm,
-            tool_executor=ToolExecutor(self.memory),
+            tool_executor=ToolExecutor(self.memory, current_chapter=chapter_number),
             step_callback=step_callback,
         )
 
@@ -1603,7 +1677,7 @@ class WriterAgent:
                     file=_sys.stderr,
                 )
 
-        return content
+        return self._fix_forbidden_syntax(content, chapter_number)
 
     def fix_chapter_with_feedback(
         self,
@@ -3718,7 +3792,7 @@ class CanvasAgent:
 
         loop = AgenticLoop(
             llm=self.llm,
-            tool_executor=ToolExecutor(self.memory),
+            tool_executor=ToolExecutor(self.memory, current_chapter=chapter_number),
             step_callback=step_callback,
         )
 
