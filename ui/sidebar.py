@@ -143,6 +143,14 @@ def render_sidebar():
             st.session_state.page = "平台风格"
             st.rerun()
 
+        # 云同步（全局功能）
+        is_sync = st.session_state.page == "云同步"
+        if st.button("☁️ 云同步", width="stretch",
+                     type="primary" if is_sync else "secondary",
+                     key="nav_sync"):
+            st.session_state.page = "云同步"
+            st.rerun()
+
         if st.session_state.novel_id:
             st.divider()
             render_global_chat(st.session_state.novel_id)
