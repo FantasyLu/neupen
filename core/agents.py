@@ -950,7 +950,7 @@ class WriterAgent:
         self,
         chapter_number: int,
         word_target: int = 3000,
-        word_count_tolerance: float = 0.30,
+        word_count_tolerance: float = 0.15,
         stream_callback=None,
         review_feedback: str = "",
     ) -> str:
@@ -964,7 +964,7 @@ class WriterAgent:
         Args:
             chapter_number: 章节序号
             word_target: 目标字数
-            word_count_tolerance: 字数容差（默认 0.30 = ±30%）
+            word_count_tolerance: 字数容差（默认 0.15 = ±15%）
             stream_callback: 流式输出回调（提供时走流式路径，不重试）
             review_feedback: 上轮审核反馈（用于针对性改写）
 
@@ -1071,6 +1071,12 @@ class WriterAgent:
 - 最多：{word_max} 字 ⚠️ 这是绝对上限，写到此处必须收尾，超出部分将被系统强制截断
 - 目标：{word_target} 字
 - 写作时每完成约 {word_target // 3} 字请自行估算剩余空间，不要等到写完才发现超限
+
+【三段式字数分配参考】（总目标 {word_target} 字）
+- 开篇铺垫（承接上章、建立场景氛围）：约 {word_target // 5} 字
+- 核心事件展开（主要冲突/情节推进）：约 {word_target * 3 // 5} 字  ← 笔墨重心，但不要无限铺展细节
+- 收束收尾（悬念钩子/情感落点）：约 {word_target // 5} 字
+→ 写完每段请心算当前总字数，发现超出本段预算立即收笔推进下一段
 {deai_block}{feedback_block}
 【写作上下文（下方所有设定和前情均须遵守）】
 {writing_context}{style_block}{platform_block}
@@ -1127,10 +1133,13 @@ class WriterAgent:
                 else:
                     surplus = actual - word_max
                     extra_fb = (
-                        f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，"
-                        f"超出上限 {surplus} 字。请精简重复描写、压缩过渡段落，"
-                        f"使总字数严格控制在 {word_max} 字以内。保持核心情节完整，"
-                        f"直接输出完整的重写版本。"
+                        f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，超出上限 {surplus} 字。\n"
+                        f"根因：核心事件段（全文60%篇幅）过度展开细节。请按以下方向压缩，三阶段情节骨架保留完整：\n"
+                        f"- 每个心理活动只保留最关键的一处，删去反复推敲/重复感受\n"
+                        f"- 合并功能相同的过渡句和环境描写\n"
+                        f"- 对话保留，但每句对话最多配一处动作/表情描写\n"
+                        f"目标：使总字数控制在 {word_max} 字以内，开篇/核心/收尾结构完整。\n"
+                        f"直接输出完整的压缩版本："
                     )
 
             content = self.llm.generate(
@@ -1139,9 +1148,6 @@ class WriterAgent:
                 max_tokens=_max_tokens_write,
                 temperature=self.temperature,
             )
-            # 超限时先做程序截断，再判断是否达标（避免 LLM 重试同样超限）
-            if len(content) > word_max:
-                content = self._truncate_to_limit(content, word_max, chapter_number)
             actual = len(content)
             if word_min <= actual <= word_max:
                 break  # 字数达标，退出重试
@@ -1166,9 +1172,11 @@ class WriterAgent:
 
     def _truncate_to_limit(self, content: str, word_max: int, chapter_number: int) -> str:
         """
-        硬截断：当内容超过 word_max 时，按段落边界裁剪到上限以内。
-        优先在完整段落边界截断，保留最后一个不超限的完整段落。
-        超限 5% 以内不截断（避免把结尾钩子误删）。
+        按段落边界裁剪内容到字数上限以内。
+        5% 容忍带内不截断。
+
+        注意：当前不在自动写作流程中调用，保留供手动调试或外部工具使用。
+        自动流程改为依赖 LLM 重写压缩，避免因截断造成章纲内容残缺。
         """
         import sys
 
@@ -1493,7 +1501,7 @@ class WriterAgent:
         self,
         chapter_number: int,
         word_target: int = 3000,
-        word_count_tolerance: float = 0.30,
+        word_count_tolerance: float = 0.15,
         step_callback=None,
     ) -> str:
         """
@@ -1515,7 +1523,7 @@ class WriterAgent:
         Args:
             chapter_number: 章节序号
             word_target: 目标字数
-            word_count_tolerance: 字数容差（默认 ±30%）
+            word_count_tolerance: 字数容差（默认 ±15%）
             step_callback: (event_type: str, data: dict) -> None，可选
 
         Returns:
@@ -1630,6 +1638,7 @@ class WriterAgent:
 
 【本章任务】第{chapter_number}章《{chapter.title or ""}》
 【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）⚠️ {word_max} 字是绝对上限，超出将被系统截断
+【三段式分配参考】开篇铺垫约 {word_target // 5} 字 / 核心展开约 {word_target * 3 // 5} 字 / 收束收尾约 {word_target // 5} 字 → 写完每段心算总字数，超出本段预算立即推进
 ⛔ 写作前自查：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式，写完请逐句检查，发现即改。
 
 【章纲】
@@ -1677,24 +1686,20 @@ class WriterAgent:
                     f"直接输出完整的重写版本："
                 )
             else:
-                # 超限时先尝试程序截断，截断后达标则直接跳出不再 LLM 重试
-                content = self._truncate_to_limit(content, word_max, chapter_number)
-                if len(content) <= word_max:
-                    break
-                surplus = len(content) - word_max
+                surplus = actual - word_max
                 print(
-                    f"[WriterAgent-Agentic] 第{chapter_number}章程序截断后仍超限"
-                    f"（{len(content)}/{word_max}），发起 LLM 精简重试（第{_attempt + 1}次）…",
+                    f"[WriterAgent-Agentic] 第{chapter_number}章字数超限"
+                    f"（{actual}/{word_min}~{word_max}），发起 LLM 精简重试（第{_attempt + 1}次）…",
                     file=_sys.stderr,
                 )
                 fix_instruction = (
-                    f"⚠️ 字数超限：当前 {len(content)} 字，超出上限 {surplus} 字。\n"
-                    f"请精简以下方向（保持核心情节和人物完整）：\n"
-                    f"- 合并重复的环境/心理描写\n"
-                    f"- 压缩过渡段落（用更简洁的衔接句替代）\n"
-                    f"- 删除与情节推进无关的闲笔\n"
-                    f"目标：使总字数严格控制在 {word_max} 字以内。\n"
-                    f"直接输出完整的精简版本："
+                    f"⚠️ 字数超限：当前 {actual} 字，超出上限 {surplus} 字。\n"
+                    f"根因：核心事件段（全文60%篇幅）过度展开细节。请按以下方向压缩，三阶段情节骨架保留完整：\n"
+                    f"- 每个心理活动只保留最关键的一处，删去反复推敲/重复感受\n"
+                    f"- 合并功能相同的过渡句和环境描写\n"
+                    f"- 对话保留，但每句对话最多配一处动作/表情描写\n"
+                    f"目标：使总字数控制在 {word_max} 字以内，开篇/核心/收尾结构完整。\n"
+                    f"直接输出完整的压缩版本："
                 )
 
             content_truncated = content[:10000]
