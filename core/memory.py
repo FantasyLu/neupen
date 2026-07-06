@@ -402,8 +402,22 @@ class GlobalMemory:
                     matched_f = best_f
 
             if matched_f:
-                # 安全检查：回收章节不能早于埋下章节
+                # 安全检查1：回收章节不能早于埋下章节
                 if matched_f.set_chapter and chapter_number < matched_f.set_chapter:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        f"[伏笔回收跳过] 《{matched_f.name}》规划于第{matched_f.set_chapter}章埋下，"
+                        f"但当前第{chapter_number}章尝试回收（尚未埋下），已跳过。"
+                    )
+                    continue
+                # 安全检查2：伏笔必须已处于 active 状态（已在之前章节正式埋下）
+                # set_chapter 为 None 说明伏笔库中未记录埋下章节，也视为未埋下，跳过
+                if not matched_f.set_chapter:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        f"[伏笔回收跳过] 《{matched_f.name}》尚未记录埋下章节（set_chapter 为空），"
+                        f"第{chapter_number}章无法回收，已跳过。"
+                    )
                     continue
                 matched_f.status = "collected"
                 matched_f.collect_chapter = chapter_number
@@ -1516,26 +1530,79 @@ class MemoryManager:
         # 当前章纲
         parts.append(f"\n=== 本章章纲 ===\n{chapter_outline.to_outline_text()}")
 
+        # 本章应埋下的伏笔（从章纲 outline_foreshadowing_set 提取，强制注入）
+        # LLM 写作时需要知道本章要新埋哪些伏笔，以便自然植入正文
+        _must_set_names = chapter_outline.get_outline_foreshadowing_set()
+        if _must_set_names:
+            # 尝试从伏笔库查找已有记录（可能章纲生成时已预录）
+            all_fs = (
+                self.global_mem.db.query(Foreshadowing)
+                .filter(
+                    Foreshadowing.novel_id == self.global_mem.novel_id,
+                    Foreshadowing.status.in_(["active", "collected"]),
+                )
+                .all()
+            )
+            _set_fs_found = []
+            _set_names_notfound = []
+            for sname in _must_set_names:
+                if not sname:
+                    continue
+                matched = None
+                for f in all_fs:
+                    if sname in (f.name or "") or (f.name or "") in sname:
+                        matched = f
+                        break
+                if matched:
+                    _set_fs_found.append(matched)
+                else:
+                    _set_names_notfound.append(sname)
+
+            _set_lines = ["📌 以下伏笔已在章纲中规划于本章埋下，写作时必须自然植入正文（不可显白直说，需隐含于情节细节中）："]
+            for f in _set_fs_found:
+                _set_lines.append(f.to_full_text())
+            for sname in _set_names_notfound:
+                _set_lines.append(f"《{sname}》（伏笔库中暂无详细记录，请根据章纲自行构思植入方式）")
+            parts.append("\n=== 本章应埋下的伏笔 ===\n" + "\n".join(_set_lines))
+
         # 本章必须回收的伏笔（从章纲 outline_foreshadowing_collect 提取，强制注入，不依赖关键词匹配）
         # 这是 LLM 写作时最需要明确知道的信息：本章要负责回收哪些伏笔
         _must_collect_names = chapter_outline.get_outline_foreshadowing_collect()
         if _must_collect_names:
+            _active_fs = self.global_mem.get_active_foreshadowings()
             _must_fs = []
-            for f in self.global_mem.get_active_foreshadowings():
-                for name in _must_collect_names:
-                    if name and (name in (f.name or "") or (f.name or "") in name):
-                        _must_fs.append(f)
+            _not_set_names = []  # 计划回收但尚未在之前章节埋下的伏笔
+            for name in _must_collect_names:
+                if not name:
+                    continue
+                found = None
+                for f in _active_fs:
+                    if name in (f.name or "") or (f.name or "") in name:
+                        found = f
                         break
+                if found:
+                    # 安全校验：该伏笔必须已经在之前的章节中埋下（set_chapter < current_chapter）
+                    if found.set_chapter and found.set_chapter >= chapter_number:
+                        _not_set_names.append(
+                            f"《{found.name}》（规划于第{found.set_chapter}章埋下，尚未到达，本章暂不回收）"
+                        )
+                    else:
+                        _must_fs.append(found)
+                else:
+                    # 数据库中找不到 active 记录（可能已回收或名称偏差）
+                    _not_set_names.append(f"《{name}》（数据库中无 active 记录，可能已回收或名称有偏差，请结合前情酌情处理）")
+
             if _must_fs:
-                _must_lines = ["⚠️ 以下伏笔已在章纲中规划于本章回收，写作时必须在正文中有所体现："]
+                _must_lines = ["⚠️ 以下伏笔已在章纲中规划于本章回收，且确认在之前章节已埋下，写作时必须在正文中有所体现："]
                 for f in _must_fs:
                     _must_lines.append(f.to_full_text())
                 parts.append("\n=== 本章必须回收的伏笔 ===\n" + "\n".join(_must_lines))
-            elif _must_collect_names:
-                # 伏笔名存在但数据库中找不到（可能已经回收或名称有偏差）
+
+            if _not_set_names:
                 parts.append(
-                    f"\n=== 本章必须回收的伏笔 ===\n"
-                    f"⚠️ 章纲规划本章回收：{'、'.join(_must_collect_names)}（数据库中已回收或名称有偏差，请结合前情处理）"
+                    "\n=== 本章回收伏笔-异常提示 ===\n"
+                    "❌ 以下伏笔章纲规划本章回收，但尚未在之前章节正式埋下，本章写作时跳过回收，仅作参考：\n"
+                    + "\n".join(_not_set_names)
                 )
 
         return "\n\n".join(parts)
