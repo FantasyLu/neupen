@@ -189,6 +189,9 @@ MAX_GATE_RETRIES = int(os.getenv("MAX_GATE_RETRIES", "2"))
 # 并行四审核流水线的最大审核轮数（每轮 = 审核 + 修正，全部通过提前退出）
 # 用户可在设置页「写作质量」中按项目覆盖此默认值
 MAX_PARALLEL_REVIEW_ROUNDS = int(os.getenv("MAX_PARALLEL_REVIEW_ROUNDS", "5"))
+# 并行四审核：每个关卡的最低通过分数（代码硬校验，防止 LLM 给低分仍返回 PASS）
+# 各关卡统一使用此阈值兜底；可通过 .env 按关卡细分覆盖
+GATE_MIN_PASS_SCORE = float(os.getenv("GATE_MIN_PASS_SCORE", "8.0"))
 # 最终得分权重
 FINAL_SCORE_WEIGHTS = (0.3, 0.4, 0.3)  # (局部校对, 全局场记, 文风打磨)
 # 时空与状态检查官是否使用 Agentic 模式（主动查询历史原文/档案再评分，准确度更高但耗时更长）
