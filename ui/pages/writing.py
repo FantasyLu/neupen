@@ -362,7 +362,7 @@ def page_writing():
                     with bp4:
                         batch_auto_sync = st.toggle(
                             "自动同步大纲/人物",
-                            value=False,
+                            value=True,
                             key="batch_auto_sync",
                             help="写完每章后自动将 AI 检测到的人物状态变化、大纲更新等同步入库，无需手动逐条确认",
                         )
