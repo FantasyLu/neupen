@@ -333,6 +333,89 @@ class GlobalMemory:
             f.collect_content = content
             self.db.commit()
 
+    def collect_foreshadowings_by_names(
+        self, names: list[str], chapter_number: int, collect_content: str = ""
+    ) -> int:
+        """
+        按伏笔名称匹配，批量标记为已回收。
+        用于章节写完后将 outline_foreshadowing_collect 同步到 Foreshadowing 表。
+
+        匹配规则：
+        1. 先尝试精确子串匹配（name in f.name 或 f.name in name）
+        2. 精确匹配失败时，用 bigram 关键词交集匹配（分数 >= 2）
+        3. 提取"第N章"提示，仅匹配对应章节埋下的伏笔
+        返回实际标记的条数。
+        """
+        import re as _re
+
+        if not names:
+            return 0
+
+        def _get_bigrams(text: str) -> set:
+            chars = _re.sub(r'[^\u4e00-\u9fff]', '', text)
+            return {chars[i:i+2] for i in range(len(chars)-1)}
+
+        all_active = (
+            self.db.query(Foreshadowing)
+            .filter(
+                Foreshadowing.novel_id == self.novel_id,
+                Foreshadowing.status == "active",
+            )
+            .all()
+        )
+
+        collected = 0
+        already_matched: set[int] = set()
+
+        for name in names:
+            if not name:
+                continue
+
+            # 提取章节号提示（"第N章"）
+            ch_hint_match = _re.search(r'第(\d+)章', name)
+            hint_ch = int(ch_hint_match.group(1)) if ch_hint_match else None
+
+            candidates = [
+                f for f in all_active
+                if f.id not in already_matched
+                and (not hint_ch or not f.set_chapter or f.set_chapter == hint_ch)
+            ]
+
+            matched_f = None
+
+            # 第一步：精确子串匹配
+            for f in candidates:
+                if name in (f.name or "") or (f.name or "") in name:
+                    matched_f = f
+                    break
+
+            # 第二步：bigram 匹配（分数 >= 2）
+            if not matched_f:
+                name_bigrams = _get_bigrams(name)
+                best_score, best_f = 0, None
+                for f in candidates:
+                    f_bigrams = _get_bigrams((f.name or "") + (f.description or ""))
+                    score = len(name_bigrams & f_bigrams)
+                    if score > best_score:
+                        best_score, best_f = score, f
+                if best_score >= 2:
+                    matched_f = best_f
+
+            if matched_f:
+                # 安全检查：回收章节不能早于埋下章节
+                if matched_f.set_chapter and chapter_number < matched_f.set_chapter:
+                    continue
+                matched_f.status = "collected"
+                matched_f.collect_chapter = chapter_number
+                if collect_content:
+                    matched_f.collect_content = collect_content[:200]
+                already_matched.add(matched_f.id)
+                collected += 1
+
+        if collected:
+            self.db.commit()
+        return collected
+
     def get_overdue_foreshadowings(self, current_chapter: int) -> list[Foreshadowing]:
         """获取已过截止章节但尚未回收的伏笔"""
         return (
@@ -1432,6 +1515,28 @@ class MemoryManager:
 
         # 当前章纲
         parts.append(f"\n=== 本章章纲 ===\n{chapter_outline.to_outline_text()}")
+
+        # 本章必须回收的伏笔（从章纲 outline_foreshadowing_collect 提取，强制注入，不依赖关键词匹配）
+        # 这是 LLM 写作时最需要明确知道的信息：本章要负责回收哪些伏笔
+        _must_collect_names = chapter_outline.get_outline_foreshadowing_collect()
+        if _must_collect_names:
+            _must_fs = []
+            for f in self.global_mem.get_active_foreshadowings():
+                for name in _must_collect_names:
+                    if name and (name in (f.name or "") or (f.name or "") in name):
+                        _must_fs.append(f)
+                        break
+            if _must_fs:
+                _must_lines = ["⚠️ 以下伏笔已在章纲中规划于本章回收，写作时必须在正文中有所体现："]
+                for f in _must_fs:
+                    _must_lines.append(f.to_full_text())
+                parts.append("\n=== 本章必须回收的伏笔 ===\n" + "\n".join(_must_lines))
+            elif _must_collect_names:
+                # 伏笔名存在但数据库中找不到（可能已经回收或名称有偏差）
+                parts.append(
+                    f"\n=== 本章必须回收的伏笔 ===\n"
+                    f"⚠️ 章纲规划本章回收：{'、'.join(_must_collect_names)}（数据库中已回收或名称有偏差，请结合前情处理）"
+                )
 
         return "\n\n".join(parts)
 

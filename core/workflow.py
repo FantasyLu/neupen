@@ -606,6 +606,19 @@ class NovelWorkflow:
             except Exception:
                 pass
 
+            # Step 5.5: 将章纲中 outline_foreshadowing_collect 同步到 Foreshadowing 表
+            # 章纲里写了"本章回收哪些伏笔"，写完章节后自动标记为已回收
+            try:
+                _collected_names = chapter.get_outline_foreshadowing_collect() if chapter else []
+                if _collected_names:
+                    _synced = self.memory.global_mem.collect_foreshadowings_by_names(
+                        _collected_names, chapter_number, final_content
+                    )
+                    if progress_callback and _synced:
+                        progress_callback(f"🔖 自动标记 {_synced} 条伏笔为已回收")
+            except Exception:
+                pass
+
             # Step 6: 大纲/设定同步检测
             sync_checks = {}
             if progress_callback:
