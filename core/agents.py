@@ -1068,8 +1068,9 @@ class WriterAgent:
 
 【字数硬约束】
 - 最少：{word_min} 字（不足会显得情节仓促、铺垫缺失）
-- 最多：{word_max} 字（超过此上限属于硬性违规，系统会截断导致内容残缺）
+- 最多：{word_max} 字 ⚠️ 这是绝对上限，写到此处必须收尾，超出部分将被系统强制截断
 - 目标：{word_target} 字
+- 写作时每完成约 {word_target // 3} 字请自行估算剩余空间，不要等到写完才发现超限
 {deai_block}{feedback_block}
 【写作上下文（下方所有设定和前情均须遵守）】
 {writing_context}{style_block}{platform_block}
@@ -1108,6 +1109,8 @@ class WriterAgent:
 
         # ── 非流式路径：生成后检测字数，超出范围最多重试 2 次 ──────────────
         _MAX_WORD_RETRIES = 2
+        # 根据字数上限估算 token 上限（中文约 1.5 字/token，留 20% 余量避免生成不完整）
+        _max_tokens_write = max(4000, int(word_max / 1.5 * 1.2))
         content = ""
         for attempt in range(_MAX_WORD_RETRIES + 1):
             extra_fb = ""
@@ -1126,16 +1129,19 @@ class WriterAgent:
                     extra_fb = (
                         f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，"
                         f"超出上限 {surplus} 字。请精简重复描写、压缩过渡段落，"
-                        f"使总字数控制在 {word_max} 字以内。保持核心情节完整，"
+                        f"使总字数严格控制在 {word_max} 字以内。保持核心情节完整，"
                         f"直接输出完整的重写版本。"
                     )
 
             content = self.llm.generate(
                 self.SYSTEM_PROMPT,
                 _build_prompt(extra_fb),
-                max_tokens=12000,
+                max_tokens=_max_tokens_write,
                 temperature=self.temperature,
             )
+            # 超限时先做程序截断，再判断是否达标（避免 LLM 重试同样超限）
+            if len(content) > word_max:
+                content = self._truncate_to_limit(content, word_max, chapter_number)
             actual = len(content)
             if word_min <= actual <= word_max:
                 break  # 字数达标，退出重试
@@ -1157,6 +1163,50 @@ class WriterAgent:
                 file=sys.stderr,
             )
         return self._fix_forbidden_syntax(content, chapter_number)
+
+    def _truncate_to_limit(self, content: str, word_max: int, chapter_number: int) -> str:
+        """
+        硬截断：当内容超过 word_max 时，按段落边界裁剪到上限以内。
+        优先在完整段落边界截断，保留最后一个不超限的完整段落。
+        超限 5% 以内不截断（避免把结尾钩子误删）。
+        """
+        import sys
+
+        actual = len(content)
+        # 5% 容忍带，轻微超限不截断
+        if actual <= int(word_max * 1.05):
+            return content
+
+        print(
+            f"[WriterAgent] 第{chapter_number}章字数 {actual} 超出上限 {word_max}，"
+            f"执行段落截断…",
+            file=sys.stderr,
+        )
+
+        paragraphs = content.split("\n")
+        result_parts = []
+        current_len = 0
+
+        for para in paragraphs:
+            para_len = len(para) + 1  # +1 for the newline
+            if current_len + para_len > word_max:
+                # 如果当前段落加进去会超限，检查是否已有足够内容
+                if current_len >= int(word_max * 0.8):
+                    break  # 已有足够内容，直接截断
+                # 内容不足 80%，强行加入截断的段落保底
+                remaining = word_max - current_len
+                result_parts.append(para[:remaining])
+                current_len += remaining
+                break
+            result_parts.append(para)
+            current_len += para_len
+
+        truncated = "\n".join(result_parts)
+        print(
+            f"[WriterAgent] 第{chapter_number}章截断后字数：{len(truncated)}",
+            file=sys.stderr,
+        )
+        return truncated
 
     def _fix_forbidden_syntax(self, content: str, chapter_number: int) -> str:
         """
@@ -1579,7 +1629,7 @@ class WriterAgent:
         initial_prompt = f"""{novel_info}
 
 【本章任务】第{chapter_number}章《{chapter.title or ""}》
-【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）
+【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）⚠️ {word_max} 字是绝对上限，超出将被系统截断
 ⛔ 写作前自查：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式，写完请逐句检查，发现即改。
 
 【章纲】
@@ -1596,12 +1646,12 @@ class WriterAgent:
         content = loop.run(
             system_prompt=agentic_system,
             initial_user_prompt=initial_prompt,
-            max_tokens_per_call=12000,
+            max_tokens_per_call=max(4000, int(word_max / 1.5 * 1.2)),
         )
 
         # ── 字数校验 + 轻量重试（最多2次，不走完整 agentic loop）────────────────
-        # 重试策略：在已有内容基础上发一个补写/精简指令（单轮 LLM 调用），
-        # 避免重跑全量 agentic loop 带来的额外查询开销。
+        # 超限时先尝试程序截断（快速无损），截断后达标则直接返回；
+        # 仍不达标（字数不足）才发起 LLM 补写重试。
         _MAX_WORD_RETRIES = 2
         import sys as _sys
 
@@ -1627,19 +1677,23 @@ class WriterAgent:
                     f"直接输出完整的重写版本："
                 )
             else:
-                surplus = actual - word_max
+                # 超限时先尝试程序截断，截断后达标则直接跳出不再 LLM 重试
+                content = self._truncate_to_limit(content, word_max, chapter_number)
+                if len(content) <= word_max:
+                    break
+                surplus = len(content) - word_max
                 print(
-                    f"[WriterAgent-Agentic] 第{chapter_number}章字数超限"
-                    f"（{actual}/{word_min}~{word_max}），发起精简重试（第{_attempt + 1}次）…",
+                    f"[WriterAgent-Agentic] 第{chapter_number}章程序截断后仍超限"
+                    f"（{len(content)}/{word_max}），发起 LLM 精简重试（第{_attempt + 1}次）…",
                     file=_sys.stderr,
                 )
                 fix_instruction = (
-                    f"⚠️ 字数超限：当前 {actual} 字，超出上限 {surplus} 字。\n"
+                    f"⚠️ 字数超限：当前 {len(content)} 字，超出上限 {surplus} 字。\n"
                     f"请精简以下方向（保持核心情节和人物完整）：\n"
                     f"- 合并重复的环境/心理描写\n"
                     f"- 压缩过渡段落（用更简洁的衔接句替代）\n"
                     f"- 删除与情节推进无关的闲笔\n"
-                    f"目标：使总字数控制在 {word_max} 字以内。\n"
+                    f"目标：使总字数严格控制在 {word_max} 字以内。\n"
                     f"直接输出完整的精简版本："
                 )
 
@@ -1658,7 +1712,7 @@ class WriterAgent:
                 content = self.llm.generate(
                     agentic_system,
                     fix_prompt,
-                    max_tokens=12000,
+                    max_tokens=max(4000, int(word_max / 1.5 * 1.2)),
                     temperature=self.temperature,
                 )
             except Exception as e:
