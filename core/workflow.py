@@ -1436,7 +1436,7 @@ class NovelWorkflow:
           - 已发布章节数 >= 大纲规划总章数 → completed
         调用方须自行 commit。
         """
-        from core.models import Chapter, Outline
+        from core.models import Chapter, NovelOutline
         novel = self.memory.global_mem.get_novel()
         if not novel:
             return
@@ -1449,8 +1449,8 @@ class NovelWorkflow:
             return  # 没有已发布章节，不改变状态
         # 获取大纲规划总章数
         outline = (
-            self.db.query(Outline)
-            .filter(Outline.novel_id == self.novel_id)
+            self.db.query(NovelOutline)
+            .filter(NovelOutline.novel_id == self.novel_id)
             .first()
         )
         total_planned = outline.total_chapters if outline and outline.total_chapters else 0
