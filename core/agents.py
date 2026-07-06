@@ -1219,10 +1219,61 @@ class WriterAgent:
 
     def _fix_forbidden_syntax(self, content: str, chapter_number: int) -> str:
         """
-        后处理：检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
-        只修改违规句子，保持其余内容不变。
+        后处理：
+        1. 检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        2. 程序化替换滥用的破折号"——"（解释说明/递进/镜头切换场景），
+           保留合法用法（话语打断、拟声词延长）。
         """
         import re, sys
+
+        # ── Step 1: 破折号滥用程序化替换（快速、无 LLM 成本）─────────────────
+        # 合法用法保留：
+        #   ① 引号内短句后：「"等一下——"」「'我——'」
+        #   ② 拟声词后：轰—— 嗡—— 啊——（1-4个汉字/拟声词 + ——）
+        # 滥用场景替换：
+        #   A. 句中解释/递进（两侧均为叙述短语）→ 逗号
+        #   B. 镜头切换（前为完整句，破折号后接独立短句）→ 句号
+
+        def _fix_em_dash(text: str) -> str:
+            protected = {}
+            counter = [0]
+
+            def protect(m):
+                key = f'\x00EMDASH{counter[0]}\x00'
+                protected[key] = m.group(0)
+                counter[0] += 1
+                return key
+
+            # 保护①：引号内的话语打断（引号 + ≤10字 + ——，紧接引号结束符）
+            text = re.sub(r'(["""\u300e\u300a][^"""\u300f\u300b]{0,10}——["""\u300f\u300b])', protect, text)
+            # 保护②：拟声词/音效延长（1-4字 + ——，两侧是标点/空白/行边界）
+            text = re.sub(r'((?:^|(?<=[，。！？\n\s]))[\u4e00-\u9fff]{1,4}——(?=[，。！？\n\s]|$))', protect, text)
+
+            # 替换：循环处理所有滥用破折号 → 句号（循环至无剩余）
+            prev = None
+            while prev != text:
+                prev = text
+                text = re.sub(r'([^，。！？\n\x00]{1,})——', r'\1。', text)
+
+            # 还原保护的合法用法
+            for key, val in protected.items():
+                text = text.replace(key, val)
+            return text
+
+        original_dash_count = content.count("——")
+        if original_dash_count > 0:
+            fixed_content = _fix_em_dash(content)
+            remaining_dash_count = fixed_content.count("——")
+            replaced = original_dash_count - remaining_dash_count
+            if replaced > 0:
+                print(
+                    f"[WriterAgent] 第{chapter_number}章破折号：原 {original_dash_count} 处，"
+                    f"替换 {replaced} 处，保留合法用法 {remaining_dash_count} 处。",
+                    file=sys.stderr,
+                )
+            content = fixed_content
+
+        # ── Step 2: 对比转折句式 LLM 修正 ──────────────────────────────────
 
         FORBIDDEN_PATTERNS = [
             re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
