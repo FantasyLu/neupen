@@ -39,6 +39,27 @@ def page_sync():
 
     cfg = load_sync_config()
 
+    # 从已保存的配置中还原显示用的「干净」URL（去掉内嵌 token）
+    def _strip_token(url: str) -> str:
+        """把 https://<token>@host/... 还原为 https://host/..."""
+        import re
+        return re.sub(r"(https?://)([^@]+@)", r"\1", url)
+
+    def _is_https(url: str) -> bool:
+        return url.strip().lower().startswith("https://")
+
+    def _build_remote_url(base_url: str, token: str) -> str:
+        """将 token 内嵌到 HTTPS URL 中"""
+        base_url = base_url.strip()
+        token = token.strip()
+        if not token:
+            return base_url
+        # 去掉已有的 token（防止重复嵌入）
+        import re
+        base_url = re.sub(r"(https?://)([^@]+@)", r"\1", base_url)
+        # 插入 token
+        return re.sub(r"(https?://)", rf"\1{token}@", base_url)
+
     # ══════════════════════════════════════════════════════════
     # Tab 1: 配置  |  Tab 2: 同步操作
     # ══════════════════════════════════════════════════════════
@@ -48,19 +69,41 @@ def page_sync():
     with tab_cfg:
         st.subheader("远端仓库")
 
+        # 已保存的显示用 URL（脱敏）
+        saved_display_url = _strip_token(cfg.get("remote_url", ""))
+        saved_token = cfg.get("https_token", "")
+
         with st.form("sync_config_form"):
             remote_url = st.text_input(
                 "仓库地址（SSH 或 HTTPS）",
-                value=cfg.get("remote_url", ""),
+                value=saved_display_url,
                 placeholder="https://github.com/yourname/neupen-data.git",
-                help="推荐使用 SSH（`git@github.com:yourname/neupen-data.git`）以避免每次输入密码；\n"
-                     "HTTPS 需要在地址中内嵌 Token，如 `https://<token>@github.com/...`",
+                help="SSH 格式：`git@github.com:yourname/repo.git`（推荐）\n"
+                     "HTTPS 格式：`https://github.com/yourname/repo.git`（填完后会额外要求输入 Token）",
             )
             branch = st.text_input(
                 "分支名",
                 value=cfg.get("branch", "main"),
                 placeholder="main",
             )
+
+            # HTTPS Token 输入（根据当前输入的 URL 动态显示）
+            https_token = ""
+            if _is_https(remote_url):
+                st.info(
+                    "检测到 HTTPS 地址，需要提供 GitHub Personal Access Token。\n\n"
+                    "申请路径：GitHub → 头像 → **Settings** → **Developer settings** "
+                    "→ **Personal access tokens** → **Tokens (classic)** → Generate new token，"
+                    "勾选 `repo` 权限，生成后立即复制（页面关闭后不可再查看）。",
+                    icon="🔑",
+                )
+                https_token = st.text_input(
+                    "GitHub / GitLab Token",
+                    value=saved_token,
+                    type="password",
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx",
+                    help="Token 仅保存在本地 sync_config.json，不会进入 Git 仓库",
+                )
 
             st.divider()
             st.subheader("API Key 加密")
@@ -81,21 +124,41 @@ def page_sync():
                 placeholder="再次输入密码",
             )
 
-            saved = st.form_submit_button("💾 保存配置", type="primary")
+            saved_btn = st.form_submit_button("💾 保存配置", type="primary")
 
-        if saved:
+        if saved_btn:
             if passphrase and passphrase != passphrase_confirm:
                 st.error("两次输入的密码不一致")
             elif not remote_url.strip():
                 st.error("仓库地址不能为空")
+            elif _is_https(remote_url) and not https_token.strip():
+                st.error("HTTPS 方式需要提供 Token，否则无法推送/拉取")
             else:
+                # 拼接实际使用的 remote_url（含 token）
+                actual_url = (
+                    _build_remote_url(remote_url, https_token)
+                    if _is_https(remote_url)
+                    else remote_url.strip()
+                )
                 cfg.update({
-                    "remote_url": remote_url.strip(),
+                    "remote_url": actual_url,
+                    "https_token": https_token.strip() if _is_https(remote_url) else "",
                     "branch": branch.strip() or "main",
                     "passphrase": passphrase,
                 })
                 save_sync_config(cfg)
                 st.success("配置已保存")
+
+        # 已保存配置预览
+        if cfg.get("remote_url"):
+            display_url = _strip_token(cfg["remote_url"])
+            url_type = "HTTPS" if _is_https(cfg["remote_url"]) else "SSH"
+            token_status = "已配置 ✓" if cfg.get("https_token") else "—"
+            st.caption(
+                f"当前仓库：`{display_url}` · 类型：{url_type}"
+                + (f" · Token：{token_status}" if url_type == "HTTPS" else "")
+                + f" · 分支：`{cfg.get('branch', 'main')}`"
+            )
 
         # 连接测试
         if cfg.get("remote_url"):
@@ -118,14 +181,23 @@ def page_sync():
 3. 点击「保存配置」
 4. 切换到「推送 / 拉取」Tab，点击「推送」完成首次备份
 
-**SSH vs HTTPS**
+**SSH 方式（推荐）**
 
-| 方式 | 配置 | 推荐场景 |
-|------|------|---------|
-| SSH | `git@github.com:user/repo.git` | 已配置 SSH Key，免密推送 |
-| HTTPS + Token | `https://<token>@github.com/user/repo.git` | 无 SSH 环境 |
+仓库地址格式：`git@github.com:yourname/neupen-data.git`
 
-GitHub Token 申请：Settings → Developer settings → Personal access tokens → Fine-grained tokens（需要 repo 读写权限）
+需要提前配置 SSH Key：
+1. 生成密钥：`ssh-keygen -t ed25519`
+2. 复制公钥内容：`cat ~/.ssh/id_ed25519.pub`
+3. 粘贴到 GitHub → 头像 → Settings → SSH and GPG keys → New SSH key
+4. 验证：`ssh -T git@github.com`，看到 "Hi yourname!" 即成功
+
+**HTTPS 方式**
+
+仓库地址直接填 `https://github.com/yourname/neupen-data.git`，保存时会弹出 Token 输入框，Neupen 自动完成拼接，无需手动处理。
+
+申请 Token 路径（GitHub）：
+头像 → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token
+→ 勾选 `repo`（完整仓库读写权限）→ 生成后立即复制保存（页面关闭后不可再查看）
 
 **多设备同步**
 
@@ -285,8 +357,12 @@ GitHub Token 申请：Settings → Developer settings → Personal access tokens
 def _show_push_tips():
     with st.expander("常见推送失败原因"):
         st.markdown("""
-- **Authentication failed**：Token 过期或权限不足，请在 GitHub 重新生成 Token 并更新仓库地址
-- **rejected — non-fast-forward**：远端有本地没有的提交，先执行「拉取」再推送
-- **remote: Repository not found**：仓库地址错误或无读写权限
-- **SSL certificate problem**：企业内网代理问题，尝试 SSH 方式替代 HTTPS
+- **fatal: Could not read from remote repository**：SSH Key 未配置或未添加到 GitHub。
+  执行 `ssh -T git@github.com` 测试，若失败请按「使用说明」中的步骤配置 SSH Key。
+  也可改用 HTTPS + Token 方式。
+- **Authentication failed**：Token 填写错误、已过期或权限不足。
+  重新申请：GitHub → 头像 → Settings → Developer settings → Personal access tokens → Tokens (classic)，勾选 `repo` 权限，在仓库配置中更新 Token。
+- **rejected — non-fast-forward**：远端有本地没有的提交，先执行「拉取」再推送。
+- **remote: Repository not found**：仓库地址错误，或账号无该仓库的读写权限。
+- **SSL certificate problem**：企业内网代理问题，尝试改用 SSH 方式。
 """)

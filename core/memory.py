@@ -1137,16 +1137,19 @@ class FragmentMemory:
         self,
         query: str,
         n_results: int = VECTOR_TOP_K,
-        exclude_chapter: Optional[int] = None,
+        before_chapter: Optional[int] = None,
     ) -> list[dict]:
         """
         根据查询语义检索最相关的历史内容片段
         返回按相关度排序的片段列表
+
+        Args:
+            before_chapter: 只检索章节编号严格小于此值的内容，确保不检索到未来章节
         """
         try:
             where_clause = f"novel_id = {self.novel_id}"
-            if exclude_chapter is not None:
-                where_clause += f" AND chapter_number != {exclude_chapter}"
+            if before_chapter is not None:
+                where_clause += f" AND chapter_number < {before_chapter}"
 
             results = (
                 self.table.search(query)
@@ -1186,11 +1189,12 @@ class FragmentMemory:
         构建相关历史片段的上下文字符串
 
         Args:
+            current_chapter: 当前正在写作的章节编号，只检索编号严格小于此值的历史章节
             n_results: 最多检索并展示的片段数（默认5，写作场景建议传3）
             min_relevance: 相关度门槛 [0, 1]，低于此值的片段丢弃（默认0不过滤）
         """
         fragments = self.search_relevant(
-            query, n_results=n_results, exclude_chapter=current_chapter
+            query, n_results=n_results, before_chapter=current_chapter
         )
         if not fragments:
             return ""

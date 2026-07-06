@@ -95,8 +95,10 @@ class ToolExecutor:
     所有工具均返回格式化文本字符串，方便 LLM 直接理解。
     """
 
-    def __init__(self, memory: MemoryManager):
+    def __init__(self, memory: MemoryManager, current_chapter: Optional[int] = None):
         self.memory = memory
+        # 当前正在写作/处理的章节号，向量检索时用于屏蔽未来章节
+        self.current_chapter = current_chapter
         # 工具路由表
         self._registry = {
             "query_character": self._query_character,
@@ -217,7 +219,7 @@ class ToolExecutor:
         top_k = max(1, min(int(top_k), 10))  # 限制在 1-10 之间
 
         fragments = self.memory.fragment_mem.search_relevant(
-            query.strip(), n_results=top_k
+            query.strip(), n_results=top_k, before_chapter=self.current_chapter
         )
         if not fragments:
             return f"[未找到与 '{query}' 相关的历史片段（向量索引可能为空，需先完成章节写作）]"

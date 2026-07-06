@@ -362,7 +362,7 @@ def page_writing():
                     with bp4:
                         batch_auto_sync = st.toggle(
                             "自动同步大纲/人物",
-                            value=False,
+                            value=True,
                             key="batch_auto_sync",
                             help="写完每章后自动将 AI 检测到的人物状态变化、大纲更新等同步入库，无需手动逐条确认",
                         )
@@ -1524,7 +1524,11 @@ def page_writing():
                                 st.markdown(
                                     f"🧑 **人物更新：{cu.get('name')} — {field_name}**"
                                 )
-                                st.caption(f"新内容：{cu.get('new_value', '')[:200]}")
+                                _new_val = cu.get('new_value', '')
+                                if not isinstance(_new_val, str):
+                                    import json as _json
+                                    _new_val = _json.dumps(_new_val, ensure_ascii=False)
+                                st.caption(f"新内容：{_new_val[:200]}")
                                 st.caption(f"原因：{cu.get('reason', '')}")
                                 cu1, cu2 = st.columns(2)
                                 with cu1:
