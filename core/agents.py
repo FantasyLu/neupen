@@ -1098,7 +1098,8 @@ class WriterAgent:
 5. 【禁止分节】不得在正文中使用任何小节标题或分节符号（如"第一节""（一）""1.""—·—"等）。
    多个场景之间用一个空行自然过渡，或用简短的衔接句切换，不要加标题。
 
-请直接输出正文，从标题开始："""
+请直接输出正文。正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
+章节编号严格锁定为 {chapter_number}，禁止写成其他数字。"""
 
         # ── 流式路径：直接生成，不做字数重试 ──────────────────────────────
         if stream_callback:
@@ -1134,7 +1135,9 @@ class WriterAgent:
                     surplus = actual - word_max
                     extra_fb = (
                         f"⚠️ 字数超限重试（第{attempt}次）：上次生成 {actual} 字，超出上限 {surplus} 字。\n"
-                        f"根因：核心事件段（全文60%篇幅）过度展开细节。请按以下方向压缩，三阶段情节骨架保留完整：\n"
+                        f"请按以下优先级压缩，三阶段情节骨架保留完整：\n"
+                        f"- 【最优先】删除冗余比喻：每处比喻问自己'去掉它信息量有损失吗'，没有损失就删\n"
+                        f"- 【最优先】删除堆叠形容词：同一名词前保留最精准的一个定语，其余删去\n"
                         f"- 每个心理活动只保留最关键的一处，删去反复推敲/重复感受\n"
                         f"- 合并功能相同的过渡句和环境描写\n"
                         f"- 对话保留，但每句对话最多配一处动作/表情描写\n"
@@ -1218,10 +1221,61 @@ class WriterAgent:
 
     def _fix_forbidden_syntax(self, content: str, chapter_number: int) -> str:
         """
-        后处理：检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
-        只修改违规句子，保持其余内容不变。
+        后处理：
+        1. 检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        2. 程序化替换滥用的破折号"——"（解释说明/递进/镜头切换场景），
+           保留合法用法（话语打断、拟声词延长）。
         """
         import re, sys
+
+        # ── Step 1: 破折号滥用程序化替换（快速、无 LLM 成本）─────────────────
+        # 合法用法保留：
+        #   ① 引号内短句后：「"等一下——"」「'我——'」
+        #   ② 拟声词后：轰—— 嗡—— 啊——（1-4个汉字/拟声词 + ——）
+        # 滥用场景替换：
+        #   A. 句中解释/递进（两侧均为叙述短语）→ 逗号
+        #   B. 镜头切换（前为完整句，破折号后接独立短句）→ 句号
+
+        def _fix_em_dash(text: str) -> str:
+            protected = {}
+            counter = [0]
+
+            def protect(m):
+                key = f'\x00EMDASH{counter[0]}\x00'
+                protected[key] = m.group(0)
+                counter[0] += 1
+                return key
+
+            # 保护①：引号内的话语打断（引号 + ≤10字 + ——，紧接引号结束符）
+            text = re.sub(r'(["""\u300e\u300a][^"""\u300f\u300b]{0,10}——["""\u300f\u300b])', protect, text)
+            # 保护②：拟声词/音效延长（1-4字 + ——，两侧是标点/空白/行边界）
+            text = re.sub(r'((?:^|(?<=[，。！？\n\s]))[\u4e00-\u9fff]{1,4}——(?=[，。！？\n\s]|$))', protect, text)
+
+            # 替换：循环处理所有滥用破折号 → 句号（循环至无剩余）
+            prev = None
+            while prev != text:
+                prev = text
+                text = re.sub(r'([^，。！？\n\x00]{1,})——', r'\1。', text)
+
+            # 还原保护的合法用法
+            for key, val in protected.items():
+                text = text.replace(key, val)
+            return text
+
+        original_dash_count = content.count("——")
+        if original_dash_count > 0:
+            fixed_content = _fix_em_dash(content)
+            remaining_dash_count = fixed_content.count("——")
+            replaced = original_dash_count - remaining_dash_count
+            if replaced > 0:
+                print(
+                    f"[WriterAgent] 第{chapter_number}章破折号：原 {original_dash_count} 处，"
+                    f"替换 {replaced} 处，保留合法用法 {remaining_dash_count} 处。",
+                    file=sys.stderr,
+                )
+            content = fixed_content
+
+        # ── Step 2: 对比转折句式 LLM 修正 ──────────────────────────────────
 
         FORBIDDEN_PATTERNS = [
             re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
@@ -1644,7 +1698,9 @@ class WriterAgent:
 【章纲】
 {chapter.to_outline_text()}
 
-请先通过工具查询本章所需信息（出场人物档案、前情摘要、相关伏笔等），再输出完整正文（从标题开始）。"""
+请先通过工具查询本章所需信息（出场人物档案、前情摘要、相关伏笔等），再输出完整正文。
+⚠️ 正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
+章节编号严格锁定为 {chapter_number}，禁止写成其他数字。"""
 
         loop = AgenticLoop(
             llm=self.llm,
@@ -1694,7 +1750,9 @@ class WriterAgent:
                 )
                 fix_instruction = (
                     f"⚠️ 字数超限：当前 {actual} 字，超出上限 {surplus} 字。\n"
-                    f"根因：核心事件段（全文60%篇幅）过度展开细节。请按以下方向压缩，三阶段情节骨架保留完整：\n"
+                    f"请按以下优先级压缩，三阶段情节骨架保留完整：\n"
+                    f"- 【最优先】删除冗余比喻：每处比喻问自己'去掉它信息量有损失吗'，没有损失就删\n"
+                    f"- 【最优先】删除堆叠形容词：同一名词前保留最精准的一个定语，其余删去\n"
                     f"- 每个心理活动只保留最关键的一处，删去反复推敲/重复感受\n"
                     f"- 合并功能相同的过渡句和环境描写\n"
                     f"- 对话保留，但每句对话最多配一处动作/表情描写\n"

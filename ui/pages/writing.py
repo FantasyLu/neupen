@@ -11,7 +11,7 @@ import streamlit as st
 from core.models import get_db, Chapter, ContentVersion, Novel
 from core.workflow import load_novel
 from core.permissions import can_edit, can_approve
-from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent
+from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent, WriterAgent
 from ui.helpers import (
     format_chapter_status,
     format_approval_badge,
@@ -415,8 +415,6 @@ def page_writing():
                                 ph = st.empty()
                                 if batch_agentic:
                                     # ── Agentic 批量写作路径 ──────────────────
-                                    from core.agents import WriterAgent, ReviewerAgent
-
                                     try:
                                         _writer = WriterAgent(novel_id)
                                         _batch_content = _writer.write_chapter_agentic(
@@ -795,8 +793,6 @@ def page_writing():
                                         st.markdown(step)
 
                     # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
-                    from core.agents import WriterAgent, ReviewerAgent
-
                     writer = WriterAgent(novel_id)
                     content = writer.write_chapter_agentic(
                         chapter_number=selected_ch_num,

@@ -390,6 +390,21 @@ class Chapter(Base):
         except (json.JSONDecodeError, TypeError):
             return []
 
+    def get_outline_foreshadowing_set(self) -> list:
+        """返回本章埋下的伏笔名列表"""
+        try:
+            return json.loads(self.outline_foreshadowing_set) if self.outline_foreshadowing_set else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_outline_foreshadowing_collect(self) -> list:
+        """返回本章应回收的伏笔原始文本列表（章纲预定），供模糊匹配使用"""
+        try:
+            items = json.loads(self.outline_foreshadowing_collect) if self.outline_foreshadowing_collect else []
+            return [str(item).strip() for item in items if item]
+        except (json.JSONDecodeError, TypeError):
+            return []
+
     def get_review_report(self) -> dict:
         try:
             return json.loads(self.review_report) if self.review_report else {}

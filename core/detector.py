@@ -495,11 +495,19 @@ class ConflictDetector:
 
     # ======================================
     # 流水线三关卡检测方法
-    # ======================================
+     # ======================================
 
     def _parse_gate_response(self, response_text: str, gate_name: str,
-                              default_score: float = 5.0) -> GateResult:
-        """解析关卡 LLM 响应为标准 GateResult"""
+                               default_score: float = 5.0) -> GateResult:
+        """解析关卡 LLM 响应为标准 GateResult。
+
+        passed 判断采用双重校验：
+        1. LLM 返回的 action == "PASS"
+        2. total_score >= GATE_MIN_PASS_SCORE（代码硬校验，防止 LLM 给低分仍返回 PASS）
+        两者同时满足才视为通过。
+        """
+        from core.config import GATE_MIN_PASS_SCORE
+
         json_start = response_text.find("{")
         json_end = response_text.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -524,13 +532,31 @@ class ConflictDetector:
                 passed=True
             )
 
+        total_score = float(data.get("total_score", default_score))
+        action = data.get("action", "PASS")
+
+        # 双重校验：action == PASS 且分数达标，才真正通过
+        llm_passed = action == "PASS"
+        score_passed = total_score >= GATE_MIN_PASS_SCORE
+        passed = llm_passed and score_passed
+
+        # 若分数不达标但 LLM 仍返回 PASS，强制修正 action
+        if llm_passed and not score_passed:
+            action = "REJECT"
+            import sys
+            print(
+                f"[Detector] {gate_name} LLM 返回 PASS 但得分 {total_score:.1f} < "
+                f"阈值 {GATE_MIN_PASS_SCORE}，强制改为 REJECT。",
+                file=sys.stderr,
+            )
+
         return GateResult(
             gate_name=data.get("gate_name", gate_name),
-            total_score=float(data.get("total_score", default_score)),
+            total_score=total_score,
             breakdown=data.get("breakdown", {}),
-            action=data.get("action", "PASS"),
+            action=action,
             feedback=data.get("feedback", ""),
-            passed=data.get("action", "PASS") == "PASS",
+            passed=passed,
         )
 
     def run_context_sentry(self, chapter_number: int, content: str) -> GateResult:

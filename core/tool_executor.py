@@ -73,14 +73,15 @@ TOOL_DEFINITIONS = """
    — 示例：{"tool": "query_timeline", "args": {"event_keyword": "皇城大典"}}
 
 8. query_outline_range
-   — 查询连续多章的章纲（了解前后情节走向）
-   — 参数：{"start": 起始章号, "end": 结束章号}
-   — 示例：{"tool": "query_outline_range", "args": {"start": 10, "end": 15}}
+   — 查询当前章**之前**连续多章的章纲（了解前情走向，绝对不能查当前章及之后的章节）
+   — 参数：{"start": 起始章号, "end": 结束章号}（end 必须小于当前章号）
+   — 示例（假设当前写第14章）：{"tool": "query_outline_range", "args": {"start": 10, "end": 13}}
 
 ━━━ 使用规则 ━━━
 - 获取到足够信息后，直接输出最终内容，不要再调用工具
 - 每次回复可同时包含多个 <tool_call> 块（并行查询）
 - 不需要查询时，直接输出内容即可
+- ⚠️ query_outline_range / query_chapter_summary 只能查当前章节之前的章节，查当前章或之后章节会返回错误
 """
 
 
@@ -235,11 +236,15 @@ class ToolExecutor:
         return "\n".join(lines)
 
     def _query_chapter_summary(self, chapter_num: int) -> str:
-        """查询某章摘要与关键事件"""
+        """查询某章摘要与关键事件（只允许查当前章之前的章节）"""
         try:
             chapter_num = int(chapter_num)
         except (ValueError, TypeError):
             return "[错误] chapter_num 必须是整数"
+
+        # 硬拦截：不允许查当前章及之后的章节
+        if self.current_chapter is not None and chapter_num >= self.current_chapter:
+            return f"[错误] query_chapter_summary 只能查当前章（第{self.current_chapter}章）之前的历史章节，不能查当前章或之后的章节"
 
         chapter = self.memory.chapter_mem.get_chapter(chapter_num)
         if not chapter:
@@ -318,7 +323,7 @@ class ToolExecutor:
         return "\n".join(lines)
 
     def _query_outline_range(self, start: int, end: int) -> str:
-        """查询连续多章章纲"""
+        """查询连续多章章纲（只允许查当前章之前的章节）"""
         try:
             start, end = int(start), int(end)
         except (ValueError, TypeError):
@@ -331,6 +336,14 @@ class ToolExecutor:
             note = f"\n（查询范围超过20章，已自动截断至第 {end} 章）"
         else:
             note = ""
+
+        # 硬拦截：不允许查当前章及之后的章节，防止 LLM 把未来章纲当作本章任务
+        if self.current_chapter is not None:
+            if start >= self.current_chapter:
+                return f"[错误] query_outline_range 只能查当前章（第{self.current_chapter}章）之前的历史章节，不能查当前章或之后的章节"
+            if end >= self.current_chapter:
+                end = self.current_chapter - 1
+                note += f"\n（end 已自动截断至第 {end} 章，不可查询当前章及之后）"
 
         chapters = self.memory.chapter_mem.get_chapters_by_range(start, end)
         if not chapters:
