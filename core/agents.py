@@ -583,6 +583,24 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                     for u in result.get("character_updates", [])
                     if u.get("name") in existing_chars
                 ]
+            # 过滤掉 new_characters 中实际已存在的角色：
+            #   ① 精确名命中（LLM 名字与库里完全一致但仍误报）
+            #   ② 包含关系命中（别称/简称/尊称，如"老周"↔"周建国"），
+            #      要求双方名字长度均 ≥ 2，避免单字误杀
+            if isinstance(result, dict) and "new_characters" in result:
+                def _is_existing(name: str) -> bool:
+                    if name in existing_chars:
+                        return True
+                    if len(name) < 2:
+                        return False
+                    return any(
+                        len(ex) >= 2 and (name in ex or ex in name)
+                        for ex in existing_chars
+                    )
+                result["new_characters"] = [
+                    c for c in result.get("new_characters", [])
+                    if not _is_existing(c.get("name", ""))
+                ]
             # 确保新字段存在（兼容旧版 LLM 未输出的情况）
             result.setdefault("timeline_events", [])
             result.setdefault("foreshadowing_updates", [])
