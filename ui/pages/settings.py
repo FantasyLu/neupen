@@ -464,7 +464,7 @@ def page_settings():
                             if fs.description: st.caption(fs.description)
                             if fs.notes:       st.caption(f"备注：{fs.notes}")
                         with fc2:
-                            collect_ch = st.number_input("回收章节", min_value=1, value=fs.set_chapter + 1,
+                            collect_ch = st.number_input("回收章节", min_value=1, value=(fs.set_chapter or 0) + 1,
                                                           key=f"collect_{fs.id}", label_visibility="collapsed")
                         with fc3:
                             if st.button("标记回收", key=f"btn_collect_{fs.id}", disabled=not can_edit(novel_id)):

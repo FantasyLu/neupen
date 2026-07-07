@@ -2658,14 +2658,119 @@ class PolisherAgent:
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
-            return "".join(content_parts)
+            result = "".join(content_parts)
         else:
-            return self.llm.generate(
+            result = self.llm.generate(
                 self.SYSTEM_PROMPT,
                 user_prompt,
                 max_tokens=12000,
                 temperature=self.temperature,
             )
+
+        return self._fix_forbidden_syntax(result)
+
+    def _fix_forbidden_syntax(self, content: str) -> str:
+        """
+        润色后处理：
+        1. 程序化替换滥用的破折号"——"（与 WriterAgent 同逻辑，保留合法用法）。
+        2. 检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        """
+        import re, sys
+
+        # ── Step 1: 破折号滥用程序化替换（快速、无 LLM 成本）─────────────────
+        def _fix_em_dash(text: str) -> str:
+            protected = {}
+            counter = [0]
+
+            def protect(m):
+                key = f'\x00EMDASH{counter[0]}\x00'
+                protected[key] = m.group(0)
+                counter[0] += 1
+                return key
+
+            # 保护①：引号内的话语打断（引号 + ≤10字 + ——，紧接引号结束符）
+            text = re.sub(r'(["""\u300e\u300a][^"""\u300f\u300b]{0,10}——["""\u300f\u300b])', protect, text)
+            # 保护②：拟声词/音效延长（1-4字 + ——，两侧是标点/空白/行边界）
+            text = re.sub(r'((?:^|(?<=[，。！？\n\s]))[\u4e00-\u9fff]{1,4}——(?=[，。！？\n\s]|$))', protect, text)
+
+            # 替换：循环处理所有滥用破折号 → 句号（循环至无剩余）
+            prev = None
+            while prev != text:
+                prev = text
+                text = re.sub(r'([^，。！？\n\x00]{1,})——', r'\1。', text)
+
+            # 还原保护的合法用法
+            for key, val in protected.items():
+                text = text.replace(key, val)
+            return text
+
+        original_dash_count = content.count("——")
+        if original_dash_count > 0:
+            fixed_content = _fix_em_dash(content)
+            remaining_dash_count = fixed_content.count("——")
+            replaced = original_dash_count - remaining_dash_count
+            if replaced > 0:
+                print(
+                    f"[PolisherAgent] 破折号：原 {original_dash_count} 处，"
+                    f"替换 {replaced} 处，保留合法用法 {remaining_dash_count} 处。",
+                    file=sys.stderr,
+                )
+            content = fixed_content
+
+        # ── Step 2: 对比转折句式 LLM 修正 ──────────────────────────────────
+        FORBIDDEN_PATTERNS = [
+            re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
+            re.compile(r"不是.{1,30}[，,]\s*是.{1,30}"),
+            re.compile(r"与其说.{1,30}不如说"),
+            re.compile(r"与其.{1,30}不如.{1,30}"),
+        ]
+
+        hits = []
+        for pat in FORBIDDEN_PATTERNS:
+            hits.extend(pat.findall(content))
+
+        if not hits:
+            return content  # 无违规，直接返回
+
+        hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+        print(
+            f"[PolisherAgent] 润色后检测到 {len(hits)} 处禁止句式，发起自动修正…\n{hit_lines}",
+            file=sys.stderr,
+        )
+
+        fix_prompt = f"""以下是一段润色后的小说正文，其中仍存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
+
+【检测到的违规句子】
+{hit_lines}
+
+【需要修改的完整正文】
+{content}
+
+修改规则：
+1. 将所有"不是A而是B"/"不是A，是B"/"不是A是B"/"与其说A不如说B"等句式，拆成两个独立陈述句，只写事实和动作，删去对比评论。
+2. 仅修改违规句子，其余内容原样保留，不得添加、删减、改写其他段落。
+3. 直接输出修改后的完整正文，不加任何说明或标注。"""
+
+        fixed = self.llm.generate(
+            self.SYSTEM_PROMPT,
+            fix_prompt,
+            max_tokens=12000,
+            temperature=0.3,
+        )
+
+        # 二次检测，确认是否已清除
+        remaining = []
+        for pat in FORBIDDEN_PATTERNS:
+            remaining.extend(pat.findall(fixed))
+        if remaining:
+            print(
+                f"[PolisherAgent] 修正后仍有 {len(remaining)} 处违规句式，使用修正版本（已尽力）。",
+                file=sys.stderr,
+            )
+        else:
+            print("[PolisherAgent] 禁止句式已全部清除。", file=sys.stderr)
+
+        return fixed
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """
