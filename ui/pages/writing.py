@@ -754,29 +754,30 @@ def page_writing():
                             if event_type == StepEvent.THINKING:
                                 thinking_text = data.get("thinking_text", "").strip()
                                 if thinking_text:
-                                    with st.expander("💭 思考", expanded=False):
-                                        st.markdown(thinking_text)
+                                    agentic_status.write("💭 **思考**")
+                                    agentic_status.write(thinking_text)
                             elif event_type == StepEvent.TOOL_CALL:
                                 tool = data.get("tool", "")
                                 args = data.get("args", {})
                                 idx = data.get("call_index", "?")
                                 limit = data.get("max_calls", 15)
                                 args_str = "、".join(f"{k}={v}" for k, v in args.items())
-                                st.markdown(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
+                                agentic_status.write(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
                                 status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
                             elif event_type == StepEvent.TOOL_RESULT:
-                                pass  # 字数信息已在 TOOL_CALL 行展示，不单独追加
+                                result_len = data.get("result_length", 0)
+                                agentic_status.write(f"→ 获取 {result_len} 字")
                             elif event_type == StepEvent.DUPLICATE_SKIP:
                                 tool = data.get("tool", "")
-                                st.markdown(f"*(重复查询 `{tool}`，使用缓存)*")
+                                agentic_status.write(f"*(重复查询 `{tool}`，使用缓存)*")
                             elif event_type == StepEvent.STALL_DETECTED:
-                                st.markdown("⚠️ 检测到重复查询，开始生成正文…")
+                                agentic_status.write("⚠️ 检测到重复查询，开始生成正文…")
                                 status_area.info("✍️ 信息收集完毕，开始生成正文…")
                             elif event_type == StepEvent.MAX_CALLS_REACHED:
-                                st.markdown("📊 已达查询上限，开始生成正文…")
+                                agentic_status.write("📊 已达查询上限，开始生成正文…")
                                 status_area.info("✍️ 查询完成，开始生成正文…")
                             elif event_type == StepEvent.BUDGET_EXCEEDED:
-                                st.markdown("⚠️ Token 预算接近上限，开始生成正文…")
+                                agentic_status.write("⚠️ Token 预算接近上限，开始生成正文…")
                                 status_area.info("✍️ 开始生成正文…")
                             elif event_type == StepEvent.FINAL_OUTPUT:
                                 status_area.info("✅ 正文生成完成，进入审核流程…")
@@ -793,8 +794,8 @@ def page_writing():
                             f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
                         )
 
-                        st.divider()
-                        st.markdown("**审核阶段**")
+                        agentic_status.write("---")
+                        agentic_status.write("**审核阶段**")
 
                         # ── Agentic 审核（含三关卡重试）────────────────────────
                         reviewer = ReviewerAgent(novel_id)
@@ -813,7 +814,7 @@ def page_writing():
                         review_score = review_result.get("final_score", 0.0)
 
                         result_label = "✅ PASS" if review_passed else "❌ REJECT（已用完重试次数）"
-                        st.markdown(
+                        agentic_status.write(
                             f"**审核完成**：{result_label} | 得分 {review_score}/10 | 共 {review_rounds} 轮"
                         )
                         agentic_status.update(
