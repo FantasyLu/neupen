@@ -48,7 +48,7 @@ def _auto_save(
         return False
 
 
-def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
+def _auto_execute_sync(novel_id: int, sync_checks: dict, chapter_number: int = None) -> int:
     """自动执行所有同步操作（无需用户逐条确认），返回成功执行的条目数。"""
     count = 0
     try:
@@ -120,6 +120,7 @@ def _auto_execute_sync(novel_id: int, sync_checks: dict) -> int:
                     "collect_by_chapter": fs.get("collect_by_chapter") or None,
                     "notes": fs.get("notes", "") or None,
                     "status": "active",
+                    "set_chapter": chapter_number,
                 }
                 wf.memory.global_mem.save_foreshadowing(fs_data)
                 count += 1
@@ -509,7 +510,7 @@ def page_writing():
                                     if sync_checks and sync_count:
                                         if batch_auto_sync:
                                             done = _auto_execute_sync(
-                                                novel_id, sync_checks
+                                                novel_id, sync_checks, chapter_number=ch_num
                                             )
                                             st.session_state[
                                                 f"writing_sync_{novel_id}_{ch_num}"
@@ -1415,7 +1416,7 @@ def page_writing():
                             ):
                                 with st.spinner("正在批量同步…"):
                                     try:
-                                        done = _auto_execute_sync(novel_id, sync_result)
+                                        done = _auto_execute_sync(novel_id, sync_result, chapter_number=selected_ch_num)
                                         st.session_state[sync_key] = {"_done": True}
                                         st.success(f"✅ 已成功同步 {done} 条")
                                         st.rerun()
@@ -1736,6 +1737,7 @@ def page_writing():
                                                 or None,
                                                 "notes": fs.get("notes", "") or None,
                                                 "status": "active",
+                                                "set_chapter": selected_ch_num,
                                             }
                                             wf.memory.global_mem.save_foreshadowing(
                                                 fs_data
