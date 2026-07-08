@@ -745,114 +745,82 @@ def page_writing():
                     # ── Agentic 写作路径 ──────────────────────────────────
                     status_area.info(f"🧠 Agentic 模式：Agent 正在思考需要哪些信息…")
 
-                    # 步骤展示区
-                    agentic_steps_placeholder = st.empty()
-                    agentic_steps: list[tuple] = []
+                    # 用 st.status 包裹全程，保证回调内的写操作实时 flush 到浏览器
+                    with st.status("🤔 Agent 思考过程", expanded=True) as agentic_status:
 
-                    def agentic_step_cb(event_type: str, data: dict):
-                        from core.agentic_loop import StepEvent
+                        def agentic_step_cb(event_type: str, data: dict):
+                            from core.agentic_loop import StepEvent
 
-                        if event_type == StepEvent.THINKING:
-                            thinking_text = data.get("thinking_text", "").strip()
-                            if thinking_text:
-                                # ("thinking", text) tuple 用于渲染折叠块
-                                agentic_steps.append(("thinking", thinking_text))
-                        elif event_type == StepEvent.TOOL_CALL:
-                            tool = data.get("tool", "")
-                            args = data.get("args", {})
-                            idx = data.get("call_index", "?")
-                            limit = data.get("max_calls", 15)
-                            args_str = "、".join(f"{k}={v}" for k, v in args.items())
-                            # ("tool", text) tuple 供 TOOL_RESULT 追加字数
-                            agentic_steps.append(
-                                ("tool", f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
-                            )
-                            status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
-                        elif event_type == StepEvent.TOOL_RESULT:
-                            result_len = data.get("result_length", 0)
-                            # 只在最后一条是 tool 类型时追加字数
-                            if agentic_steps and isinstance(agentic_steps[-1], tuple) and agentic_steps[-1][0] == "tool":
-                                agentic_steps[-1] = ("tool", agentic_steps[-1][1] + f" → 获取 {result_len} 字")
-                        elif event_type == StepEvent.DUPLICATE_SKIP:
-                            tool = data.get("tool", "")
-                            agentic_steps.append(("info", f"*(重复查询 `{tool}`，使用缓存)*"))
-                        elif event_type == StepEvent.STALL_DETECTED:
-                            agentic_steps.append(("info", "⚠️ 检测到重复查询，开始生成正文…"))
-                            status_area.info("✍️ 信息收集完毕，开始生成正文…")
-                        elif event_type == StepEvent.MAX_CALLS_REACHED:
-                            agentic_steps.append(("info", "📊 已达查询上限，开始生成正文…"))
-                            status_area.info("✍️ 查询完成，开始生成正文…")
-                        elif event_type == StepEvent.BUDGET_EXCEEDED:
-                            agentic_steps.append(("info", "⚠️ Token 预算接近上限，开始生成正文…"))
-                            status_area.info("✍️ 开始生成正文…")
-                        elif event_type == StepEvent.FINAL_OUTPUT:
-                            status_area.info("✅ 正文生成完成，进入审核流程…")
-
-                        # 实时刷新步骤展示
-                        if agentic_steps:
-                            tool_count = sum(1 for s in agentic_steps if isinstance(s, tuple) and s[0] == "tool")
-                            with agentic_steps_placeholder.container():
-                                with st.expander(
-                                    f"🤔 Agent 思考过程（{tool_count} 次查询）",
-                                    expanded=True,
-                                ):
-                                    for step in agentic_steps:
-                                        kind, text = step
-                                        if kind == "thinking":
-                                            with st.expander("💭 思考", expanded=False):
-                                                st.markdown(text)
-                                        elif kind == "tool":
-                                            st.markdown(text)
-                                        else:  # info
-                                            st.markdown(text)
-
-                    # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
-                    writer = WriterAgent(novel_id)
-                    content = writer.write_chapter_agentic(
-                        chapter_number=selected_ch_num,
-                        word_target=word_target,
-                        word_count_tolerance=word_tolerance,
-                        step_callback=agentic_step_cb,
-                    )
-                    status_area.info(
-                        f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
-                    )
-
-                    # ── Agentic 审核（含三关卡重试）────────────────────────
-                    reviewer = ReviewerAgent(novel_id)
-                    review_result = reviewer.review_chapter_agentic(
-                        chapter_number=selected_ch_num,
-                        content=content,
-                        step_callback=agentic_step_cb,
-                        writer_agent=writer,  # 提供 writer_agent 以支持 REJECT 后自动修正重审
-                    )
-                    reviewer.close()
-
-                    # 取审核后的最终内容（可能已经过修正）
-                    final_content = review_result.get("content", content)
-                    review_rounds = review_result.get("rounds", 1)
-                    review_passed = review_result.get("passed", False)
-                    review_score = review_result.get("final_score", 0.0)
-
-                    # 在步骤展示区追加审核摘要
-                    agentic_steps.append((
-                        "info",
-                        f"\n**审核完成**：{'✅ PASS' if review_passed else '❌ REJECT（已用完重试次数）'}"
-                        f" | 得分 {review_score}/10 | 共 {review_rounds} 轮审核"
-                    ))
-                    tool_count = sum(1 for s in agentic_steps if isinstance(s, tuple) and s[0] == "tool")
-                    with agentic_steps_placeholder.container():
-                        with st.expander(
-                            f"🤔 Agent 思考+审核过程（{tool_count} 次查询）",
-                            expanded=False,
-                        ):
-                            for step in agentic_steps:
-                                kind, text = step
-                                if kind == "thinking":
+                            if event_type == StepEvent.THINKING:
+                                thinking_text = data.get("thinking_text", "").strip()
+                                if thinking_text:
                                     with st.expander("💭 思考", expanded=False):
-                                        st.markdown(text)
-                                else:
-                                    st.markdown(text)
+                                        st.markdown(thinking_text)
+                            elif event_type == StepEvent.TOOL_CALL:
+                                tool = data.get("tool", "")
+                                args = data.get("args", {})
+                                idx = data.get("call_index", "?")
+                                limit = data.get("max_calls", 15)
+                                args_str = "、".join(f"{k}={v}" for k, v in args.items())
+                                st.markdown(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
+                                status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
+                            elif event_type == StepEvent.TOOL_RESULT:
+                                pass  # 字数信息已在 TOOL_CALL 行展示，不单独追加
+                            elif event_type == StepEvent.DUPLICATE_SKIP:
+                                tool = data.get("tool", "")
+                                st.markdown(f"*(重复查询 `{tool}`，使用缓存)*")
+                            elif event_type == StepEvent.STALL_DETECTED:
+                                st.markdown("⚠️ 检测到重复查询，开始生成正文…")
+                                status_area.info("✍️ 信息收集完毕，开始生成正文…")
+                            elif event_type == StepEvent.MAX_CALLS_REACHED:
+                                st.markdown("📊 已达查询上限，开始生成正文…")
+                                status_area.info("✍️ 查询完成，开始生成正文…")
+                            elif event_type == StepEvent.BUDGET_EXCEEDED:
+                                st.markdown("⚠️ Token 预算接近上限，开始生成正文…")
+                                status_area.info("✍️ 开始生成正文…")
+                            elif event_type == StepEvent.FINAL_OUTPUT:
+                                status_area.info("✅ 正文生成完成，进入审核流程…")
+
+                        # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
+                        writer = WriterAgent(novel_id)
+                        content = writer.write_chapter_agentic(
+                            chapter_number=selected_ch_num,
+                            word_target=word_target,
+                            word_count_tolerance=word_tolerance,
+                            step_callback=agentic_step_cb,
+                        )
+                        status_area.info(
+                            f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
+                        )
+
+                        st.divider()
+                        st.markdown("**审核阶段**")
+
+                        # ── Agentic 审核（含三关卡重试）────────────────────────
+                        reviewer = ReviewerAgent(novel_id)
+                        review_result = reviewer.review_chapter_agentic(
+                            chapter_number=selected_ch_num,
+                            content=content,
+                            step_callback=agentic_step_cb,
+                            writer_agent=writer,
+                        )
+                        reviewer.close()
+
+                        # 取审核后的最终内容（可能已经过修正）
+                        final_content = review_result.get("content", content)
+                        review_rounds = review_result.get("rounds", 1)
+                        review_passed = review_result.get("passed", False)
+                        review_score = review_result.get("final_score", 0.0)
+
+                        result_label = "✅ PASS" if review_passed else "❌ REJECT（已用完重试次数）"
+                        st.markdown(
+                            f"**审核完成**：{result_label} | 得分 {review_score}/10 | 共 {review_rounds} 轮"
+                        )
+                        agentic_status.update(
+                            label=f"🤔 Agent 思考过程（{'通过' if review_passed else '未通过'}，{review_score}/10）",
+                            state="complete" if review_passed else "error",
+                            expanded=False,
+                        )
 
                     writer.close()
 
