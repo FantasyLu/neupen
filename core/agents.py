@@ -1675,15 +1675,12 @@ class WriterAgent:
                 platform_block = f"\n【目标平台写作风格要求】\n{_ps}"
 
         # ── System Prompt：静态规则全在这里（prompt cache 生效区域）────────────
-        # 包含：写作身份 + 工具定义 + 去AI味规则 + 风格档案
-        # 这部分内容在同一个小说的多章写作中高度复用，Anthropic 会自动缓存
+        # 工具定义移到 user prompt，兼容 DeepSeek 等对 system prompt 权重较低的模型
         agentic_system = f"""{self.SYSTEM_PROMPT}
 
 在开始写作前，你可以通过工具主动查询需要的信息。
 这让你能够像一位真正熟悉故事世界的作家：知道每个人物的过去、了解之前发生的事件、掌握已经埋下的伏笔。
 充分利用工具获取信息，然后写出一章真正连贯、有深度的内容。
-
-{TOOL_DEFINITIONS}
 
 ━━━ 写作硬性规则（每章必须遵守）━━━
 
@@ -1697,8 +1694,8 @@ class WriterAgent:
 【去AI味规则（必须遵守）】
 {deai_rules}"""
 
-        # ── User Prompt：仅包含本次任务的动态部分（极精简）────────────────────
-        # 不再重复工具定义、规则等静态内容，只给章纲和字数约束
+        # ── User Prompt：工具定义 + 本次任务（动态部分）──────────────────────────
+        # 工具定义放在 user prompt 开头，DeepSeek 等模型对 user message 遵循率更高
         # 这是每轮 Agent 对话中唯一变化的部分
         novel_info = ""
         if novel:
@@ -1706,7 +1703,9 @@ class WriterAgent:
             if novel.logline:
                 novel_info += f"\n简介：{novel.logline}"
 
-        initial_prompt = f"""{novel_info}
+        initial_prompt = f"""{TOOL_DEFINITIONS}
+
+{novel_info}
 
 【本章任务】第{chapter_number}章《{chapter.title or ""}》
 【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）⚠️ {word_max} 字是绝对上限，超出将被系统截断
