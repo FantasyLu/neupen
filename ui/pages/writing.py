@@ -781,8 +781,10 @@ def page_writing():
                                 agentic_status.write("⚠️ Token 预算接近上限，开始生成正文…")
                                 status_area.info("✍️ 开始生成正文…")
                             elif event_type == StepEvent.FINAL_OUTPUT:
+                                agentic_status.write("✍️ 信息收集完毕，正在生成正文…")
                                 status_area.info("✅ 正文生成完成，进入审核流程…")
 
+                        agentic_status.write("**写作阶段**")
                         # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
                         writer = WriterAgent(novel_id)
                         content = writer.write_chapter_agentic(
