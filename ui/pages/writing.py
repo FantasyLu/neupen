@@ -747,7 +747,7 @@ def page_writing():
 
                     # 步骤展示区
                     agentic_steps_placeholder = st.empty()
-                    agentic_steps: list[str] = []
+                    agentic_steps: list[tuple] = []
 
                     def agentic_step_cb(event_type: str, data: dict):
                         from core.agentic_loop import StepEvent
@@ -835,17 +835,24 @@ def page_writing():
                     review_score = review_result.get("final_score", 0.0)
 
                     # 在步骤展示区追加审核摘要
-                    agentic_steps.append(
+                    agentic_steps.append((
+                        "info",
                         f"\n**审核完成**：{'✅ PASS' if review_passed else '❌ REJECT（已用完重试次数）'}"
                         f" | 得分 {review_score}/10 | 共 {review_rounds} 轮审核"
-                    )
+                    ))
+                    tool_count = sum(1 for s in agentic_steps if isinstance(s, tuple) and s[0] == "tool")
                     with agentic_steps_placeholder.container():
                         with st.expander(
-                            f"🔍 Agent 查询+审核过程（{len([s for s in agentic_steps if s.startswith('**')])}次查询）",
+                            f"🤔 Agent 思考+审核过程（{tool_count} 次查询）",
                             expanded=False,
                         ):
                             for step in agentic_steps:
-                                st.markdown(step)
+                                kind, text = step
+                                if kind == "thinking":
+                                    with st.expander("💭 思考", expanded=False):
+                                        st.markdown(text)
+                                else:
+                                    st.markdown(text)
 
                     writer.close()
 
