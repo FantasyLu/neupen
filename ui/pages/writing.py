@@ -924,9 +924,8 @@ def page_writing():
 
                 # 章纲参考（折叠展示，默认展开）
                 if selected_ch and selected_ch.outline_core_event:
-                    outline_text = selected_ch.to_outline_text()
                     with st.expander("📋 本章章纲", expanded=True):
-                        st.markdown(outline_text)
+                        st.markdown(selected_ch.to_outline_markdown())
 
                 if pending:
                     st.info("💡 AI 已将建议写入编辑器，确认无误后点「保存」写入")
