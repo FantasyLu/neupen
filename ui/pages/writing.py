@@ -752,45 +752,59 @@ def page_writing():
                     def agentic_step_cb(event_type: str, data: dict):
                         from core.agentic_loop import StepEvent
 
-                        if event_type == StepEvent.TOOL_CALL:
+                        if event_type == StepEvent.THINKING:
+                            thinking_text = data.get("thinking_text", "").strip()
+                            if thinking_text:
+                                # ("thinking", text) tuple 用于渲染折叠块
+                                agentic_steps.append(("thinking", thinking_text))
+                        elif event_type == StepEvent.TOOL_CALL:
                             tool = data.get("tool", "")
                             args = data.get("args", {})
                             idx = data.get("call_index", "?")
                             limit = data.get("max_calls", 15)
-                            # 格式化参数显示
                             args_str = "、".join(f"{k}={v}" for k, v in args.items())
+                            # ("tool", text) tuple 供 TOOL_RESULT 追加字数
                             agentic_steps.append(
-                                f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}"
+                                ("tool", f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
                             )
                             status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
                         elif event_type == StepEvent.TOOL_RESULT:
                             result_len = data.get("result_length", 0)
-                            if agentic_steps:
-                                agentic_steps[-1] += f" → 获取 {result_len} 字"
+                            # 只在最后一条是 tool 类型时追加字数
+                            if agentic_steps and isinstance(agentic_steps[-1], tuple) and agentic_steps[-1][0] == "tool":
+                                agentic_steps[-1] = ("tool", agentic_steps[-1][1] + f" → 获取 {result_len} 字")
                         elif event_type == StepEvent.DUPLICATE_SKIP:
                             tool = data.get("tool", "")
-                            agentic_steps.append(f"  *(重复查询 `{tool}`，使用缓存)*")
+                            agentic_steps.append(("info", f"*(重复查询 `{tool}`，使用缓存)*"))
                         elif event_type == StepEvent.STALL_DETECTED:
-                            agentic_steps.append("⚠️ 检测到重复查询，开始生成正文…")
+                            agentic_steps.append(("info", "⚠️ 检测到重复查询，开始生成正文…"))
                             status_area.info("✍️ 信息收集完毕，开始生成正文…")
                         elif event_type == StepEvent.MAX_CALLS_REACHED:
-                            agentic_steps.append("📊 已达查询上限，开始生成正文…")
+                            agentic_steps.append(("info", "📊 已达查询上限，开始生成正文…"))
                             status_area.info("✍️ 查询完成，开始生成正文…")
                         elif event_type == StepEvent.BUDGET_EXCEEDED:
-                            agentic_steps.append("⚠️ Token 预算接近上限，开始生成正文…")
+                            agentic_steps.append(("info", "⚠️ Token 预算接近上限，开始生成正文…"))
                             status_area.info("✍️ 开始生成正文…")
                         elif event_type == StepEvent.FINAL_OUTPUT:
                             status_area.info("✅ 正文生成完成，进入审核流程…")
 
                         # 实时刷新步骤展示
                         if agentic_steps:
+                            tool_count = sum(1 for s in agentic_steps if isinstance(s, tuple) and s[0] == "tool")
                             with agentic_steps_placeholder.container():
                                 with st.expander(
-                                    f"🔍 Agent 查询过程（{len([s for s in agentic_steps if s.startswith('**')])}次查询）",
+                                    f"🤔 Agent 思考过程（{tool_count} 次查询）",
                                     expanded=True,
                                 ):
                                     for step in agentic_steps:
-                                        st.markdown(step)
+                                        kind, text = step
+                                        if kind == "thinking":
+                                            with st.expander("💭 思考", expanded=False):
+                                                st.markdown(text)
+                                        elif kind == "tool":
+                                            st.markdown(text)
+                                        else:  # info
+                                            st.markdown(text)
 
                     # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
                     writer = WriterAgent(novel_id)

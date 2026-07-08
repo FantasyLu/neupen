@@ -534,7 +534,11 @@ def render_global_chat(novel_id: int):
         def _on_agentic_step(event_type: str, data: dict):
             from core.agentic_loop import StepEvent
 
-            if event_type == StepEvent.TOOL_CALL:
+            if event_type == StepEvent.THINKING:
+                thinking_text = data.get("thinking_text", "").strip()
+                if thinking_text:
+                    agentic_steps.append(f"<details><summary>💭 思考</summary>\n\n{thinking_text}\n\n</details>")
+            elif event_type == StepEvent.TOOL_CALL:
                 tool = data.get("tool", "")
                 args = data.get("args", {})
                 idx = data.get("call_index", "?")
@@ -542,7 +546,7 @@ def render_global_chat(novel_id: int):
                 agentic_steps.append(f"**[{idx}]** 查询 `{tool}` — {args_str}")
             elif event_type == StepEvent.TOOL_RESULT:
                 result_len = data.get("result_length", 0)
-                if agentic_steps:
+                if agentic_steps and not agentic_steps[-1].startswith("<details"):
                     agentic_steps[-1] += f" → {result_len} 字"
             elif event_type == StepEvent.DUPLICATE_SKIP:
                 agentic_steps.append(f"  *(重复查询，使用缓存)*")

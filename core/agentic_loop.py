@@ -236,10 +236,12 @@ class AgenticLoop:
                 return response
 
             # ── 触发思考事件（通知 UI：LLM 决定查询了什么）──────
+            # 去掉工具调用块，只保留 LLM 的思考文字供 UI 展示
+            thinking_text = _TOOL_CALL_RE.sub("", response).strip()
             self._emit(
                 StepEvent.THINKING,
                 {
-                    "response_preview": response[:200],
+                    "thinking_text": thinking_text,
                     "tool_count": len(tool_calls),
                 },
             )
