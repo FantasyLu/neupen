@@ -922,6 +922,12 @@ def page_writing():
             with tab_text:
                 review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
 
+                # 章纲参考（折叠展示，默认展开）
+                if selected_ch and selected_ch.outline_core_event:
+                    outline_text = selected_ch.to_outline_text()
+                    with st.expander("📋 本章章纲", expanded=True):
+                        st.markdown(outline_text)
+
                 if pending:
                     st.info("💡 AI 已将建议写入编辑器，确认无误后点「保存」写入")
                     col_discard, _ = st.columns([1, 3])
