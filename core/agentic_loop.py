@@ -229,14 +229,6 @@ class AgenticLoop:
 
             # 解析工具调用
             tool_calls = self._parse_tool_calls(response)
-            print(
-                f"[AgenticLoop] 第{call_count+1}轮 LLM 响应前200字：{response[:200]!r}",
-                file=sys.stderr,
-            )
-            print(
-                f"[AgenticLoop] 解析到工具调用数：{len(tool_calls)}",
-                file=sys.stderr,
-            )
 
             # ── 无工具调用 → 最终输出 ──────────────────────────
             if not tool_calls:
