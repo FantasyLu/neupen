@@ -1353,16 +1353,39 @@ class WriterAgent:
 
         return fixed
 
+    # 比喻词列表（与 PolisherAgent 共享同一份）
+    _METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查（约每千字 3 处）
+    _METAPHOR_DENSITY_THRESHOLD = 3.0
+
     def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
         """
-        后处理：全文交给 LLM 审查无效比喻并精简。
+        后处理：先用正则统计全章比喻词密度（每千字出现次数）；
+        密度低于阈值说明比喻用量正常，直接返回节省 LLM 调用；
+        超过阈值则全文送 LLM 逐句审查并精简无效比喻。
         判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
-        import sys
+        import re, sys
 
-        print(f"[WriterAgent] 第{chapter_number}章发起比喻精简…", file=sys.stderr)
+        # ── 快速统计阶段 ────────────────────────────────────────────────
+        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS)
+        char_count = max(len(content), 1)
+        density = total_metaphors / char_count * 1000  # 每千字出现次数
 
-        fix_prompt = f"""以下小说正文中存在过多无效比喻，需要逐一审查并精简。
+        print(
+            f"[WriterAgent] 第{chapter_number}章比喻词统计：{total_metaphors} 处"
+            f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
+            file=sys.stderr,
+        )
+
+        if density < self._METAPHOR_DENSITY_THRESHOLD:
+            print(f"[WriterAgent] 第{chapter_number}章比喻密度正常，跳过精简。", file=sys.stderr)
+            return content
+
+        # ── LLM 审查阶段 ────────────────────────────────────────────────
+        print(f"[WriterAgent] 第{chapter_number}章比喻密度偏高，发起精简…", file=sys.stderr)
+
+        fix_prompt = f"""以下小说正文中比喻用量偏多（全章约 {total_metaphors} 处），需要逐一审查并精简无效比喻。
 
 【判断标准】
 保留标准（满足其一即保留）：
@@ -2837,16 +2860,38 @@ class PolisherAgent:
 
         return fixed
 
+    # 比喻词列表（与 WriterAgent 共享同一份逻辑）
+    _METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
+    _METAPHOR_DENSITY_THRESHOLD = 3.0
+
     def _fix_redundant_metaphors(self, content: str) -> str:
         """
-        润色后处理：全文交给 LLM 审查无效比喻并精简。
+        润色后处理：先统计全文比喻词密度（每千字出现次数）；
+        密度低于阈值直接返回，超过阈值才全文送 LLM 逐句审查精简。
         判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
         import sys
 
-        print("[PolisherAgent] 发起比喻精简…", file=sys.stderr)
+        # ── 快速统计阶段 ────────────────────────────────────────────────
+        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS)
+        char_count = max(len(content), 1)
+        density = total_metaphors / char_count * 1000  # 每千字出现次数
 
-        fix_prompt = f"""以下润色后的小说正文中存在过多无效比喻，需要逐一审查并精简。
+        print(
+            f"[PolisherAgent] 比喻词统计：{total_metaphors} 处"
+            f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
+            file=sys.stderr,
+        )
+
+        if density < self._METAPHOR_DENSITY_THRESHOLD:
+            print("[PolisherAgent] 比喻密度正常，跳过精简。", file=sys.stderr)
+            return content
+
+        # ── LLM 审查阶段 ────────────────────────────────────────────────
+        print("[PolisherAgent] 比喻密度偏高，发起精简…", file=sys.stderr)
+
+        fix_prompt = f"""以下润色后的小说正文中比喻用量偏多（全章约 {total_metaphors} 处），需要逐一审查并精简无效比喻。
 
 【判断标准】
 保留标准（满足其一即保留）：
