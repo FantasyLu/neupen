@@ -1360,24 +1360,23 @@ class WriterAgent:
 
     def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
         """
-        后处理：先用正则统计全章比喻词密度（每千字出现次数）；
-        密度低于阈值说明比喻用量正常，直接返回节省 LLM 调用；
-        超过阈值则全文送 LLM 逐句审查并精简无效比喻。
+        后处理：循环统计比喻词密度，超过阈值则发起一轮 LLM 精简，
+        直到密度低于阈值或达到最大轮次（5轮）为止。
         "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
-        判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
         import re, sys
 
-        # ── 快速统计阶段 ────────────────────────────────────────────────
-        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS_MULTI)
-        xiang_simile = re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', content)
-        total_metaphors += len(xiang_simile)
+        MAX_ROUNDS = 5
 
-        char_count = max(len(content), 1)
-        density = total_metaphors / char_count * 1000  # 每千字出现次数
+        def _count_density(text: str) -> tuple[int, float]:
+            total = sum(text.count(w) for w in self._METAPHOR_WORDS_MULTI)
+            total += len(re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', text))
+            density = total / max(len(text), 1) * 1000
+            return total, density
 
+        total, density = _count_density(content)
         print(
-            f"[WriterAgent] 第{chapter_number}章比喻词统计：{total_metaphors} 处"
+            f"[WriterAgent] 第{chapter_number}章比喻词统计：{total} 处"
             f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
             file=sys.stderr,
         )
@@ -1386,10 +1385,13 @@ class WriterAgent:
             print(f"[WriterAgent] 第{chapter_number}章比喻密度正常，跳过精简。", file=sys.stderr)
             return content
 
-        # ── LLM 审查阶段 ────────────────────────────────────────────────
-        print(f"[WriterAgent] 第{chapter_number}章比喻密度偏高，发起精简…", file=sys.stderr)
-
-        fix_prompt = f"""以下小说正文中比喻用量偏多（全章约 {total_metaphors} 处），需要逐一审查并精简无效比喻。
+        for round_i in range(1, MAX_ROUNDS + 1):
+            print(
+                f"[WriterAgent] 第{chapter_number}章比喻精简第 {round_i}/{MAX_ROUNDS} 轮"
+                f"（当前密度 {density:.1f}/千字）…",
+                file=sys.stderr,
+            )
+            fix_prompt = f"""以下小说正文中比喻用量偏多（全章约 {total} 处，密度 {density:.1f}/千字，目标低于 {self._METAPHOR_DENSITY_THRESHOLD}/千字），需要逐一审查并精简无效比喻。
 
 【判断标准】
 保留标准（满足其一即保留）：
@@ -1413,14 +1415,31 @@ class WriterAgent:
 【完整正文】
 {content}"""
 
-        refined = self.llm.generate(
-            self.SYSTEM_PROMPT,
-            fix_prompt,
-            max_tokens=max(8000, min(32000, len(content) * 2)),
-            temperature=0.3,
-        )
-        print(f"[WriterAgent] 第{chapter_number}章比喻精简完成。", file=sys.stderr)
-        return refined
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT,
+                fix_prompt,
+                max_tokens=max(8000, min(32000, len(content) * 2)),
+                temperature=0.3,
+            )
+
+            total, density = _count_density(content)
+            print(
+                f"[WriterAgent] 第{chapter_number}章第 {round_i} 轮完成，"
+                f"密度降至 {density:.1f}/千字（剩余 {total} 处）",
+                file=sys.stderr,
+            )
+
+            if density < self._METAPHOR_DENSITY_THRESHOLD:
+                print(f"[WriterAgent] 第{chapter_number}章比喻密度已达标，提前退出。", file=sys.stderr)
+                break
+        else:
+            print(
+                f"[WriterAgent] 第{chapter_number}章已执行 {MAX_ROUNDS} 轮精简，"
+                f"当前密度 {density:.1f}/千字（未完全达标，使用当前版本）。",
+                file=sys.stderr,
+            )
+
+        return content
 
     def summarize_chapter(
         self, chapter_number: int, title: str, content: str
@@ -2874,26 +2893,23 @@ class PolisherAgent:
 
     def _fix_redundant_metaphors(self, content: str) -> str:
         """
-        润色后处理：先统计全文比喻词密度（每千字出现次数）；
-        密度低于阈值直接返回，超过阈值才全文送 LLM 逐句审查精简。
+        润色后处理：循环统计比喻词密度，超过阈值则发起一轮 LLM 精简，
+        直到密度低于阈值或达到最大轮次（5轮）为止。
         "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
-        判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
         import re, sys
 
-        # ── 快速统计阶段 ────────────────────────────────────────────────
-        # 多字比喻词直接计数（误伤极少）
-        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS_MULTI)
-        # 单字"像"：排除"好像/像样/像是/像这/像那/像个这种固定搭配"，
-        # 保留紧跟名词性成分的比喻用法（，像X / 。像X / 像一 / 像个 开头的句内比喻）
-        xiang_simile = re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', content)
-        total_metaphors += len(xiang_simile)
+        MAX_ROUNDS = 5
 
-        char_count = max(len(content), 1)
-        density = total_metaphors / char_count * 1000  # 每千字出现次数
+        def _count_density(text: str) -> tuple[int, float]:
+            total = sum(text.count(w) for w in self._METAPHOR_WORDS_MULTI)
+            total += len(re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', text))
+            density = total / max(len(text), 1) * 1000
+            return total, density
 
+        total, density = _count_density(content)
         print(
-            f"[PolisherAgent] 比喻词统计：{total_metaphors} 处"
+            f"[PolisherAgent] 比喻词统计：{total} 处"
             f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
             file=sys.stderr,
         )
@@ -2902,10 +2918,13 @@ class PolisherAgent:
             print("[PolisherAgent] 比喻密度正常，跳过精简。", file=sys.stderr)
             return content
 
-        # ── LLM 审查阶段 ────────────────────────────────────────────────
-        print("[PolisherAgent] 比喻密度偏高，发起精简…", file=sys.stderr)
-
-        fix_prompt = f"""以下润色后的小说正文中比喻用量偏多（全章约 {total_metaphors} 处），需要逐一审查并精简无效比喻。
+        for round_i in range(1, MAX_ROUNDS + 1):
+            print(
+                f"[PolisherAgent] 比喻精简第 {round_i}/{MAX_ROUNDS} 轮"
+                f"（当前密度 {density:.1f}/千字）…",
+                file=sys.stderr,
+            )
+            fix_prompt = f"""以下润色后的小说正文中比喻用量偏多（全章约 {total} 处，密度 {density:.1f}/千字，目标低于 {self._METAPHOR_DENSITY_THRESHOLD}/千字），需要逐一审查并精简无效比喻。
 
 【判断标准】
 保留标准（满足其一即保留）：
@@ -2929,14 +2948,31 @@ class PolisherAgent:
 【完整正文】
 {content}"""
 
-        refined = self.llm.generate(
-            self.SYSTEM_PROMPT,
-            fix_prompt,
-            max_tokens=max(8000, min(32000, len(content) * 2)),
-            temperature=0.3,
-        )
-        print("[PolisherAgent] 比喻精简完成。", file=sys.stderr)
-        return refined
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT,
+                fix_prompt,
+                max_tokens=max(8000, min(32000, len(content) * 2)),
+                temperature=0.3,
+            )
+
+            total, density = _count_density(content)
+            print(
+                f"[PolisherAgent] 第 {round_i} 轮完成，"
+                f"密度降至 {density:.1f}/千字（剩余 {total} 处）",
+                file=sys.stderr,
+            )
+
+            if density < self._METAPHOR_DENSITY_THRESHOLD:
+                print("[PolisherAgent] 比喻密度已达标，提前退出。", file=sys.stderr)
+                break
+        else:
+            print(
+                f"[PolisherAgent] 已执行 {MAX_ROUNDS} 轮精简，"
+                f"当前密度 {density:.1f}/千字（未完全达标，使用当前版本）。",
+                file=sys.stderr,
+            )
+
+        return content
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """
