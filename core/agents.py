@@ -1353,9 +1353,9 @@ class WriterAgent:
 
         return fixed
 
-    # 比喻词列表（与 PolisherAgent 共享同一份）
-    _METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
-    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查（约每千字 3 处）
+    # 明确的比喻词（多字词精确匹配；单字"像"用正则避免误计"好像/像样"等）
+    _METAPHOR_WORDS_MULTI = ["如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
     _METAPHOR_DENSITY_THRESHOLD = 3.0
 
     def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
@@ -1363,12 +1363,16 @@ class WriterAgent:
         后处理：先用正则统计全章比喻词密度（每千字出现次数）；
         密度低于阈值说明比喻用量正常，直接返回节省 LLM 调用；
         超过阈值则全文送 LLM 逐句审查并精简无效比喻。
+        "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
         判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
         import re, sys
 
         # ── 快速统计阶段 ────────────────────────────────────────────────
-        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS)
+        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS_MULTI)
+        xiang_simile = re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', content)
+        total_metaphors += len(xiang_simile)
+
         char_count = max(len(content), 1)
         density = total_metaphors / char_count * 1000  # 每千字出现次数
 
@@ -2860,8 +2864,8 @@ class PolisherAgent:
 
         return fixed
 
-    # 比喻词列表（与 WriterAgent 共享同一份逻辑）
-    _METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 明确的比喻词（多字词精确匹配；单字"像"用正则避免误计"好像/像样"等）
+    _METAPHOR_WORDS_MULTI = ["如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
     # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
     _METAPHOR_DENSITY_THRESHOLD = 3.0
 
@@ -2869,12 +2873,19 @@ class PolisherAgent:
         """
         润色后处理：先统计全文比喻词密度（每千字出现次数）；
         密度低于阈值直接返回，超过阈值才全文送 LLM 逐句审查精简。
+        "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
         判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
-        import sys
+        import re, sys
 
         # ── 快速统计阶段 ────────────────────────────────────────────────
-        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS)
+        # 多字比喻词直接计数（误伤极少）
+        total_metaphors = sum(content.count(w) for w in self._METAPHOR_WORDS_MULTI)
+        # 单字"像"：排除"好像/像样/像是/像这/像那/像个这种固定搭配"，
+        # 保留紧跟名词性成分的比喻用法（，像X / 。像X / 像一 / 像个 开头的句内比喻）
+        xiang_simile = re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', content)
+        total_metaphors += len(xiang_simile)
+
         char_count = max(len(content), 1)
         density = total_metaphors / char_count * 1000  # 每千字出现次数
 
