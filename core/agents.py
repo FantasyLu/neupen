@@ -1355,44 +1355,36 @@ class WriterAgent:
 
     def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
         """
-        后处理：检测单句内堆叠 ≥2 个比喻词的句子，发起一次 LLM 精简。
-        判断标准：去掉比喻信息量没有损失的 → 删；保留最能产生新感知的一个。
+        后处理：全文交给 LLM 审查无效比喻并精简。
+        判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
-        import re, sys
+        import sys
 
-        # 比喻词列表
-        METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
-        # 按中文句子边界切分（句号/感叹号/问号，含全角）
-        sentences = re.split(r"(?<=[。！？])", content)
+        print(f"[WriterAgent] 第{chapter_number}章发起比喻精简…", file=sys.stderr)
 
-        stacked = []
-        for sent in sentences:
-            count = sum(1 for w in METAPHOR_WORDS if w in sent)
-            if count >= 2:
-                stacked.append(sent.strip())
+        fix_prompt = f"""以下小说正文中存在过多无效比喻，需要逐一审查并精简。
 
-        if not stacked:
-            return content
+【判断标准】
+保留标准（满足其一即保留）：
+✅ 比喻激活读者难以直接感知的通感体验（如气味、质地、层次感）
+✅ 删去比喻后，该句的描述力/信息量明显下降
 
-        stacked_lines = "\n".join(f"  - {s}" for s in stacked[:6])
-        print(
-            f"[WriterAgent] 第{chapter_number}章检测到 {len(stacked)} 处堆叠比喻，发起精简…\n{stacked_lines}",
-            file=sys.stderr,
-        )
+删除标准（满足其一即删）：
+❌ 外貌/声音/动作已描述清楚，比喻只是重复说明（如"声音沙哑，像喉咙里塞了块砂纸"→直接写"声音沙哑"）
+❌ 情绪/感觉已有身体反应描写，比喻画蛇添足（如"喉咙里有什么东西堵着，像一块没咽下去的药片"→保留前半句）
+❌ 连续多个比喻描述同一事物，只保留最精准的一个，其余全删
+❌ 出现以下高频 AI 套喻，无论上下文一律删除或替换为直接描写：
+   "像砂纸"、"像石灰粉"、"像一块石头"、"像被人攥住"、"像被抽干"、"像溺水"、"像稻草"、"像刀割"、"像针扎"
 
-        fix_prompt = f"""以下小说正文中存在比喻堆叠问题（同一句话里出现多个"像/如同/仿佛/宛如"等比喻词）。
-
-【检测到的堆叠比喻句】
-{stacked_lines}
+【操作规则】
+1. 逐句检查全文中所有含"像/如同/仿佛/宛如/好似/犹如/恰似/有如"的句子
+2. 按上述标准判断，删除无效比喻，保留有效比喻
+3. 删除比喻时直接去掉比喻部分，保留事实描写，不改写其他内容
+4. 未含比喻的句子原样保留，不做任何修改
+5. 直接输出修改后的完整正文，不加任何说明
 
 【完整正文】
-{content}
-
-精简规则：
-1. 每处堆叠比喻只保留最能让读者产生新感知的一个，其余删去。
-2. 若所有比喻都是无效装饰（去掉后信息量不变），则全部删去，改为直接描写动作或感觉本身。
-3. 仅修改检测到的句子，其余内容原样保留。
-4. 直接输出修改后的完整正文，不加任何说明。"""
+{content}"""
 
         refined = self.llm.generate(
             self.SYSTEM_PROMPT,
@@ -1400,7 +1392,7 @@ class WriterAgent:
             max_tokens=12000,
             temperature=0.3,
         )
-        print(f"[WriterAgent] 第{chapter_number}章堆叠比喻精简完成。", file=sys.stderr)
+        print(f"[WriterAgent] 第{chapter_number}章比喻精简完成。", file=sys.stderr)
         return refined
 
     def summarize_chapter(
@@ -2847,41 +2839,36 @@ class PolisherAgent:
 
     def _fix_redundant_metaphors(self, content: str) -> str:
         """
-        润色后处理：检测单句内堆叠 ≥2 个比喻词的句子，发起一次 LLM 精简。
+        润色后处理：全文交给 LLM 审查无效比喻并精简。
+        判断标准：比喻必须带来直接描述无法传达的新感知才保留，否则删去。
         """
-        import re, sys
+        import sys
 
-        METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
-        sentences = re.split(r"(?<=[。！？])", content)
+        print("[PolisherAgent] 发起比喻精简…", file=sys.stderr)
 
-        stacked = []
-        for sent in sentences:
-            count = sum(1 for w in METAPHOR_WORDS if w in sent)
-            if count >= 2:
-                stacked.append(sent.strip())
+        fix_prompt = f"""以下润色后的小说正文中存在过多无效比喻，需要逐一审查并精简。
 
-        if not stacked:
-            return content
+【判断标准】
+保留标准（满足其一即保留）：
+✅ 比喻激活读者难以直接感知的通感体验（如气味、质地、层次感）
+✅ 删去比喻后，该句的描述力/信息量明显下降
 
-        stacked_lines = "\n".join(f"  - {s}" for s in stacked[:6])
-        print(
-            f"[PolisherAgent] 检测到 {len(stacked)} 处堆叠比喻，发起精简…\n{stacked_lines}",
-            file=sys.stderr,
-        )
+删除标准（满足其一即删）：
+❌ 外貌/声音/动作已描述清楚，比喻只是重复说明（如"声音沙哑，像喉咙里塞了块砂纸"→直接写"声音沙哑"）
+❌ 情绪/感觉已有身体反应描写，比喻画蛇添足（如"喉咙里有什么东西堵着，像一块没咽下去的药片"→保留前半句）
+❌ 连续多个比喻描述同一事物，只保留最精准的一个，其余全删
+❌ 出现以下高频 AI 套喻，无论上下文一律删除或替换为直接描写：
+   "像砂纸"、"像石灰粉"、"像一块石头"、"像被人攥住"、"像被抽干"、"像溺水"、"像稻草"、"像刀割"、"像针扎"
 
-        fix_prompt = f"""以下润色后的小说正文中存在比喻堆叠问题（同一句话里出现多个"像/如同/仿佛/宛如"等比喻词）。
-
-【检测到的堆叠比喻句】
-{stacked_lines}
+【操作规则】
+1. 逐句检查全文中所有含"像/如同/仿佛/宛如/好似/犹如/恰似/有如"的句子
+2. 按上述标准判断，删除无效比喻，保留有效比喻
+3. 删除比喻时直接去掉比喻部分，保留事实描写，不改写其他内容
+4. 未含比喻的句子原样保留，不做任何修改
+5. 直接输出修改后的完整正文，不加任何说明
 
 【完整正文】
-{content}
-
-精简规则：
-1. 每处堆叠比喻只保留最能让读者产生新感知的一个，其余删去。
-2. 若所有比喻都是无效装饰（去掉后信息量不变），则全部删去，改为直接描写动作或感觉本身。
-3. 仅修改检测到的句子，其余内容原样保留。
-4. 直接输出修改后的完整正文，不加任何说明。"""
+{content}"""
 
         refined = self.llm.generate(
             self.SYSTEM_PROMPT,
@@ -2889,7 +2876,7 @@ class PolisherAgent:
             max_tokens=12000,
             temperature=0.3,
         )
-        print("[PolisherAgent] 堆叠比喻精简完成。", file=sys.stderr)
+        print("[PolisherAgent] 比喻精简完成。", file=sys.stderr)
         return refined
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
