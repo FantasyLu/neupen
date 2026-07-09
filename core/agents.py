@@ -1416,7 +1416,7 @@ class WriterAgent:
         refined = self.llm.generate(
             self.SYSTEM_PROMPT,
             fix_prompt,
-            max_tokens=max(8000, min(32000, int(len(content) * 1.5 * 1.1))),
+            max_tokens=max(8000, min(32000, len(content) * 2)),
             temperature=0.3,
         )
         print(f"[WriterAgent] 第{chapter_number}章比喻精简完成。", file=sys.stderr)
@@ -2740,8 +2740,8 @@ class PolisherAgent:
 请在保持故事情节不变的前提下，提升文学质量，输出润色后的完整正文。
 ⚠️ 再次提醒：润色后的文本中绝对不允许出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写："""
 
-        # 动态估算 max_tokens：中文字符约 1.5 token，润色后按 1.3x 预留，最低 8000 最高 32000
-        _estimated_tokens = max(8000, min(32000, int(len(content) * 1.5 * 1.3)))
+        # 动态估算 max_tokens：中文字符约 1.5 token，润色后长度接近原文，按 ×2 兜底，上限 32000
+        _estimated_tokens = max(8000, min(32000, len(content) * 2))
 
         if stream_callback:
             content_parts = []
@@ -2932,7 +2932,7 @@ class PolisherAgent:
         refined = self.llm.generate(
             self.SYSTEM_PROMPT,
             fix_prompt,
-            max_tokens=max(8000, min(32000, int(len(content) * 1.5 * 1.1))),
+            max_tokens=max(8000, min(32000, len(content) * 2)),
             temperature=0.3,
         )
         print("[PolisherAgent] 比喻精简完成。", file=sys.stderr)
