@@ -879,25 +879,87 @@ def page_settings():
             if not draft:
                 st.info("完成第一步的风格分析后，这里将展示提取出的风格特征")
             else:
-                STYLE_FIELDS = [
-                    ("overall_style",        "总体风格定位",   60),
-                    ("sentence_patterns",    "句式特征",       80),
-                    ("vocabulary",           "词汇风格",       80),
-                    ("narrative_voice",      "叙述风格",       80),
-                    ("dialogue_style",       "对话特点",       70),
-                    ("description_style",    "描写特点",       80),
-                    ("rhythm_pacing",        "节奏特征",       70),
-                    ("emotion_expression",   "情感表达方式",   70),
-                    ("transition_style",     "转场方式",       60),
-                    ("polish_instructions",  "润色指令（AI 据此润色）", 100),
-                ]
+                from core.agents import PolisherAgent
+
                 updated_profile = {}
-                for key, label, height in STYLE_FIELDS:
-                    updated_profile[key] = st.text_area(label, value=draft.get(key, ""), height=height)
+
+                # ── 总体风格（文本，单行）──
+                updated_profile["overall_style"] = st.text_input(
+                    "总体风格定位",
+                    value=draft.get("overall_style", ""),
+                    placeholder="如：张爱玲式的冷峻市井现实主义",
+                )
+
+                st.markdown("##### 风格量化维度")
+                st.caption("拖动滑条选择档位，下方会显示对应的语义说明")
+
+                # ── 7个量化维度（select_slider）──
+                SLIDER_FIELDS = [
+                    ("sentence_patterns", "句式长短"),
+                    ("vocabulary",        "词汇雅俗"),
+                    ("narrative_voice",   "叙述距离"),
+                    ("dialogue_style",    "对话密度"),
+                    ("description_style", "描写密度"),
+                    ("rhythm_pacing",     "叙事节奏"),
+                    ("emotion_expression","情感表达方式"),
+                ]
+                for field, label in SLIDER_FIELDS:
+                    raw_val = draft.get(field)
+                    # 向后兼容：旧格式字符串降级为默认值3
+                    if isinstance(raw_val, str):
+                        st.warning(f"「{label}」为旧格式文本，已重置为中间值，建议重新分析或手动调整。")
+                        default_val = 3
+                    elif isinstance(raw_val, int) and 1 <= raw_val <= 5:
+                        default_val = raw_val
+                    else:
+                        default_val = 3
+
+                    chosen = st.select_slider(
+                        label,
+                        options=[1, 2, 3, 4, 5],
+                        value=default_val,
+                        key=f"style_slider_{field}",
+                    )
+                    # 显示当前档位的语义说明
+                    semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(chosen, "")
+                    if semantic:
+                        st.caption(f"▸ {semantic}")
+                    updated_profile[field] = chosen
+
+                st.markdown("##### 文本维度")
+
+                # ── 标志性手法（文本）──
+                updated_profile["signature_techniques"] = st.text_area(
+                    "标志性手法",
+                    value=draft.get("signature_techniques", ""),
+                    height=80,
+                    placeholder="该作者特有的技巧、反复出现的意象或表达方式…",
+                )
+
+                # ── 润色指令（文本，最关键）──
+                updated_profile["polish_instructions"] = st.text_area(
+                    "润色指令（AI 据此润色）",
+                    value=draft.get("polish_instructions", ""),
+                    height=110,
+                    placeholder="用行动导向语言列出5-8条具体指令，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写…",
+                )
+
+                # ── 补充说明（自由文本区）──
+                st.markdown("##### 其他补充")
+                updated_profile["custom_notes"] = st.text_area(
+                    "其他风格说明（补充上方未覆盖的风格特征）",
+                    value=draft.get("custom_notes", ""),
+                    height=80,
+                    placeholder="如需补充滑条无法表达的细节风格，在此填写，将直接注入润色提示词…",
+                )
 
                 if st.button("💾 保存风格档案", width="stretch", type="primary",
                               disabled=not can_edit(novel_id)):
-                    updated_profile = {k: v for k, v in updated_profile.items() if v.strip()}
+                    # int 值直接保留，str 值过滤空字符串
+                    updated_profile = {
+                        k: v for k, v in updated_profile.items()
+                        if isinstance(v, int) or (isinstance(v, str) and v.strip())
+                    }
                     with st.spinner("保存中…"):
                         workflow = load_novel(novel_id)
                         result = workflow.update_style_profile(updated_profile)

@@ -2698,6 +2698,71 @@ class PolisherAgent:
 
 输出格式：合法的JSON，不含其他文字。"""
 
+    # 7个可量化风格维度的1-5档语义映射表
+    # key: 风格字段名，value: {1..5: 语义描述}
+    _STYLE_SLIDER_MAP = {
+        "sentence_patterns": {
+            1: "以长句为主，句式绵密舒展，从句嵌套，节奏沉稳流畅",
+            2: "长句偏多，偶有短句点缀，整体感觉从容不迫",
+            3: "长短句均衡交替，节奏张弛有度",
+            4: "短句偏多，间以长句，节奏较为明快",
+            5: "以短句和碎句为主，节奏急促、跳跃、克制",
+        },
+        "vocabulary": {
+            1: "口语化、生活化，大量俚语和日常用词，亲切直白",
+            2: "偏口语，措辞自然随意，略带文学感",
+            3: "雅俗均衡，日常用词为主，适度点缀文学词汇",
+            4: "偏书面，用词精炼考究，文学质感明显",
+            5: "高度书面化，措辞典雅，文白杂糅，带古典文学气息",
+        },
+        "narrative_voice": {
+            1: "叙述者高度克制，冷眼旁观，几乎不透露人物内心，只呈现行为和现象",
+            2: "保持一定距离，偶尔贴近人物视角，内心活动较少",
+            3: "叙述距离适中，内外兼顾，既有观察也有内心",
+            4: "贴近人物视角，大量内心流动，沉浸感强",
+            5: "完全沉浸式，几乎等同于第一人称内心独白，意识流倾向明显",
+        },
+        "dialogue_style": {
+            1: "对话极少，叙述为主，人物沉默多，言语克制",
+            2: "对话较少，以场景叙述为主，对话简短有力",
+            3: "叙述与对话均衡，对话推进情节",
+            4: "对话较多，人物交流频繁，靠对话展现关系和性格",
+            5: "大量对话，快速来回，接近剧本风格，叙述段落简短",
+        },
+        "description_style": {
+            1: "描写极简，不做渲染，只交代必要信息，留白极多",
+            2: "描写克制，仅在关键处点染，感官细节有限",
+            3: "描写适度，场景有质感，感官细节有选择地出现",
+            4: "描写较丰富，感官细节层叠，环境氛围渲染充分",
+            5: "描写浓密，大量感官细节堆叠，意象丰富，浸入感强",
+        },
+        "rhythm_pacing": {
+            1: "节奏极慢，大量留白和静场，克制平静，近似散文",
+            2: "节奏偏慢，从容不迫，情节推进缓和",
+            3: "节奏适中，张弛兼顾，高潮处加速，平静处收缓",
+            4: "节奏偏快，情节推进迅速，悬念密集，动作性强",
+            5: "节奏极快，场景切换频繁，事件密集，读者几乎没有喘息空间",
+        },
+        "emotion_expression": {
+            1: "情感高度克制，从不直接表达，全靠动作/物件/环境暗示，留白给读者",
+            2: "情感含蓄，偶有内心活动，但不做渲染",
+            3: "情感适度外显，内心描写与行为描写均衡",
+            4: "情感较为直白，内心活动较多，情绪渲染明显",
+            5: "情感浓烈直白，大量内心独白，情绪高度外露",
+        },
+    }
+
+    # 量化维度的中文标签（UI 展示用）
+    _STYLE_SLIDER_LABELS = {
+        "sentence_patterns": "句式长短",
+        "vocabulary":        "词汇雅俗",
+        "narrative_voice":   "叙述距离",
+        "dialogue_style":    "对话密度",
+        "description_style": "描写密度",
+        "rhythm_pacing":     "叙事节奏",
+        "emotion_expression":"情感表达方式",
+    }
+
     def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
         self.temperature = temperature
@@ -3006,54 +3071,108 @@ class PolisherAgent:
         )
 
     def _format_style_profile(self, profile: dict) -> str:
-        """将风格档案转为多行文本，供注入润色提示词"""
+        """将风格档案转为多行文本，供注入润色提示词。
+
+        量化维度（7个）：存储 int 1-5，查 _STYLE_SLIDER_MAP 取语义文字；
+        若旧数据为 str，直接拼原文（向后兼容）。
+        文本维度（overall_style / signature_techniques / polish_instructions / custom_notes）：直接拼。
+        """
         if not profile:
             return ""
-        field_labels = [
-            ("overall_style", "总体风格"),
-            ("sentence_patterns", "句式特征"),
-            ("vocabulary", "词汇风格"),
-            ("narrative_voice", "叙述风格"),
-            ("dialogue_style", "对话风格"),
-            ("description_style", "描写特点"),
-            ("rhythm_pacing", "节奏特征"),
-            ("emotion_expression", "情感表达"),
-            ("signature_techniques", "标志性手法"),
-            ("polish_instructions", "润色指令"),
-        ]
         lines = []
-        for field, label in field_labels:
-            if profile.get(field):
-                lines.append(f"- {label}：{profile[field]}")
+
+        # 总体风格（文本）
+        if profile.get("overall_style"):
+            lines.append(f"- 总体风格：{profile['overall_style']}")
+
+        # 7个量化维度
+        slider_label_map = {
+            "sentence_patterns": "句式长短",
+            "vocabulary":        "词汇雅俗",
+            "narrative_voice":   "叙述距离",
+            "dialogue_style":    "对话密度",
+            "description_style": "描写密度",
+            "rhythm_pacing":     "叙事节奏",
+            "emotion_expression":"情感表达方式",
+        }
+        for field, label in slider_label_map.items():
+            val = profile.get(field)
+            if val is None:
+                continue
+            if isinstance(val, int) and val in self._STYLE_SLIDER_MAP.get(field, {}):
+                semantic = self._STYLE_SLIDER_MAP[field][val]
+                lines.append(f"- {label}：{semantic}")
+            elif isinstance(val, str) and val.strip():
+                # 旧格式字符串，直接拼
+                lines.append(f"- {label}：{val}")
+
+        # 标志性手法（文本）
+        if profile.get("signature_techniques"):
+            lines.append(f"- 标志性手法：{profile['signature_techniques']}")
+
+        # 润色指令（文本）
+        if profile.get("polish_instructions"):
+            lines.append(f"- 润色指令：{profile['polish_instructions']}")
+
+        # 补充说明（文本）
+        if profile.get("custom_notes"):
+            lines.append(f"- 补充说明：{profile['custom_notes']}")
+
         return "\n".join(lines)
 
     def analyze_style(self, reference_text: str) -> dict:
         """
-        分析参考文本的写作风格，返回结构化风格档案（10个维度）
+        分析参考文本的写作风格，返回结构化风格档案。
+
+        7个量化维度返回 1-5 整数，其余返回文本字符串。
 
         Args:
             reference_text: 喜欢的作家作品片段（建议500-3000字）
 
         Returns:
-            包含10个风格维度的dict，关键字段为 polish_instructions
+            包含风格维度的dict：
+            - 量化维度（int 1-5）：sentence_patterns / vocabulary / narrative_voice /
+              dialogue_style / description_style / rhythm_pacing / emotion_expression
+            - 文本维度（str）：overall_style / signature_techniques / polish_instructions
+            - 补充（str，默认空）：custom_notes
         """
-        user_prompt = f"""请分析以下参考文本的写作风格，提取10个维度的特征：
+        slider_guide = ""
+        for field, label in self._STYLE_SLIDER_LABELS.items():
+            levels = self._STYLE_SLIDER_MAP[field]
+            desc_lines = "；".join(f"{k}={v}" for k, v in levels.items())
+            slider_guide += f"  - {label}（{field}）：{desc_lines}\n"
+
+        user_prompt = f"""请分析以下参考文本的写作风格，返回JSON风格档案。
 
 【参考文本】
 {reference_text[:8000]}{"...(已截断)" if len(reference_text) > 8000 else ""}
 
-请输出JSON格式的风格档案，每个字段的值必须具体、可操作：
+【输出要求】
+请严格按照以下JSON结构输出，字段说明如下：
+
+1. overall_style（str）：总体风格定位，一句话概括，如"张爱玲式的冷峻市井现实主义"
+
+2. 以下7个维度请返回1-5的整数，对应语义如下：
+{slider_guide}
+3. signature_techniques（str）：该作者标志性手法，具体描述反复出现的意象、技巧或表达方式
+
+4. polish_instructions（str）：重要！用行动导向语言列出5-8条具体润色指令，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写
+
+5. custom_notes（str）：留空字符串""
+
+JSON结构：
 {{
-  "overall_style": "总体风格定位（一句话概括，如：张爱玲式的冷峻市井现实主义）",
-  "sentence_patterns": "句式特征（长短句比例、句式结构偏好、标点使用习惯等，需举例）",
-  "vocabulary": "词汇风格（雅俗程度、惯用词汇类型、文白比例等）",
-  "narrative_voice": "叙述风格（叙述距离近/远、视角特点、信息呈现方式如暗示/直述）",
-  "dialogue_style": "对话特点（频率高低、对话长短偏好、口语化程度、标点习惯）",
-  "description_style": "描写特点（感官偏好如视听嗅触、比喻手法、景物描写密度）",
-  "rhythm_pacing": "节奏特征（段落疏密规律、快慢切换方式、如何制造呼吸感）",
-  "emotion_expression": "情感表达（直抒胸臆 vs 含蓄克制的程度、情绪调动手法）",
-  "signature_techniques": "标志性手法（该作者特有的技巧、反复出现的意象或表达方式）",
-  "polish_instructions": "润色指令（重要！请用行动导向语言列出5-8条具体指令，告诉润色者该做什么，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写 ③对话后不加心理解释，让行为说话 ④比喻要接地气，取材日常器物而非自然意象）"
+  "overall_style": "...",
+  "sentence_patterns": 3,
+  "vocabulary": 3,
+  "narrative_voice": 3,
+  "dialogue_style": 3,
+  "description_style": 3,
+  "rhythm_pacing": 3,
+  "emotion_expression": 3,
+  "signature_techniques": "...",
+  "polish_instructions": "...",
+  "custom_notes": ""
 }}"""
 
         response = self.llm.generate(
@@ -3066,7 +3185,16 @@ class PolisherAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return _safe_json_loads(response[json_start:json_end])
+            raw = _safe_json_loads(response[json_start:json_end])
+            # 确保量化维度为 int，容错字符串数字
+            for field in self._STYLE_SLIDER_MAP:
+                if field in raw:
+                    try:
+                        raw[field] = int(raw[field])
+                        raw[field] = max(1, min(5, raw[field]))  # 钳制到1-5
+                    except (ValueError, TypeError):
+                        pass  # 保留原值，UI 层降级处理
+            return raw
         raise ValueError(f"风格分析返回格式错误：{response[:400]}")
 
     def close(self):
