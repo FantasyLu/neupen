@@ -921,6 +921,9 @@ def page_writing():
 
             with tab_text:
                 review_key = f"writing_manual_review_{novel_id}_{selected_ch_num}"
+                editor_version_key = f"editor_version_{novel_id}_{selected_ch_num}"
+                if editor_version_key not in st.session_state:
+                    st.session_state[editor_version_key] = 0
 
                 # 章纲参考（折叠展示，默认展开）
                 if selected_ch and selected_ch.outline_core_event:
@@ -947,6 +950,7 @@ def page_writing():
                     disabled=not can_edit(novel_id),
                     placeholder="在此直接书写章节内容，或通过左侧 AI 生成后应用…",
                     font_size_key=f"editor_font_size_{novel_id}",
+                    force_version=st.session_state.get(editor_version_key, 0),
                 )
 
                 if can_edit(novel_id):
@@ -1104,6 +1108,10 @@ def page_writing():
                                     agent.close()
                                     st.session_state[pending_key] = polished
                                     st.session_state[text_key] = polished
+                                    # 递增版本号，强制 ace 编辑器重建以显示新内容
+                                    st.session_state[editor_version_key] = (
+                                        st.session_state.get(editor_version_key, 0) + 1
+                                    )
                                     st.toast("✅ 润色完成，请确认后保存")
                                     st.rerun()
                                 except Exception as e:
