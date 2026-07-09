@@ -11,7 +11,7 @@ import streamlit as st
 from core.models import get_db, Chapter, ContentVersion, Novel
 from core.workflow import load_novel
 from core.permissions import can_edit, can_approve
-from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent, WriterAgent
+from core.agents import CanvasAgent, ReviewerAgent, OutlineAgent, WriterAgent, PolisherAgent
 from ui.helpers import (
     format_chapter_status,
     format_approval_badge,
@@ -953,7 +953,7 @@ def page_writing():
                     change_summary = st.text_input(
                         "修改说明（可选）", placeholder="例如：修改了结尾段落"
                     )
-                    btn1, btn2, btn3 = st.columns([2, 1, 1])
+                    btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1])
                     with btn1:
                         save_clicked = st.button(
                             "💾 保存", type="primary", width="stretch"
@@ -974,6 +974,12 @@ def page_writing():
                             "✨ AI 建议",
                             width="stretch",
                             help="让 AI 提出改进建议，结果将显示在左侧聊天中",
+                        )
+                    with btn4:
+                        polish_clicked = st.button(
+                            "💅 润色",
+                            width="stretch",
+                            help="对当前正文做文字润色（含去AI味后处理），结果写入编辑器等待确认",
                         )
 
                     # 章节状态回退
@@ -1085,6 +1091,23 @@ def page_writing():
                                     history.pop()
                                     st.session_state[chat_key] = history
                                     st.error(f"AI 出错：{e}")
+
+                    if polish_clicked:
+                        current_text = st.session_state.get(text_key, "").strip()
+                        if not current_text:
+                            st.warning("编辑区没有内容，请先写一些内容再润色")
+                        else:
+                            with st.spinner("润色中（含去AI味后处理，可能需要一点时间）…"):
+                                try:
+                                    agent = PolisherAgent(novel_id)
+                                    polished = agent.polish_chapter(current_text)
+                                    agent.close()
+                                    st.session_state[pending_key] = polished
+                                    st.session_state[text_key] = polished
+                                    st.toast("✅ 润色完成，请确认后保存")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"润色失败：{e}")
 
                 # 审核结果展示
                 manual_review = st.session_state.get(review_key)
