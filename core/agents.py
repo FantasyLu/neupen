@@ -2655,7 +2655,7 @@ class PolisherAgent:
 
 3. **增强文学性**：
    - 加入更多感官细节（嗅觉、触觉、听觉）
-   - 用隐喻和意象替代直白描述
+   - 比喻只在能让读者产生直接描写无法传达的新感知时才使用，不主动添加；去掉已有的无效比喻
    - 通过细节展现情感，而非直接说
    - 让对话更自然，有留白
 
@@ -2721,6 +2721,9 @@ class PolisherAgent:
             if novel and novel.deai_rules and novel.deai_rules.strip()
             else DEFAULT_DEAI_RULES
         )
+
+        # ── 润色前：先清理原文中的无效比喻，避免润色时又大量补回 ────────────
+        content = self._fix_redundant_metaphors(content)
 
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
@@ -2858,9 +2861,6 @@ class PolisherAgent:
             )
         else:
             print("[PolisherAgent] 禁止句式已全部清除。", file=sys.stderr)
-
-        # ── Step 3: 冗余比喻精简 ──────────────────────────────────────────
-        fixed = self._fix_redundant_metaphors(fixed)
 
         return fixed
 
