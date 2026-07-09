@@ -1,16 +1,20 @@
 """
 平台风格全局管理页
-用户可以自定义各平台下各标签的写作风格描述
+用户可以查看和编辑各平台/标签的量化风格档案（与项目风格档案格式完全一致）。
 """
 
 import streamlit as st
 
-from core.platform_styles import load_platform_styles, save_platform_styles
+from core.platform_styles import (
+    load_platform_styles, save_platform_styles,
+    DEFAULT_PLATFORM_STYLES, SLIDER_FIELDS,
+)
+from core.agents import PolisherAgent
 
 
 def page_platform_styles():
     st.title("📺 平台风格配置")
-    st.caption("在此定义各发布平台及其标签对应的写作风格描述。写作和润色时会自动将选中标签的描述注入提示词。")
+    st.caption("定义各平台标签的标准风格档案。用户在项目风格设置中以此为初始默认值，修改后保存为项目专属风格。")
 
     styles = load_platform_styles()
 
@@ -42,9 +46,9 @@ def page_platform_styles():
 
     for tab_idx, platform in enumerate(platform_names):
         with tabs[tab_idx]:
-            tag_map: dict[str, str] = styles[platform]
+            tag_map: dict[str, dict] = styles[platform]
 
-            # 平台级操作：重命名 / 删除
+            # 平台级操作
             col_title, col_del = st.columns([5, 1])
             with col_title:
                 st.markdown(f"### {platform}")
@@ -57,22 +61,63 @@ def page_platform_styles():
 
             st.caption(f"共 {len(tag_map)} 个标签")
 
-            # 已有标签列表
+            # ── 已有标签 ──
             if tag_map:
-                for tag, desc in list(tag_map.items()):
+                for tag, profile in list(tag_map.items()):
                     with st.expander(f"🏷️ {tag}", expanded=False):
-                        new_desc = st.text_area(
-                            "风格描述",
-                            value=desc,
-                            height=150,
-                            key=f"desc_{platform}_{tag}",
-                            help="写作和润色时会把这段描述注入提示词，建议具体描述节奏、语气、读者偏好等。"
+                        new_profile = {}
+
+                        # 总体风格（文本）
+                        new_profile["overall_style"] = st.text_input(
+                            "总体风格定位",
+                            value=profile.get("overall_style", ""),
+                            key=f"overall_{platform}_{tag}",
+                            placeholder="一句话概括，如：男频玄幻热血升级爽文",
                         )
+
+                        st.markdown("**量化维度**")
+                        for field, label in SLIDER_FIELDS:
+                            raw = profile.get(field)
+                            default = raw if isinstance(raw, int) and 1 <= raw <= 5 else 3
+                            chosen = st.select_slider(
+                                label,
+                                options=[1, 2, 3, 4, 5],
+                                value=default,
+                                key=f"slider_{platform}_{tag}_{field}",
+                            )
+                            semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(chosen, "")
+                            if semantic:
+                                st.caption(f"▸ {semantic}")
+                            new_profile[field] = chosen
+
+                        st.markdown("**文本维度**")
+                        new_profile["signature_techniques"] = st.text_area(
+                            "标志性手法",
+                            value=profile.get("signature_techniques", ""),
+                            height=68,
+                            key=f"sig_{platform}_{tag}",
+                        )
+                        new_profile["polish_instructions"] = st.text_area(
+                            "润色指令",
+                            value=profile.get("polish_instructions", ""),
+                            height=80,
+                            key=f"polish_{platform}_{tag}",
+                        )
+                        new_profile["custom_notes"] = st.text_area(
+                            "补充说明",
+                            value=profile.get("custom_notes", ""),
+                            height=60,
+                            key=f"notes_{platform}_{tag}",
+                        )
+
                         c1, c2 = st.columns([3, 1])
                         if c1.button("💾 保存", key=f"save_{platform}_{tag}", width="stretch"):
-                            styles[platform][tag] = new_desc.strip()
+                            styles[platform][tag] = {
+                                k: v for k, v in new_profile.items()
+                                if isinstance(v, int) or (isinstance(v, str) and v.strip())
+                            }
                             save_platform_styles(styles)
-                            st.toast(f"✅ 已保存「{tag}」")
+                            st.toast(f"✅ 已保存「{tag}」风格档案")
                         if c2.button("🗑️", key=f"del_{platform}_{tag}",
                                      help=f"删除标签「{tag}」", width="stretch"):
                             del styles[platform][tag]
@@ -81,29 +126,34 @@ def page_platform_styles():
 
             st.divider()
 
-            # 新增标签
-            with st.form(f"add_tag_{platform}"):
-                st.markdown("**➕ 新增标签**")
-                new_tag = st.text_input("标签名称", placeholder="如：玄幻、古代言情…",
-                                        key=f"new_tag_name_{platform}")
-                new_tag_desc = st.text_area(
-                    "风格描述",
-                    height=120,
-                    placeholder="描述该平台此标签下的写作风格要求：节奏、语气、情节偏好、读者期待等…",
-                    key=f"new_tag_desc_{platform}"
-                )
-                if st.form_submit_button("新增标签", width="stretch"):
-                    tag_name = new_tag.strip()
-                    if not tag_name:
-                        st.warning("请输入标签名称")
-                    elif tag_name in tag_map:
-                        st.warning("该标签已存在")
-                    else:
-                        styles[platform][tag_name] = new_tag_desc.strip()
-                        save_platform_styles(styles)
-                        st.success(f"✅ 已新增标签「{tag_name}」")
-                        st.rerun()
+            # ── 新增标签 ──
+            with st.expander("➕ 新增标签", expanded=False):
+                with st.form(f"add_tag_{platform}"):
+                    new_tag = st.text_input(
+                        "标签名称",
+                        placeholder="如：玄幻、古代言情…",
+                        key=f"new_tag_name_{platform}",
+                    )
+                    st.caption("新增后可在上方展开该标签编辑风格档案")
+                    if st.form_submit_button("新增标签", use_container_width=True):
+                        tag_name = new_tag.strip()
+                        if not tag_name:
+                            st.warning("请输入标签名称")
+                        elif tag_name in tag_map:
+                            st.warning("该标签已存在")
+                        else:
+                            # 以中间值3初始化所有量化维度
+                            styles[platform][tag_name] = {
+                                f: 3 for f, _ in SLIDER_FIELDS
+                            }
+                            styles[platform][tag_name]["overall_style"] = ""
+                            styles[platform][tag_name]["signature_techniques"] = ""
+                            styles[platform][tag_name]["polish_instructions"] = ""
+                            styles[platform][tag_name]["custom_notes"] = ""
+                            save_platform_styles(styles)
+                            st.success(f"✅ 已新增标签「{tag_name}」，请展开编辑风格档案")
+                            st.rerun()
 
-    # 最后一个 tab "+" 提示用户用顶部表单新增平台
+    # 最后一个 tab "+" 提示
     with tabs[-1]:
         st.info("使用页面顶部的「➕ 新增平台」区域添加新平台")

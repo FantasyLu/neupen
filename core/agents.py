@@ -16,7 +16,7 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
-from core.platform_styles import get_style_description
+from core.platform_styles import get_platform_slider_defaults
 
 
 def _safe_json_loads(text: str) -> dict | list:
@@ -1026,15 +1026,6 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
-        # 平台/标签风格块（次要参考，优先级低于个人风格档案）
-        platform_block = ""
-        if novel:
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            _ps = get_style_description(_pt, _tg)
-            if _ps:
-                platform_block = f"\n【目标平台与标签背景参考（了解读者群体偏好，个人风格档案与此有冲突时以档案为准）】\n{_ps}\n"
-
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
 
@@ -1082,7 +1073,7 @@ class WriterAgent:
 → 写完每段请心算当前总字数，发现超出本段预算立即收笔推进下一段
 {deai_block}{feedback_block}
 【写作上下文（下方所有设定和前情均须遵守）】
-{writing_context}{platform_block}{style_block}
+{writing_context}{style_block}
 
 【本章写作要求】
 1. 【核心事件完整性】章纲所述的核心事件必须在正文中有完整的"开始→过程→结果"三阶段。
@@ -1739,17 +1730,6 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
-        # 平台风格
-        platform_block = ""
-        if novel:
-            from core.platform_styles import get_style_description
-
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            _ps = get_style_description(_pt, _tg)
-            if _ps:
-                platform_block = f"\n【目标平台写作风格要求】\n{_ps}"
-
         # ── System Prompt：静态规则全在这里（prompt cache 生效区域）────────────
         # 工具定义移到 user prompt，兼容 DeepSeek 等对 system prompt 权重较低的模型
         agentic_system = f"""{self.SYSTEM_PROMPT}
@@ -1765,7 +1745,7 @@ class WriterAgent:
 2. 人设一致性：每个人物言行必须符合其档案设定，能力边界不得超出设定
 3. 叙事连贯：开头自然衔接上章结尾的时间/地点/状态，场景转换要有物理过渡
 4. 章节收束：结尾需包含悬念或情感落点，禁止说书人式总结
-5. 禁止分节：不得在正文中使用任何小节标题或分节符号（"第一节""（一）""1.""—·—"等）；多场景之间用空行自然过渡{style_block}{platform_block}
+5. 禁止分节：不得在正文中使用任何小节标题或分节符号（"第一节""（一）""1.""—·—"等）；多场景之间用空行自然过渡{style_block}
 
 【去AI味规则（必须遵守）】
 {deai_rules}"""
@@ -2775,13 +2755,6 @@ class PolisherAgent:
             self._format_style_profile(style_profile) if style_profile else ""
         )
 
-        # 平台/标签风格
-        platform_style_text = ""
-        if novel:
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            platform_style_text = get_style_description(_pt, _tg)
-
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
 
@@ -2797,8 +2770,7 @@ class PolisherAgent:
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
-{f"【目标平台与标签背景参考（了解读者群体偏好，个人风格档案与此有冲突时以档案为准）】\n{platform_style_text}" if platform_style_text else ""}
-{f"【全书写作风格档案（最高优先级，请严格按此风格润色）】\n{style_profile_text}" if style_profile_text else ""}
+{f"【全书写作风格档案（请严格按此风格润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference[:3000]}{'...(已截断)' if len(style_reference) > 3000 else ''}" if style_reference else ""}
 【去AI味规则（润色时必须逐条执行，这是硬性要求）】
 {deai_rules}
