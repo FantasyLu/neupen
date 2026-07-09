@@ -10,7 +10,7 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, NovelD
 from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
-from core.platform_styles import load_platform_styles, get_platform_slider_defaults
+from core.platform_styles import get_all_platform_styles, get_platform_slider_defaults
 from ui.components.model_selector import (
     build_model_options, render_model_card, render_all_models_panel,
     FOLLOW_LABEL, build_agent_model_options,
@@ -1070,7 +1070,7 @@ def page_settings():
             novel_platform = db.query(Novel).filter(Novel.id == novel_id).first()
             db.close()
 
-            all_styles = load_platform_styles()
+            all_styles = get_all_platform_styles()
             platform_names = list(all_styles.keys())
 
             current_platform = novel_platform.target_platform or ""
@@ -1109,14 +1109,8 @@ def page_settings():
                     st.success("✅ 平台配置已保存")
                     st.rerun()
 
-            # 当前生效的风格描述预览
-            if current_platform and current_tags:
-                from core.platform_styles import get_style_description
-                preview = get_style_description(current_platform, current_tags)
-                if preview:
-                    with st.expander(f"📋 {current_platform} 风格描述预览", expanded=True):
-                        st.info(preview)
-            elif selected_platform:
+            # 当前平台标签提示
+            if selected_platform:
                 tags = list(all_styles.get(selected_platform, {}).keys())
                 if tags:
                     st.caption(f"该平台可用标签：{'、'.join(tags[:8])}{'…' if len(tags) > 8 else ''}")

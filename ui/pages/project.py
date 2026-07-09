@@ -5,7 +5,7 @@ from core.workflow import create_new_novel, delete_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key
 from core.agents import IdeaAgent
 from core.permissions import generate_invite_code
-from core.platform_styles import load_platform_styles
+from core.platform_styles import get_all_platform_styles
 from ui.helpers import get_all_novels, format_status, format_approval_badge
 from ui.components.model_selector import build_model_options
 
@@ -247,7 +247,7 @@ def page_project_management():
                 total_chapters = st.number_input("📊 预计总章节数", min_value=10, max_value=500, value=100, step=10)
 
             # 平台与标签
-            all_styles = load_platform_styles()
+            all_styles = get_all_platform_styles()
             platform_names = [""] + list(all_styles.keys())
             col_p1, col_p2 = st.columns(2)
             with col_p1:

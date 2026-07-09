@@ -609,6 +609,52 @@ class Collaborator(Base):
         return f"<Collaborator id={self.id} name={self.display_name} role={self.role}>"
 
 
+class PlatformStyle(Base):
+    """平台风格档案表（全局，不绑定小说项目）"""
+    __tablename__ = "platform_styles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(100), nullable=False, comment="平台名称，如：起点中文网")
+    tag      = Column(String(100), nullable=False, comment="标签名称，如：玄幻")
+
+    # 总体风格（文本）
+    overall_style        = Column(Text,    nullable=True, comment="总体风格定位（一句话）")
+    # 7个量化维度（1-5）
+    sentence_patterns    = Column(Integer, nullable=True, comment="句式长短 1-5")
+    vocabulary           = Column(Integer, nullable=True, comment="词汇雅俗 1-5")
+    narrative_voice      = Column(Integer, nullable=True, comment="叙述距离 1-5")
+    dialogue_style       = Column(Integer, nullable=True, comment="对话密度 1-5")
+    description_style    = Column(Integer, nullable=True, comment="描写密度 1-5")
+    rhythm_pacing        = Column(Integer, nullable=True, comment="叙事节奏 1-5")
+    emotion_expression   = Column(Integer, nullable=True, comment="情感表达方式 1-5")
+    # 文本维度
+    signature_techniques = Column(Text,    nullable=True, comment="标志性手法")
+    polish_instructions  = Column(Text,    nullable=True, comment="润色指令")
+    custom_notes         = Column(Text,    nullable=True, comment="补充说明")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("platform", "tag"),)
+
+    def to_profile_dict(self) -> dict:
+        """转为与 Novel.style_profile 完全一致的 dict 格式"""
+        d = {}
+        if self.overall_style:        d["overall_style"]        = self.overall_style
+        for f in ("sentence_patterns", "vocabulary", "narrative_voice",
+                  "dialogue_style", "description_style", "rhythm_pacing", "emotion_expression"):
+            v = getattr(self, f)
+            if v is not None:
+                d[f] = int(v)
+        if self.signature_techniques: d["signature_techniques"] = self.signature_techniques
+        if self.polish_instructions:  d["polish_instructions"]  = self.polish_instructions
+        if self.custom_notes:         d["custom_notes"]         = self.custom_notes
+        return d
+
+    def __repr__(self):
+        return f"<PlatformStyle platform={self.platform} tag={self.tag}>"
+
+
 class Comment(Base):
     """章节评论表"""
     __tablename__ = "comments"
@@ -698,7 +744,36 @@ def _migrate_add_columns():
             except Exception:
                 pass  # 表不存在等情况由 create_all 处理
 
+    # platform_styles 表由 create_all 自动创建（新表无需 ALTER）
+
+
+def _seed_platform_styles():
+    """
+    首次启动时将 DEFAULT_PLATFORM_STYLES 写入数据库（仅在表为空时执行）。
+    """
+    from core.platform_styles import DEFAULT_PLATFORM_STYLES
+    db = SessionLocal()
+    try:
+        if db.query(PlatformStyle).count() > 0:
+            return  # 已有数据，跳过
+        for platform, tags in DEFAULT_PLATFORM_STYLES.items():
+            for tag, profile in tags.items():
+                row = PlatformStyle(platform=platform, tag=tag)
+                for field in ("overall_style", "sentence_patterns", "vocabulary",
+                              "narrative_voice", "dialogue_style", "description_style",
+                              "rhythm_pacing", "emotion_expression",
+                              "signature_techniques", "polish_instructions", "custom_notes"):
+                    if field in profile:
+                        setattr(row, field, profile[field])
+                db.add(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
 
 # 启动时自动初始化并迁移
 init_db()
 _migrate_add_columns()
+_seed_platform_styles()
