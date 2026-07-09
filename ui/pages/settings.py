@@ -926,6 +926,20 @@ def page_settings():
                         st.caption(f"▸ {semantic}")
                     updated_profile[field] = chosen
 
+                    # 每个维度下的可折叠补充框
+                    note_key = f"{field}_note"
+                    existing_note = draft.get(note_key, "")
+                    expander_label = f"补充说明（{label}）" + ("  ✏️" if existing_note else "")
+                    with st.expander(expander_label, expanded=bool(existing_note)):
+                        updated_profile[note_key] = st.text_area(
+                            f"{label} 补充",
+                            value=existing_note,
+                            height=68,
+                            placeholder=f"可在此补充「{label}」滑条无法表达的细节，如特殊场景下的例外规则…",
+                            key=f"style_note_{field}",
+                            label_visibility="collapsed",
+                        )
+
                 st.markdown("##### 文本维度")
 
                 # ── 标志性手法（文本）──

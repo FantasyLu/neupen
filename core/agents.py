@@ -3101,10 +3101,18 @@ class PolisherAgent:
                 continue
             if isinstance(val, int) and val in self._STYLE_SLIDER_MAP.get(field, {}):
                 semantic = self._STYLE_SLIDER_MAP[field][val]
-                lines.append(f"- {label}：{semantic}")
+                note = profile.get(f"{field}_note", "").strip()
+                line = f"- {label}：{semantic}"
+                if note:
+                    line += f"（补充：{note}）"
+                lines.append(line)
             elif isinstance(val, str) and val.strip():
-                # 旧格式字符串，直接拼
-                lines.append(f"- {label}：{val}")
+                # 旧格式字符串，直接拼（_note 字段对旧格式同样生效）
+                note = profile.get(f"{field}_note", "").strip()
+                line = f"- {label}：{val}"
+                if note:
+                    line += f"（补充：{note}）"
+                lines.append(line)
 
         # 标志性手法（文本）
         if profile.get("signature_techniques"):
