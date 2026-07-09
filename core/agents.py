@@ -1006,27 +1006,12 @@ class WriterAgent:
             style_ref_text = (novel.style_reference_text or "").strip()
 
             if style_profile:
-                _label_map = {
-                    "overall_style": "总体风格定位",
-                    "sentence_patterns": "句式特征",
-                    "vocabulary": "词汇风格",
-                    "narrative_voice": "叙述视角风格",
-                    "dialogue_style": "对话特点",
-                    "description_style": "描写特点",
-                    "rhythm_pacing": "节奏与节拍",
-                    "emotion_expression": "情感表达方式",
-                    "signature_techniques": "标志性手法",
-                    "polish_instructions": "写作核心指令",
-                }
-                lines = [
-                    f"- {lbl}：{style_profile[k]}"
-                    for k, lbl in _label_map.items()
-                    if style_profile.get(k)
-                ]
-                if lines:
+                # 复用 PolisherAgent._format_style_profile() 保证 int 维度→语义文字转换一致
+                _formatted = PolisherAgent.__new__(PolisherAgent)._format_style_profile(style_profile)
+                if _formatted:
                     style_block = (
-                        "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
-                        + "\n".join(lines)
+                        "\n【全书写作风格档案（请严格遵循以保持前后风格一致，这是最高优先级的风格指令）】\n"
+                        + _formatted
                     )
                 # 有 style_profile 时不再额外注入原文片段（结构化档案已涵盖风格信息）
             elif style_ref_text:
@@ -1041,14 +1026,14 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
-        # 平台/标签风格块
+        # 平台/标签风格块（次要参考，优先级低于个人风格档案）
         platform_block = ""
         if novel:
             _pt = novel.target_platform or ""
             _tg = novel.get_target_tags()
             _ps = get_style_description(_pt, _tg)
             if _ps:
-                platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
+                platform_block = f"\n【目标平台与标签背景参考（了解读者群体偏好，个人风格档案与此有冲突时以档案为准）】\n{_ps}\n"
 
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
@@ -1097,7 +1082,7 @@ class WriterAgent:
 → 写完每段请心算当前总字数，发现超出本段预算立即收笔推进下一段
 {deai_block}{feedback_block}
 【写作上下文（下方所有设定和前情均须遵守）】
-{writing_context}{style_block}{platform_block}
+{writing_context}{platform_block}{style_block}
 
 【本章写作要求】
 1. 【核心事件完整性】章纲所述的核心事件必须在正文中有完整的"开始→过程→结果"三阶段。
@@ -2812,8 +2797,8 @@ class PolisherAgent:
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
-{f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
-{f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
+{f"【目标平台与标签背景参考（了解读者群体偏好，个人风格档案与此有冲突时以档案为准）】\n{platform_style_text}" if platform_style_text else ""}
+{f"【全书写作风格档案（最高优先级，请严格按此风格润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference[:3000]}{'...(已截断)' if len(style_reference) > 3000 else ''}" if style_reference else ""}
 【去AI味规则（润色时必须逐条执行，这是硬性要求）】
 {deai_rules}
