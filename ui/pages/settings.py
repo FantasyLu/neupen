@@ -10,7 +10,7 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, NovelD
 from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
-from core.platform_styles import load_platform_styles
+from core.platform_styles import load_platform_styles, get_platform_slider_defaults
 from ui.components.model_selector import (
     build_model_options, render_model_card, render_all_models_panel,
     FOLLOW_LABEL, build_agent_model_options,
@@ -876,9 +876,25 @@ def page_settings():
             st.markdown("#### 第二步：确认并编辑风格特征")
             draft = st.session_state.get("style_profile_draft") or current_profile
 
+            # ── 加载当前小说的平台建议值 ──
+            db_pt = get_db()
+            novel_pt = db_pt.query(Novel).filter(Novel.id == novel_id).first()
+            db_pt.close()
+            _pt = novel_pt.target_platform or "" if novel_pt else ""
+            _tg = novel_pt.get_target_tags() if novel_pt else []
+            platform_defaults = get_platform_slider_defaults(_pt, _tg)  # dict or None
+
             if not draft:
-                st.info("完成第一步的风格分析后，这里将展示提取出的风格特征")
-            else:
+                if platform_defaults:
+                    st.info(f"📝 尚未设置风格档案。当前平台「{_pt}」的建议风格已作为默认值填入，可直接调整后保存。")
+                else:
+                    st.info("完成第一步的风格分析后，这里将展示提取出的风格特征")
+            
+            # 无草稿但有平台默认值时，用平台默认值作为 draft 展示
+            if not draft and platform_defaults:
+                draft = platform_defaults
+
+            if draft:
                 from core.agents import PolisherAgent
 
                 updated_profile = {}
@@ -891,7 +907,11 @@ def page_settings():
                 )
 
                 st.markdown("##### 风格量化维度")
-                st.caption("拖动滑条选择档位，下方会显示对应的语义说明")
+                if platform_defaults and _pt:
+                    st.caption(f"拖动滑条选择档位，下方会显示对应的语义说明。蓝色 ℹ️ 表示与「{_pt}」平台建议风格存在明显差异。")
+                else:
+                    st.caption("拖动滑条选择档位，下方会显示对应的语义说明")
+
 
                 # ── 7个量化维度（select_slider）──
                 SLIDER_FIELDS = [
@@ -905,14 +925,17 @@ def page_settings():
                 ]
                 for field, label in SLIDER_FIELDS:
                     raw_val = draft.get(field)
-                    # 向后兼容：旧格式字符串降级为默认值3
+                    # 向后兼容：旧格式字符串降级为平台建议值或3
                     if isinstance(raw_val, str):
                         st.warning(f"「{label}」为旧格式文本，已重置为中间值，建议重新分析或手动调整。")
-                        default_val = 3
+                        default_val = platform_defaults.get(field, 3) if platform_defaults else 3
                     elif isinstance(raw_val, int) and 1 <= raw_val <= 5:
                         default_val = raw_val
                     else:
-                        default_val = 3
+                        # 无值时：优先用平台建议值，否则居中
+                        default_val = platform_defaults.get(field, 3) if platform_defaults else 3
+
+                    platform_suggested = platform_defaults.get(field) if platform_defaults else None
 
                     chosen = st.select_slider(
                         label,
@@ -924,6 +947,16 @@ def page_settings():
                     semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(chosen, "")
                     if semantic:
                         st.caption(f"▸ {semantic}")
+
+                    # 冲突检测：用户当前选择与平台建议值差值 >= 2
+                    if platform_suggested is not None and abs(chosen - platform_suggested) >= 2:
+                        platform_semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(platform_suggested, "")
+                        tags_str = "、".join(_tg) if _tg else ""
+                        hint = f"「{_pt}·{tags_str}」平台建议值为 **{platform_suggested}**"
+                        if platform_semantic:
+                            hint += f"：{platform_semantic}"
+                        st.info(hint, icon="ℹ️")
+
                     updated_profile[field] = chosen
 
                     # 每个维度下的可折叠补充框

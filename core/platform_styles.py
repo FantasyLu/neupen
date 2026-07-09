@@ -125,6 +125,193 @@ DEFAULT_STYLES: dict[str, dict[str, str]] = {
 }
 
 
+# ======================================
+# 平台标签的7维度风格建议值（1-5）
+# 与 PolisherAgent._STYLE_SLIDER_MAP 维度一致：
+#   sentence_patterns / vocabulary / narrative_voice / dialogue_style /
+#   description_style / rhythm_pacing / emotion_expression
+# ======================================
+PLATFORM_SLIDER_DEFAULTS: dict[str, dict[str, dict[str, int]]] = {
+    "起点中文网": {
+        "玄幻": {
+            "sentence_patterns": 5,   # 短句为主，热血紧凑
+            "vocabulary":        3,   # 雅俗均衡
+            "narrative_voice":   3,   # 内外兼顾
+            "dialogue_style":    3,   # 对话适中
+            "description_style": 3,   # 描写适度
+            "rhythm_pacing":     5,   # 节奏极快
+            "emotion_expression":3,   # 情感适度外显
+        },
+        "都市": {
+            "sentence_patterns": 4,
+            "vocabulary":        2,   # 偏口语
+            "narrative_voice":   3,
+            "dialogue_style":    4,   # 对话较多，打脸靠对话
+            "description_style": 2,   # 描写克制
+            "rhythm_pacing":     5,
+            "emotion_expression":4,
+        },
+        "仙侠": {
+            "sentence_patterns": 2,   # 长句偏多，古雅绵密
+            "vocabulary":        5,   # 高度书面，文白杂糅
+            "narrative_voice":   2,   # 保持距离，道法自然
+            "dialogue_style":    2,   # 对话较少
+            "description_style": 4,   # 描写丰富，仙术绚烂
+            "rhythm_pacing":     3,
+            "emotion_expression":2,   # 情感含蓄
+        },
+        "末世": {
+            "sentence_patterns": 5,
+            "vocabulary":        2,
+            "narrative_voice":   3,
+            "dialogue_style":    3,
+            "description_style": 2,   # 简练直接，少抒情
+            "rhythm_pacing":     5,
+            "emotion_expression":3,
+        },
+        "科幻": {
+            "sentence_patterns": 4,
+            "vocabulary":        3,
+            "narrative_voice":   3,
+            "dialogue_style":    3,
+            "description_style": 4,   # 科技细节丰富
+            "rhythm_pacing":     4,
+            "emotion_expression":3,
+        },
+    },
+    "晋江文学城": {
+        "古代言情": {
+            "sentence_patterns": 2,   # 长句偏多，古雅绵密
+            "vocabulary":        5,   # 高度书面
+            "narrative_voice":   4,   # 贴近女主视角，内心活动多
+            "dialogue_style":    3,
+            "description_style": 4,   # 氛围渲染充分
+            "rhythm_pacing":     3,
+            "emotion_expression":4,   # 情感较为直白
+        },
+        "现代言情": {
+            "sentence_patterns": 3,
+            "vocabulary":        3,
+            "narrative_voice":   4,
+            "dialogue_style":    4,   # 对话较多
+            "description_style": 3,
+            "rhythm_pacing":     3,
+            "emotion_expression":4,
+        },
+        "玄幻仙侠": {
+            "sentence_patterns": 3,
+            "vocabulary":        4,
+            "narrative_voice":   4,
+            "dialogue_style":    3,
+            "description_style": 4,   # 世界观华美，描写丰富
+            "rhythm_pacing":     3,
+            "emotion_expression":4,
+        },
+        "悬疑灵异": {
+            "sentence_patterns": 4,
+            "vocabulary":        3,
+            "narrative_voice":   2,   # 叙述距离较远，氛围克制
+            "dialogue_style":    3,
+            "description_style": 4,   # 氛围营造靠描写
+            "rhythm_pacing":     3,   # 先慢后快
+            "emotion_expression":2,   # 克制，靠氛围带情绪
+        },
+    },
+    "番茄小说": {
+        "轻松甜宠": {
+            "sentence_patterns": 5,   # 短句为主，接地气
+            "vocabulary":        1,   # 口语化
+            "narrative_voice":   4,
+            "dialogue_style":    5,   # 大量对话，甜蜜互动
+            "description_style": 2,   # 描写克制
+            "rhythm_pacing":     5,
+            "emotion_expression":5,   # 情感外露，甜
+        },
+        "无限流": {
+            "sentence_patterns": 4,
+            "vocabulary":        2,
+            "narrative_voice":   3,
+            "dialogue_style":    3,
+            "description_style": 3,
+            "rhythm_pacing":     5,
+            "emotion_expression":3,
+        },
+        "都市异能": {
+            "sentence_patterns": 5,
+            "vocabulary":        1,
+            "narrative_voice":   3,
+            "dialogue_style":    4,
+            "description_style": 2,
+            "rhythm_pacing":     5,
+            "emotion_expression":4,
+        },
+        "丧尸": {
+            "sentence_patterns": 5,
+            "vocabulary":        1,
+            "narrative_voice":   3,
+            "dialogue_style":    3,
+            "description_style": 2,
+            "rhythm_pacing":     5,
+            "emotion_expression":3,
+        },
+        "异能": {
+            "sentence_patterns": 5,
+            "vocabulary":        1,
+            "narrative_voice":   4,
+            "dialogue_style":    4,
+            "description_style": 2,
+            "rhythm_pacing":     5,
+            "emotion_expression":4,
+        },
+    },
+    "掌阅": {
+        "武侠": {
+            "sentence_patterns": 3,
+            "vocabulary":        4,   # 文白相间
+            "narrative_voice":   2,
+            "dialogue_style":    3,
+            "description_style": 3,
+            "rhythm_pacing":     4,
+            "emotion_expression":2,
+        },
+        "历史架空": {
+            "sentence_patterns": 2,   # 长句，正式
+            "vocabulary":        5,
+            "narrative_voice":   2,
+            "dialogue_style":    2,
+            "description_style": 3,
+            "rhythm_pacing":     3,
+            "emotion_expression":2,
+        },
+    },
+}
+
+
+def get_platform_slider_defaults(platform: str, tags: list[str]) -> dict[str, int] | None:
+    """
+    返回指定平台+标签组合的7维度建议值（取多个标签时平均后四舍五入）。
+    找不到匹配时返回 None。
+    """
+    if not platform or not tags:
+        return None
+    platform_map = PLATFORM_SLIDER_DEFAULTS.get(platform)
+    if not platform_map:
+        return None
+
+    matched = [platform_map[tag] for tag in tags if tag in platform_map]
+    if not matched:
+        return None
+
+    # 多标签取平均，四舍五入到最近整数，钳制到[1,5]
+    fields = ["sentence_patterns", "vocabulary", "narrative_voice",
+              "dialogue_style", "description_style", "rhythm_pacing", "emotion_expression"]
+    result = {}
+    for f in fields:
+        avg = sum(m[f] for m in matched) / len(matched)
+        result[f] = max(1, min(5, round(avg)))
+    return result
+
+
 def load_platform_styles() -> dict[str, dict[str, str]]:
     """
     读取平台风格配置。
