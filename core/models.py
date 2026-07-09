@@ -412,7 +412,7 @@ class Chapter(Base):
             return {}
 
     def to_outline_text(self) -> str:
-        """转为章纲文字摘要"""
+        """转为章纲文字摘要（纯文本，供 LLM prompt 注入使用）"""
         parts = [f"第{self.chapter_number}章《{self.title or '未命名'}》"]
         if self.outline_core_event: parts.append(f"核心事件：{self.outline_core_event}")
         if self.outline_conflict: parts.append(f"主要冲突：{self.outline_conflict}")
@@ -432,6 +432,28 @@ class Chapter(Base):
                 pass
         if self.outline_emotion: parts.append(f"情感基调：{self.outline_emotion}")
         return "\n".join(parts)
+
+    def to_outline_markdown(self) -> str:
+        """转为章纲 Markdown（供 UI 展示使用，带分段和粗体标签）"""
+        parts = [f"**第{self.chapter_number}章《{self.title or '未命名'}》**"]
+        if self.outline_core_event: parts.append(f"**核心事件**\n\n{self.outline_core_event}")
+        if self.outline_conflict: parts.append(f"**主要冲突**\n\n{self.outline_conflict}")
+        if self.outline_characters: parts.append(f"**出场人物**\n\n{', '.join(self.get_outline_characters())}")
+        if self.outline_scene: parts.append(f"**场景**\n\n{self.outline_scene}")
+        if self.outline_foreshadowing_set:
+            try:
+                items = json.loads(self.outline_foreshadowing_set)
+                if items: parts.append(f"**埋下伏笔**\n\n{', '.join(items)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if self.outline_foreshadowing_collect:
+            try:
+                items = json.loads(self.outline_foreshadowing_collect)
+                if items: parts.append(f"**回收伏笔**\n\n{', '.join(items)}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if self.outline_emotion: parts.append(f"**情感基调**\n\n{self.outline_emotion}")
+        return "\n\n---\n\n".join(parts)
 
     def __repr__(self):
         return f"<Chapter id={self.id} chapter={self.chapter_number} title={self.title}>"

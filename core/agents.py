@@ -583,6 +583,24 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                     for u in result.get("character_updates", [])
                     if u.get("name") in existing_chars
                 ]
+            # 过滤掉 new_characters 中实际已存在的角色：
+            #   ① 精确名命中（LLM 名字与库里完全一致但仍误报）
+            #   ② 包含关系命中（别称/简称/尊称，如"老周"↔"周建国"），
+            #      要求双方名字长度均 ≥ 2，避免单字误杀
+            if isinstance(result, dict) and "new_characters" in result:
+                def _is_existing(name: str) -> bool:
+                    if name in existing_chars:
+                        return True
+                    if len(name) < 2:
+                        return False
+                    return any(
+                        len(ex) >= 2 and (name in ex or ex in name)
+                        for ex in existing_chars
+                    )
+                result["new_characters"] = [
+                    c for c in result.get("new_characters", [])
+                    if not _is_existing(c.get("name", ""))
+                ]
             # 确保新字段存在（兼容旧版 LLM 未输出的情况）
             result.setdefault("timeline_events", [])
             result.setdefault("foreshadowing_updates", [])
@@ -1330,7 +1348,98 @@ class WriterAgent:
         else:
             print(f"[WriterAgent] 第{chapter_number}章禁止句式已全部清除。", file=sys.stderr)
 
+        # ── Step 3: 冗余比喻精简 ──────────────────────────────────────────
+        fixed = self._fix_redundant_metaphors(fixed, chapter_number)
+
         return fixed
+
+    # 明确的比喻词（多字词精确匹配；单字"像"用正则避免误计"好像/像样"等）
+    _METAPHOR_WORDS_MULTI = ["如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
+    _METAPHOR_DENSITY_THRESHOLD = 3.0
+
+    def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
+        """
+        后处理：循环统计比喻词密度，超过阈值则发起一轮 LLM 精简，
+        直到密度低于阈值或达到最大轮次（5轮）为止。
+        "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
+        """
+        import re, sys
+
+        MAX_ROUNDS = 5
+
+        def _count_density(text: str) -> tuple[int, float]:
+            total = sum(text.count(w) for w in self._METAPHOR_WORDS_MULTI)
+            total += len(re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', text))
+            density = total / max(len(text), 1) * 1000
+            return total, density
+
+        total, density = _count_density(content)
+        print(
+            f"[WriterAgent] 第{chapter_number}章比喻词统计：{total} 处"
+            f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
+            file=sys.stderr,
+        )
+
+        if density < self._METAPHOR_DENSITY_THRESHOLD:
+            print(f"[WriterAgent] 第{chapter_number}章比喻密度正常，跳过精简。", file=sys.stderr)
+            return content
+
+        for round_i in range(1, MAX_ROUNDS + 1):
+            print(
+                f"[WriterAgent] 第{chapter_number}章比喻精简第 {round_i}/{MAX_ROUNDS} 轮"
+                f"（当前密度 {density:.1f}/千字）…",
+                file=sys.stderr,
+            )
+            fix_prompt = f"""以下小说正文中比喻用量偏多（全章约 {total} 处，密度 {density:.1f}/千字，目标低于 {self._METAPHOR_DENSITY_THRESHOLD}/千字），需要逐一审查并精简无效比喻。
+
+【判断标准】
+保留标准（满足其一即保留）：
+✅ 比喻激活读者难以直接感知的通感体验（如气味、质地、层次感）
+✅ 删去比喻后，该句的描述力/信息量明显下降
+
+删除标准（满足其一即删）：
+❌ 外貌/声音/动作已描述清楚，比喻只是重复说明（如"声音沙哑，像喉咙里塞了块砂纸"→直接写"声音沙哑"）
+❌ 情绪/感觉已有身体反应描写，比喻画蛇添足（如"喉咙里有什么东西堵着，像一块没咽下去的药片"→保留前半句）
+❌ 连续多个比喻描述同一事物，只保留最精准的一个，其余全删
+❌ 出现以下高频 AI 套喻，无论上下文一律删除或替换为直接描写：
+   "像砂纸"、"像石灰粉"、"像一块石头"、"像被人攥住"、"像被抽干"、"像溺水"、"像稻草"、"像刀割"、"像针扎"
+
+【操作规则】
+1. 逐句检查全文中所有含"像/如同/仿佛/宛如/好似/犹如/恰似/有如"的句子
+2. 按上述标准判断，删除无效比喻，保留有效比喻
+3. 删除比喻时直接去掉比喻部分，保留事实描写，不改写其他内容
+4. 未含比喻的句子原样保留，不做任何修改
+5. 直接输出修改后的完整正文，不加任何说明
+
+【完整正文】
+{content}"""
+
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT,
+                fix_prompt,
+                max_tokens=max(8000, min(32000, len(content) * 2)),
+                temperature=0.3,
+            )
+
+            total, density = _count_density(content)
+            print(
+                f"[WriterAgent] 第{chapter_number}章第 {round_i} 轮完成，"
+                f"密度降至 {density:.1f}/千字（剩余 {total} 处）",
+                file=sys.stderr,
+            )
+
+            if density < self._METAPHOR_DENSITY_THRESHOLD:
+                print(f"[WriterAgent] 第{chapter_number}章比喻密度已达标，提前退出。", file=sys.stderr)
+                break
+        else:
+            print(
+                f"[WriterAgent] 第{chapter_number}章已执行 {MAX_ROUNDS} 轮精简，"
+                f"当前密度 {density:.1f}/千字（未完全达标，使用当前版本）。",
+                file=sys.stderr,
+            )
+
+        return content
 
     def summarize_chapter(
         self, chapter_number: int, title: str, content: str
@@ -1657,15 +1766,12 @@ class WriterAgent:
                 platform_block = f"\n【目标平台写作风格要求】\n{_ps}"
 
         # ── System Prompt：静态规则全在这里（prompt cache 生效区域）────────────
-        # 包含：写作身份 + 工具定义 + 去AI味规则 + 风格档案
-        # 这部分内容在同一个小说的多章写作中高度复用，Anthropic 会自动缓存
+        # 工具定义移到 user prompt，兼容 DeepSeek 等对 system prompt 权重较低的模型
         agentic_system = f"""{self.SYSTEM_PROMPT}
 
 在开始写作前，你可以通过工具主动查询需要的信息。
 这让你能够像一位真正熟悉故事世界的作家：知道每个人物的过去、了解之前发生的事件、掌握已经埋下的伏笔。
 充分利用工具获取信息，然后写出一章真正连贯、有深度的内容。
-
-{TOOL_DEFINITIONS}
 
 ━━━ 写作硬性规则（每章必须遵守）━━━
 
@@ -1679,8 +1785,8 @@ class WriterAgent:
 【去AI味规则（必须遵守）】
 {deai_rules}"""
 
-        # ── User Prompt：仅包含本次任务的动态部分（极精简）────────────────────
-        # 不再重复工具定义、规则等静态内容，只给章纲和字数约束
+        # ── User Prompt：工具定义 + 本次任务（动态部分）──────────────────────────
+        # 工具定义放在 user prompt 开头，DeepSeek 等模型对 user message 遵循率更高
         # 这是每轮 Agent 对话中唯一变化的部分
         novel_info = ""
         if novel:
@@ -1688,7 +1794,9 @@ class WriterAgent:
             if novel.logline:
                 novel_info += f"\n简介：{novel.logline}"
 
-        initial_prompt = f"""{novel_info}
+        initial_prompt = f"""{TOOL_DEFINITIONS}
+
+{novel_info}
 
 【本章任务】第{chapter_number}章《{chapter.title or ""}》
 【字数要求】{word_min}~{word_max} 字（目标 {word_target} 字）⚠️ {word_max} 字是绝对上限，超出将被系统截断
@@ -2566,7 +2674,7 @@ class PolisherAgent:
 
 3. **增强文学性**：
    - 加入更多感官细节（嗅觉、触觉、听觉）
-   - 用隐喻和意象替代直白描述
+   - 比喻只在能让读者产生直接描写无法传达的新感知时才使用，不主动添加；去掉已有的无效比喻
    - 通过细节展现情感，而非直接说
    - 让对话更自然，有留白
 
@@ -2633,6 +2741,9 @@ class PolisherAgent:
             else DEFAULT_DEAI_RULES
         )
 
+        # ── 润色前：先清理原文中的无效比喻，避免润色时又大量补回 ────────────
+        content = self._fix_redundant_metaphors(content)
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
@@ -2643,29 +2754,225 @@ class PolisherAgent:
 {deai_rules}
 
 【待润色内容】
-{content[:8000]}{"...(内容过长已截断，请润色可见部分)" if len(content) > 8000 else ""}
+{content}
 
 请在保持故事情节不变的前提下，提升文学质量，输出润色后的完整正文。
 ⚠️ 再次提醒：润色后的文本中绝对不允许出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写："""
+
+        # 动态估算 max_tokens：中文字符约 1.5 token，润色后长度接近原文，按 ×2 兜底，上限 32000
+        _estimated_tokens = max(8000, min(32000, len(content) * 2))
 
         if stream_callback:
             content_parts = []
             for text_chunk in self.llm.generate_stream(
                 self.SYSTEM_PROMPT,
                 user_prompt,
-                max_tokens=12000,
+                max_tokens=_estimated_tokens,
                 temperature=self.temperature,
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
-            return "".join(content_parts)
+            result = "".join(content_parts)
         else:
-            return self.llm.generate(
+            result = self.llm.generate(
                 self.SYSTEM_PROMPT,
                 user_prompt,
-                max_tokens=12000,
+                max_tokens=_estimated_tokens,
                 temperature=self.temperature,
             )
+
+        return self._fix_forbidden_syntax(result)
+
+    def _fix_forbidden_syntax(self, content: str) -> str:
+        """
+        润色后处理：
+        1. 程序化替换滥用的破折号"——"（与 WriterAgent 同逻辑，保留合法用法）。
+        2. 检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        """
+        import re, sys
+
+        # ── Step 1: 破折号滥用程序化替换（快速、无 LLM 成本）─────────────────
+        def _fix_em_dash(text: str) -> str:
+            protected = {}
+            counter = [0]
+
+            def protect(m):
+                key = f'\x00EMDASH{counter[0]}\x00'
+                protected[key] = m.group(0)
+                counter[0] += 1
+                return key
+
+            # 保护①：引号内的话语打断（引号 + ≤10字 + ——，紧接引号结束符）
+            text = re.sub(r'(["""\u300e\u300a][^"""\u300f\u300b]{0,10}——["""\u300f\u300b])', protect, text)
+            # 保护②：拟声词/音效延长（1-4字 + ——，两侧是标点/空白/行边界）
+            text = re.sub(r'((?:^|(?<=[，。！？\n\s]))[\u4e00-\u9fff]{1,4}——(?=[，。！？\n\s]|$))', protect, text)
+
+            # 替换：循环处理所有滥用破折号 → 句号（循环至无剩余）
+            prev = None
+            while prev != text:
+                prev = text
+                text = re.sub(r'([^，。！？\n\x00]{1,})——', r'\1。', text)
+
+            # 还原保护的合法用法
+            for key, val in protected.items():
+                text = text.replace(key, val)
+            return text
+
+        original_dash_count = content.count("——")
+        if original_dash_count > 0:
+            fixed_content = _fix_em_dash(content)
+            remaining_dash_count = fixed_content.count("——")
+            replaced = original_dash_count - remaining_dash_count
+            if replaced > 0:
+                print(
+                    f"[PolisherAgent] 破折号：原 {original_dash_count} 处，"
+                    f"替换 {replaced} 处，保留合法用法 {remaining_dash_count} 处。",
+                    file=sys.stderr,
+                )
+            content = fixed_content
+
+        # ── Step 2: 对比转折句式 LLM 修正 ──────────────────────────────────
+        FORBIDDEN_PATTERNS = [
+            re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
+            re.compile(r"不是.{1,30}[，,]\s*是.{1,30}"),
+            re.compile(r"与其说.{1,30}不如说"),
+            re.compile(r"与其.{1,30}不如.{1,30}"),
+        ]
+
+        hits = []
+        for pat in FORBIDDEN_PATTERNS:
+            hits.extend(pat.findall(content))
+
+        if not hits:
+            return content  # 无违规，直接返回
+
+        hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+        print(
+            f"[PolisherAgent] 润色后检测到 {len(hits)} 处禁止句式，发起自动修正…\n{hit_lines}",
+            file=sys.stderr,
+        )
+
+        fix_prompt = f"""以下是一段润色后的小说正文，其中仍存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
+
+【检测到的违规句子】
+{hit_lines}
+
+【需要修改的完整正文】
+{content}
+
+修改规则：
+1. 将所有"不是A而是B"/"不是A，是B"/"不是A是B"/"与其说A不如说B"等句式，拆成两个独立陈述句，只写事实和动作，删去对比评论。
+2. 仅修改违规句子，其余内容原样保留，不得添加、删减、改写其他段落。
+3. 直接输出修改后的完整正文，不加任何说明或标注。"""
+
+        fixed = self.llm.generate(
+            self.SYSTEM_PROMPT,
+            fix_prompt,
+            max_tokens=12000,
+            temperature=0.3,
+        )
+
+        # 二次检测，确认是否已清除
+        remaining = []
+        for pat in FORBIDDEN_PATTERNS:
+            remaining.extend(pat.findall(fixed))
+        if remaining:
+            print(
+                f"[PolisherAgent] 修正后仍有 {len(remaining)} 处违规句式，使用修正版本（已尽力）。",
+                file=sys.stderr,
+            )
+        else:
+            print("[PolisherAgent] 禁止句式已全部清除。", file=sys.stderr)
+
+        return fixed
+
+    # 明确的比喻词（多字词精确匹配；单字"像"用正则避免误计"好像/像样"等）
+    _METAPHOR_WORDS_MULTI = ["如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+    # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
+    _METAPHOR_DENSITY_THRESHOLD = 3.0
+
+    def _fix_redundant_metaphors(self, content: str) -> str:
+        """
+        润色后处理：循环统计比喻词密度，超过阈值则发起一轮 LLM 精简，
+        直到密度低于阈值或达到最大轮次（5轮）为止。
+        "像"单独用正则匹配比喻用法（排除"好像/像样/像这样"等非比喻用法）。
+        """
+        import re, sys
+
+        MAX_ROUNDS = 5
+
+        def _count_density(text: str) -> tuple[int, float]:
+            total = sum(text.count(w) for w in self._METAPHOR_WORDS_MULTI)
+            total += len(re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', text))
+            density = total / max(len(text), 1) * 1000
+            return total, density
+
+        total, density = _count_density(content)
+        print(
+            f"[PolisherAgent] 比喻词统计：{total} 处"
+            f"（密度 {density:.1f}/千字，阈值 {self._METAPHOR_DENSITY_THRESHOLD}/千字）",
+            file=sys.stderr,
+        )
+
+        if density < self._METAPHOR_DENSITY_THRESHOLD:
+            print("[PolisherAgent] 比喻密度正常，跳过精简。", file=sys.stderr)
+            return content
+
+        for round_i in range(1, MAX_ROUNDS + 1):
+            print(
+                f"[PolisherAgent] 比喻精简第 {round_i}/{MAX_ROUNDS} 轮"
+                f"（当前密度 {density:.1f}/千字）…",
+                file=sys.stderr,
+            )
+            fix_prompt = f"""以下润色后的小说正文中比喻用量偏多（全章约 {total} 处，密度 {density:.1f}/千字，目标低于 {self._METAPHOR_DENSITY_THRESHOLD}/千字），需要逐一审查并精简无效比喻。
+
+【判断标准】
+保留标准（满足其一即保留）：
+✅ 比喻激活读者难以直接感知的通感体验（如气味、质地、层次感）
+✅ 删去比喻后，该句的描述力/信息量明显下降
+
+删除标准（满足其一即删）：
+❌ 外貌/声音/动作已描述清楚，比喻只是重复说明（如"声音沙哑，像喉咙里塞了块砂纸"→直接写"声音沙哑"）
+❌ 情绪/感觉已有身体反应描写，比喻画蛇添足（如"喉咙里有什么东西堵着，像一块没咽下去的药片"→保留前半句）
+❌ 连续多个比喻描述同一事物，只保留最精准的一个，其余全删
+❌ 出现以下高频 AI 套喻，无论上下文一律删除或替换为直接描写：
+   "像砂纸"、"像石灰粉"、"像一块石头"、"像被人攥住"、"像被抽干"、"像溺水"、"像稻草"、"像刀割"、"像针扎"
+
+【操作规则】
+1. 逐句检查全文中所有含"像/如同/仿佛/宛如/好似/犹如/恰似/有如"的句子
+2. 按上述标准判断，删除无效比喻，保留有效比喻
+3. 删除比喻时直接去掉比喻部分，保留事实描写，不改写其他内容
+4. 未含比喻的句子原样保留，不做任何修改
+5. 直接输出修改后的完整正文，不加任何说明
+
+【完整正文】
+{content}"""
+
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT,
+                fix_prompt,
+                max_tokens=max(8000, min(32000, len(content) * 2)),
+                temperature=0.3,
+            )
+
+            total, density = _count_density(content)
+            print(
+                f"[PolisherAgent] 第 {round_i} 轮完成，"
+                f"密度降至 {density:.1f}/千字（剩余 {total} 处）",
+                file=sys.stderr,
+            )
+
+            if density < self._METAPHOR_DENSITY_THRESHOLD:
+                print("[PolisherAgent] 比喻密度已达标，提前退出。", file=sys.stderr)
+                break
+        else:
+            print(
+                f"[PolisherAgent] 已执行 {MAX_ROUNDS} 轮精简，"
+                f"当前密度 {density:.1f}/千字（未完全达标，使用当前版本）。",
+                file=sys.stderr,
+            )
+
+        return content
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """

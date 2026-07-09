@@ -68,6 +68,7 @@ def render_chapter_editor(
     disabled: bool = False,
     placeholder: str = "在此书写章节内容…",
     font_size_key: str = "editor_font_size",
+    force_version: int = 0,
 ) -> None:
     """
     带行号 + 字体工具栏的章节编辑器（基于 streamlit-ace）。
@@ -75,6 +76,8 @@ def render_chapter_editor(
     streamlit-ace 原生支持行号、双向数据绑定，编辑内容直接写入
     st.session_state[text_key]，无需 postMessage 桥接。
     工具栏提供字体大小调节；格式插入暂通过 session_state 标记 + ace 命令实现。
+
+    force_version: 传入不同的整数可强制重建 ace 组件（用于外部写入新内容后刷新显示）。
     """
     # ── 字体大小工具栏 ────────────────────────────────────────────────────────
     if font_size_key not in st.session_state:
@@ -107,7 +110,7 @@ def render_chapter_editor(
         auto_update=True,         # 每次按键立即回传（非仅失焦时）
         readonly=disabled,
         height=height,
-        key=f"{text_key}_ace",
+        key=f"{text_key}_ace_v{force_version}",
     )
 
     # 将 ace 编辑器的值同步回 session_state[text_key]
