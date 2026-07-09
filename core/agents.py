@@ -1348,7 +1348,60 @@ class WriterAgent:
         else:
             print(f"[WriterAgent] 第{chapter_number}章禁止句式已全部清除。", file=sys.stderr)
 
+        # ── Step 3: 冗余比喻精简 ──────────────────────────────────────────
+        fixed = self._fix_redundant_metaphors(fixed, chapter_number)
+
         return fixed
+
+    def _fix_redundant_metaphors(self, content: str, chapter_number: int) -> str:
+        """
+        后处理：检测单句内堆叠 ≥2 个比喻词的句子，发起一次 LLM 精简。
+        判断标准：去掉比喻信息量没有损失的 → 删；保留最能产生新感知的一个。
+        """
+        import re, sys
+
+        # 比喻词列表
+        METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+        # 按中文句子边界切分（句号/感叹号/问号，含全角）
+        sentences = re.split(r"(?<=[。！？])", content)
+
+        stacked = []
+        for sent in sentences:
+            count = sum(1 for w in METAPHOR_WORDS if w in sent)
+            if count >= 2:
+                stacked.append(sent.strip())
+
+        if not stacked:
+            return content
+
+        stacked_lines = "\n".join(f"  - {s}" for s in stacked[:6])
+        print(
+            f"[WriterAgent] 第{chapter_number}章检测到 {len(stacked)} 处堆叠比喻，发起精简…\n{stacked_lines}",
+            file=sys.stderr,
+        )
+
+        fix_prompt = f"""以下小说正文中存在比喻堆叠问题（同一句话里出现多个"像/如同/仿佛/宛如"等比喻词）。
+
+【检测到的堆叠比喻句】
+{stacked_lines}
+
+【完整正文】
+{content}
+
+精简规则：
+1. 每处堆叠比喻只保留最能让读者产生新感知的一个，其余删去。
+2. 若所有比喻都是无效装饰（去掉后信息量不变），则全部删去，改为直接描写动作或感觉本身。
+3. 仅修改检测到的句子，其余内容原样保留。
+4. 直接输出修改后的完整正文，不加任何说明。"""
+
+        refined = self.llm.generate(
+            self.SYSTEM_PROMPT,
+            fix_prompt,
+            max_tokens=12000,
+            temperature=0.3,
+        )
+        print(f"[WriterAgent] 第{chapter_number}章堆叠比喻精简完成。", file=sys.stderr)
+        return refined
 
     def summarize_chapter(
         self, chapter_number: int, title: str, content: str
@@ -2787,7 +2840,57 @@ class PolisherAgent:
         else:
             print("[PolisherAgent] 禁止句式已全部清除。", file=sys.stderr)
 
+        # ── Step 3: 冗余比喻精简 ──────────────────────────────────────────
+        fixed = self._fix_redundant_metaphors(fixed)
+
         return fixed
+
+    def _fix_redundant_metaphors(self, content: str) -> str:
+        """
+        润色后处理：检测单句内堆叠 ≥2 个比喻词的句子，发起一次 LLM 精简。
+        """
+        import re, sys
+
+        METAPHOR_WORDS = ["像", "如同", "仿佛", "宛如", "好似", "犹如", "恰似", "有如"]
+        sentences = re.split(r"(?<=[。！？])", content)
+
+        stacked = []
+        for sent in sentences:
+            count = sum(1 for w in METAPHOR_WORDS if w in sent)
+            if count >= 2:
+                stacked.append(sent.strip())
+
+        if not stacked:
+            return content
+
+        stacked_lines = "\n".join(f"  - {s}" for s in stacked[:6])
+        print(
+            f"[PolisherAgent] 检测到 {len(stacked)} 处堆叠比喻，发起精简…\n{stacked_lines}",
+            file=sys.stderr,
+        )
+
+        fix_prompt = f"""以下润色后的小说正文中存在比喻堆叠问题（同一句话里出现多个"像/如同/仿佛/宛如"等比喻词）。
+
+【检测到的堆叠比喻句】
+{stacked_lines}
+
+【完整正文】
+{content}
+
+精简规则：
+1. 每处堆叠比喻只保留最能让读者产生新感知的一个，其余删去。
+2. 若所有比喻都是无效装饰（去掉后信息量不变），则全部删去，改为直接描写动作或感觉本身。
+3. 仅修改检测到的句子，其余内容原样保留。
+4. 直接输出修改后的完整正文，不加任何说明。"""
+
+        refined = self.llm.generate(
+            self.SYSTEM_PROMPT,
+            fix_prompt,
+            max_tokens=12000,
+            temperature=0.3,
+        )
+        print("[PolisherAgent] 堆叠比喻精简完成。", file=sys.stderr)
+        return refined
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """
