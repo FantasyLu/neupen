@@ -16,7 +16,6 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
-from core.platform_styles import get_platform_slider_defaults
 
 
 def _safe_json_loads(text: str) -> dict | list:
