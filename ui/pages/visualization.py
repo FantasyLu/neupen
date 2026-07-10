@@ -6,7 +6,7 @@
 import json
 
 import streamlit as st
-import streamlit.components.v1 as components
+
 
 from core.models import get_db, Character, Chapter, Foreshadowing
 from core.workflow import load_novel
@@ -209,7 +209,7 @@ def render_character_network(novel_id: int):
         unsafe_allow_html=True,
     )
 
-    components.html(html_content, height=660, scrolling=False)
+    st.html(f'<div style="height:660px;overflow:hidden;">{html_content}</div>')
     st.caption(f"共 {len(net.nodes)} 个人物，{len(net.edges)} 条关系")
 
 
