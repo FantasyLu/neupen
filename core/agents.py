@@ -1123,7 +1123,8 @@ class WriterAgent:
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
-            return "".join(content_parts)
+            raw = "".join(content_parts)
+            return self._fix_forbidden_syntax(raw, chapter_number)
 
         # ── 非流式路径：生成后检测字数，超出范围最多重试 2 次 ──────────────
         _MAX_WORD_RETRIES = 2
@@ -1300,7 +1301,8 @@ class WriterAgent:
             hits.extend(pat.findall(content))
 
         if not hits:
-            return content  # 无违规，直接返回
+            # 无对比转折违规，但仍需执行比喻密度精简
+            return self._fix_redundant_metaphors(content, chapter_number)
 
         hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
         print(
