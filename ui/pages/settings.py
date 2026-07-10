@@ -937,25 +937,30 @@ def page_settings():
 
                     platform_suggested = platform_defaults.get(field) if platform_defaults else None
 
+                    # 构建 help tooltip：各档语义 + 平台建议标记
+                    semantic_map = PolisherAgent._STYLE_SLIDER_MAP.get(field, {})
+                    help_lines = []
+                    for v in range(1, 6):
+                        s = semantic_map.get(v, "")
+                        marker = " ← 平台建议" if v == platform_suggested else ""
+                        if s:
+                            help_lines.append(f"{v}：{s}{marker}")
+                    help_text = "\n".join(help_lines) if help_lines else None
+
                     chosen = st.select_slider(
                         label,
                         options=[1, 2, 3, 4, 5],
                         value=default_val,
                         key=f"style_slider_{field}",
+                        help=help_text,
                     )
-                    # 显示当前档位的语义说明
-                    semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(chosen, "")
-                    if semantic:
-                        st.caption(f"▸ {semantic}")
-
-                    # 冲突检测：用户当前选择与平台建议值差值 >= 2
+                    # 当前档位语义说明（caption，单行简洁）+ 冲突时加警告
+                    semantic = semantic_map.get(chosen, "")
                     if platform_suggested is not None and abs(chosen - platform_suggested) >= 2:
-                        platform_semantic = PolisherAgent._STYLE_SLIDER_MAP.get(field, {}).get(platform_suggested, "")
                         tags_str = "、".join(_tg) if _tg else ""
-                        hint = f"「{_pt}·{tags_str}」平台建议值为 **{platform_suggested}**"
-                        if platform_semantic:
-                            hint += f"：{platform_semantic}"
-                        st.info(hint, icon="ℹ️")
+                        st.caption(f"▸ {semantic}  ⚠️ 平台建议 {platform_suggested}（{_pt}·{tags_str}）")
+                    elif semantic:
+                        st.caption(f"▸ {semantic}")
 
                     updated_profile[field] = chosen
 
