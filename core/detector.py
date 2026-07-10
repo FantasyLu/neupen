@@ -1314,10 +1314,10 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
             else self.run_continuity_tracker
         )
         gate_defs = [
-            ("plot_aligner",       self.run_plot_aligner,    0.25, "剧情对齐"),
-            ("character_guard",    self.run_character_guard, 0.25, "人设世界观"),
-            ("continuity_tracker", continuity_fn,            0.25, "时空状态"),
-            ("style_refiner",      self.run_style_refiner,   0.25, "文风去AI"),
+            ("plot_aligner",       self.run_plot_aligner,    0.40, "剧情对齐"),
+            ("character_guard",    self.run_character_guard, 0.20, "人设世界观"),
+            ("continuity_tracker", continuity_fn,            0.20, "时空状态"),
+            ("style_refiner",      self.run_style_refiner,   0.20, "文风去AI"),
         ]
 
         results: list[GateResult] = []
