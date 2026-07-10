@@ -27,7 +27,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
     "起点中文网": {
         "玄幻": {
             "overall_style": "男频玄幻：热血升级爽文，金手指驱动，境界体系明确",
-            "sentence_patterns": 5, "vocabulary": 3, "narrative_voice": 3,
+            "sentence_patterns": 1, "vocabulary": 3, "narrative_voice": 3,
             "dialogue_style": 3, "description_style": 3, "rhythm_pacing": 5, "emotion_expression": 3,
             "signature_techniques": "主角持续突破境界，战斗密集爽点，敌我对比鲜明",
             "polish_instructions": "①多用短句和感叹词烘托战斗氛围 ②情节推进快，矛盾直接不拖沓 ③境界/功法细节要清晰",
@@ -35,7 +35,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "都市": {
             "overall_style": "男频都市：逆袭打脸，从弱到强，财富权力身份反转",
-            "sentence_patterns": 4, "vocabulary": 2, "narrative_voice": 3,
+            "sentence_patterns": 2, "vocabulary": 2, "narrative_voice": 3,
             "dialogue_style": 4, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 4,
             "signature_techniques": "遭受轻视→亮实力→打脸，强弱对比的对话推进",
             "polish_instructions": "①对话展现主角霸气和自信 ②描写聚焦财富地位权力 ③节奏明快，高潮迭出",
@@ -43,7 +43,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "仙侠": {
             "overall_style": "男频仙侠：修仙问道，古雅典正，道法自然",
-            "sentence_patterns": 2, "vocabulary": 5, "narrative_voice": 2,
+            "sentence_patterns": 4, "vocabulary": 5, "narrative_voice": 2,
             "dialogue_style": 2, "description_style": 4, "rhythm_pacing": 3, "emotion_expression": 2,
             "signature_techniques": "因果轮回哲学意味，仙术描写恢弘绚烂，诗词意境点缀",
             "polish_instructions": "①语言古朴典雅，适当引用诗词 ②避免现代口语 ③战斗描写大气，仙术绚烂",
@@ -51,7 +51,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "末世": {
             "overall_style": "末世生存：文明崩塌，硬核设定，人性明暗交织",
-            "sentence_patterns": 5, "vocabulary": 2, "narrative_voice": 3,
+            "sentence_patterns": 1, "vocabulary": 2, "narrative_voice": 3,
             "dialogue_style": 3, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 3,
             "signature_techniques": "生存技能/异能优势，资源短缺与团体博弈，人性阴暗面刻画",
             "polish_instructions": "①语言简练直接，少抒情多动作 ②紧张氛围是核心 ③丧尸/变异兽细节要有真实感",
@@ -59,7 +59,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "科幻": {
             "overall_style": "男频科幻：星际战争机甲对决，宏大宇宙观，个人英雄主义",
-            "sentence_patterns": 4, "vocabulary": 3, "narrative_voice": 3,
+            "sentence_patterns": 2, "vocabulary": 3, "narrative_voice": 3,
             "dialogue_style": 3, "description_style": 4, "rhythm_pacing": 4, "emotion_expression": 3,
             "signature_techniques": "硬核科技细节前后一致，战略级对决有层次感",
             "polish_instructions": "①科技设定要有说服力 ②战斗描写震撼宏大 ③宇宙观宏大，彰显个人英雄主义",
@@ -69,7 +69,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
     "晋江文学城": {
         "古代言情": {
             "overall_style": "晋江古言：情感细腻，宫廷权谋，语言古雅",
-            "sentence_patterns": 2, "vocabulary": 5, "narrative_voice": 4,
+            "sentence_patterns": 4, "vocabulary": 5, "narrative_voice": 4,
             "dialogue_style": 3, "description_style": 4, "rhythm_pacing": 3, "emotion_expression": 4,
             "signature_techniques": "宫斗/家族线与感情线交织，甜宠与虐心交替",
             "polish_instructions": "①多用四字词、诗句渲染意境 ②避免现代白话 ③女主内心独白丰富，情绪层次分明",
@@ -93,7 +93,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "悬疑灵异": {
             "overall_style": "晋江悬疑：灵异探案，氛围克制，层层揭开真相",
-            "sentence_patterns": 4, "vocabulary": 3, "narrative_voice": 2,
+            "sentence_patterns": 2, "vocabulary": 3, "narrative_voice": 2,
             "dialogue_style": 3, "description_style": 4, "rhythm_pacing": 3, "emotion_expression": 2,
             "signature_techniques": "细节埋伏笔，结尾反转有说服力，恐惧与好奇并重",
             "polish_instructions": "①氛围营造是关键，节奏先慢后快 ②避免单纯猎奇，要有情感内核 ③人物有明显缺陷和成长弧",
@@ -103,7 +103,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
     "番茄小说": {
         "轻松甜宠": {
             "overall_style": "番茄甜宠：轻松明快，爽感强，男女主互动甜蜜有笑点",
-            "sentence_patterns": 5, "vocabulary": 1, "narrative_voice": 4,
+            "sentence_patterns": 1, "vocabulary": 1, "narrative_voice": 4,
             "dialogue_style": 5, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 5,
             "signature_techniques": "每章有明显情感钩子或甜点，冲突化解迅速",
             "polish_instructions": "①语言通俗易懂，短句为主，接地气 ②人物可爱讨喜 ③不拖泥带水",
@@ -111,7 +111,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "无限流": {
             "overall_style": "番茄无限流：副本任务结构，生死危机感，绝地逆袭爽感",
-            "sentence_patterns": 4, "vocabulary": 2, "narrative_voice": 3,
+            "sentence_patterns": 2, "vocabulary": 2, "narrative_voice": 3,
             "dialogue_style": 3, "description_style": 3, "rhythm_pacing": 5, "emotion_expression": 3,
             "signature_techniques": "规则设定清晰，每副本独特玩法，破解难题逆袭翻盘",
             "polish_instructions": "①生死危机感强烈 ②队友与反派刻画立体，避免工具人 ③节奏紧张，爽点密集",
@@ -119,7 +119,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "都市异能": {
             "overall_style": "番茄都市异能：扮猪吃虎，快速升级，大众爽文逻辑",
-            "sentence_patterns": 5, "vocabulary": 1, "narrative_voice": 3,
+            "sentence_patterns": 1, "vocabulary": 1, "narrative_voice": 3,
             "dialogue_style": 4, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 4,
             "signature_techniques": "被人看轻→亮实力→打脸→再上一层楼",
             "polish_instructions": "①语言平实，节奏快，面向大众 ②减少复杂政治权谋 ③每章保证爽感，强情节钩子",
@@ -127,7 +127,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "丧尸": {
             "overall_style": "番茄丧尸：末日爆发，系统金手指，极限生存无情杀伐",
-            "sentence_patterns": 5, "vocabulary": 1, "narrative_voice": 3,
+            "sentence_patterns": 1, "vocabulary": 1, "narrative_voice": 3,
             "dialogue_style": 3, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 3,
             "signature_techniques": "空间/异能囤物资，前世仇人开局清理，晶核升级体系",
             "polish_instructions": "①节奏极快，开篇即爆发 ②语言通俗大白话，多用短句 ③杜绝圣母行为，强调爽感对比",
@@ -135,7 +135,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "异能": {
             "overall_style": "番茄异能：觉醒金手指，扮猪吃虎，幽默热血",
-            "sentence_patterns": 5, "vocabulary": 1, "narrative_voice": 4,
+            "sentence_patterns": 1, "vocabulary": 1, "narrative_voice": 4,
             "dialogue_style": 4, "description_style": 2, "rhythm_pacing": 5, "emotion_expression": 4,
             "signature_techniques": "垃圾/搞笑异能+隐藏神级，反差爽感，频繁震惊路人",
             "polish_instructions": "①语言极度口语化，夹杂网络热梗 ②整体幽默风趣 ③主角皮与贱，越级反杀密集",
@@ -153,7 +153,7 @@ DEFAULT_PLATFORM_STYLES: dict[str, dict[str, dict]] = {
         },
         "历史架空": {
             "overall_style": "历史架空：朝堂权谋，帝王将相，历史厚重感",
-            "sentence_patterns": 2, "vocabulary": 5, "narrative_voice": 2,
+            "sentence_patterns": 4, "vocabulary": 5, "narrative_voice": 2,
             "dialogue_style": 2, "description_style": 3, "rhythm_pacing": 3, "emotion_expression": 2,
             "signature_techniques": "官制礼仪器物符合时代，各方势力制衡，典故增添厚重感",
             "polish_instructions": "①语言正式，间有典故 ②历史氛围浓厚，细节考究 ③主角有俯瞰全局的智识优势",
