@@ -649,7 +649,10 @@ class NovelLLM:
                         getattr(response.usage, 'prompt_tokens', 0),
                         getattr(response.usage, 'completion_tokens', 0)
                     )
-                return self._extract_openai_content(response.choices[0].message)
+                msg = response.choices[0].message
+                # 提取思维链写入 last_reasoning，与 _generate_openai 行为一致
+                self.last_reasoning = getattr(msg, "reasoning_content", None) or ""
+                return self._extract_openai_content(msg)
             except Exception as e:
                 raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
 

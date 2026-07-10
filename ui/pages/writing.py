@@ -817,6 +817,9 @@ def page_writing():
 
                     writer.close()
 
+                    # 保存写作阶段思维链，供结果展示使用
+                    st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = writer.llm.last_reasoning
+
                     # 将最终内容交给 workflow 保存（跳过写作步骤，直接保存+润色）
                     status_area.info("💾 正在保存并润色…")
                     result = workflow.write_and_review_chapter(
@@ -839,6 +842,10 @@ def page_writing():
                         progress_callback=progress_cb,
                         stream_callback=stream_cb,
                     )
+                    # 标准路径：流式时 last_reasoning 为空，非流式时有值
+                    wr = workflow.writer_agent.llm.last_reasoning
+                    if wr:
+                        st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = wr
 
                 workflow.close()
                 st.session_state.is_writing = False
@@ -868,6 +875,13 @@ def page_writing():
                                 )
                                 st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
                                 st.markdown(f"- {c.get('description', '')}")
+
+                    write_reasoning = st.session_state.get(
+                        f"write_reasoning_{novel_id}_{selected_ch_num}", ""
+                    )
+                    if write_reasoning:
+                        with st.expander("💭 写作思考过程", expanded=False):
+                            st.markdown(write_reasoning)
 
                     # 自动同步检测结果写入 session state → 用户无需手动触发
                     sync_checks = result.data.get("sync_checks", {})
