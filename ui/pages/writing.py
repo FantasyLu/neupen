@@ -467,17 +467,6 @@ def page_writing():
                                             m
                                         ),
                                     )
-                                st.write(
-                                    f"**[{idx + 1}/{len(selected_range)}] 正在生成第{ch_num}章…**"
-                                )
-                                ph = st.empty()
-                                result = workflow.write_and_review_chapter(
-                                    chapter_number=ch_num,
-                                    word_target=batch_words,
-                                    word_count_tolerance=batch_tolerance,
-                                    auto_polish=batch_polish,
-                                    progress_callback=lambda m, _p=ph: _p.caption(m),
-                                )
                                 ph.empty()
                                 if result.success:
                                     sync_checks = result.data.get("sync_checks", {})

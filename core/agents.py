@@ -1055,7 +1055,25 @@ class WriterAgent:
                 if fb
                 else ""
             )
-            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ""}》
+            # 在 prompt 最顶部提取章纲关键字段，置顶强化 LLM 注意力
+            _outline_lines = []
+            if chapter.outline_core_event:
+                _outline_lines.append(f"  ▶ 核心事件：{chapter.outline_core_event}")
+            if chapter.outline_conflict:
+                _outline_lines.append(f"  ▶ 主要冲突：{chapter.outline_conflict}")
+            if chapter.outline_scene:
+                _outline_lines.append(f"  ▶ 场景设定：{chapter.outline_scene}")
+            if chapter.outline_emotion:
+                _outline_lines.append(f"  ▶ 情感基调：{chapter.outline_emotion}")
+            _chars = chapter.get_outline_characters()
+            if _chars:
+                _outline_lines.append(f"  ▶ 出场人物：{', '.join(_chars)}")
+            _outline_mandate = (
+                "\n\n🔒 本章章纲强制执行清单（以下内容必须全部体现在正文中，缺一项即视为章纲违规）：\n"
+                + "\n".join(_outline_lines)
+                + "\n写作完成后请逐项自检：每条 ▶ 是否在正文中有对应情节？"
+            ) if _outline_lines else ""
+            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ""}》{_outline_mandate}
 
 ⛔ 本章写作前再次确认：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式。写完请自查，发现即改。
 
@@ -1758,6 +1776,24 @@ class WriterAgent:
             if novel.logline:
                 novel_info += f"\n简介：{novel.logline}"
 
+        _agentic_outline_lines = []
+        if chapter.outline_core_event:
+            _agentic_outline_lines.append(f"  ▶ 核心事件：{chapter.outline_core_event}")
+        if chapter.outline_conflict:
+            _agentic_outline_lines.append(f"  ▶ 主要冲突：{chapter.outline_conflict}")
+        if chapter.outline_scene:
+            _agentic_outline_lines.append(f"  ▶ 场景设定：{chapter.outline_scene}")
+        if chapter.outline_emotion:
+            _agentic_outline_lines.append(f"  ▶ 情感基调：{chapter.outline_emotion}")
+        _agentic_chars = chapter.get_outline_characters()
+        if _agentic_chars:
+            _agentic_outline_lines.append(f"  ▶ 出场人物：{', '.join(_agentic_chars)}")
+        _agentic_outline_mandate = (
+            "🔒 本章章纲强制执行清单（以下内容必须全部体现在正文中，缺一项即视为章纲违规）：\n"
+            + "\n".join(_agentic_outline_lines)
+            + "\n写作完成后请逐项自检：每条 ▶ 是否在正文中有对应情节？"
+        ) if _agentic_outline_lines else ""
+
         initial_prompt = f"""{TOOL_DEFINITIONS}
 
 {novel_info}
@@ -1767,7 +1803,9 @@ class WriterAgent:
 【三段式分配参考】开篇铺垫约 {word_target // 5} 字 / 核心展开约 {word_target * 3 // 5} 字 / 收束收尾约 {word_target // 5} 字 → 写完每段心算总字数，超出本段预算立即推进
 ⛔ 写作前自查：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式，写完请逐句检查，发现即改。
 
-【章纲】
+{_agentic_outline_mandate}
+
+【章纲详情（工具查询后综合参考）】
 {chapter.to_outline_text()}
 
 请先通过工具查询本章所需信息（出场人物档案、前情摘要、相关伏笔等），再输出完整正文。
