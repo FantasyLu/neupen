@@ -53,17 +53,27 @@ class _ContentPostProcessMixin:
     # 每千字比喻词出现次数超过此阈值才触发 LLM 审查
     _METAPHOR_DENSITY_THRESHOLD = 3.0
 
+    @staticmethod
+    def _strip_reasoning(text: str) -> str:
+        """剥离 LLM 返回内容中可能残留的 <!--reasoning...-->(思维链注释块)。"""
+        import re
+        return re.sub(r'<!--reasoning.*?-->\s*', '', text, flags=re.DOTALL).lstrip()
+
     def _fix_forbidden_syntax(self, content: str, chapter_number: int = 0) -> str:
         """
         后处理：
+        0. 剥离残留的 <!--reasoning...--> 思维链注释（安全带）。
         1. 程序化替换滥用的破折号"——"（保留合法用法）。
-        2. 检测"不是……而是……"等绝对禁止句式，若发现则发起一次单轮 LLM 修正。
+        2. 检测"不是……而是……"等绝对禁止句式，循环 LLM 修正直至清零或达到最大轮次。
         3. 冗余比喻精简（_fix_redundant_metaphors）。
         """
         import re, sys
 
         tag = self._agent_tag
         ch_label = f"第{chapter_number}章" if chapter_number else ""
+
+        # ── Step 0: 剥离残留思维链注释 ─────────────────────────────────────
+        content = self._strip_reasoning(content)
 
         # ── Step 1: 破折号滥用程序化替换 ──────────────────────────────────
         def _fix_em_dash(text: str) -> str:
@@ -106,7 +116,7 @@ class _ContentPostProcessMixin:
                 )
             content = fixed_content
 
-        # ── Step 2: 对比转折句式 LLM 修正 ──────────────────────────────────
+        # ── Step 2: 对比转折句式循环 LLM 修正（最多 3 轮，直至清零）──────────
         FORBIDDEN_PATTERNS = [
             re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
             re.compile(r"不是.{1,30}[，,]\s*是.{1,30}"),
@@ -114,9 +124,15 @@ class _ContentPostProcessMixin:
             re.compile(r"与其.{1,30}不如.{1,30}"),
         ]
 
-        hits = []
-        for pat in FORBIDDEN_PATTERNS:
-            hits.extend(pat.findall(content))
+        def _find_hits(text: str) -> list[str]:
+            result = []
+            for pat in FORBIDDEN_PATTERNS:
+                result.extend(pat.findall(text))
+            return result
+
+        MAX_FORBIDDEN_ROUNDS = 3
+
+        hits = _find_hits(content)
 
         if not hits:
             return self._fix_redundant_metaphors(content, chapter_number)
@@ -127,7 +143,15 @@ class _ContentPostProcessMixin:
             file=sys.stderr,
         )
 
-        fix_prompt = f"""以下是一段小说正文，其中存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
+        for round_i in range(1, MAX_FORBIDDEN_ROUNDS + 1):
+            print(
+                f"[{tag}] {ch_label}禁止句式修正第 {round_i}/{MAX_FORBIDDEN_ROUNDS} 轮"
+                f"（当前 {len(hits)} 处）…",
+                file=sys.stderr,
+            )
+
+            hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+            fix_prompt = f"""以下是一段小说正文，其中存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
 
 【检测到的违规句子】
 {hit_lines}
@@ -140,25 +164,34 @@ class _ContentPostProcessMixin:
 2. 仅修改违规句子，其余内容原样保留，不得添加、删减、改写其他段落。
 3. 直接输出修改后的完整正文，不加任何说明或标注。"""
 
-        fixed = self.llm.generate(
-            self.SYSTEM_PROMPT,
-            fix_prompt,
-            max_tokens=12000,
-            temperature=0.3,
-        )
+            content = self.llm.generate(
+                self.SYSTEM_PROMPT,
+                fix_prompt,
+                max_tokens=max(8000, min(32000, len(content) * 2)),
+                temperature=0.3,
+            )
 
-        remaining = []
-        for pat in FORBIDDEN_PATTERNS:
-            remaining.extend(pat.findall(fixed))
-        if remaining:
+            hits = _find_hits(content)
+            if not hits:
+                print(
+                    f"[{tag}] {ch_label}禁止句式已全部清除（{round_i} 轮）。",
+                    file=sys.stderr,
+                )
+                break
+            else:
+                print(
+                    f"[{tag}] {ch_label}第 {round_i} 轮完成，剩余 {len(hits)} 处。",
+                    file=sys.stderr,
+                )
+        else:
+            # for-else：循环正常跑完（未 break），说明 3 轮后仍有残余
             print(
-                f"[{tag}] 修正后仍有 {len(remaining)} 处违规句式，使用修正版本（已尽力）。",
+                f"[{tag}] {ch_label}已执行 {MAX_FORBIDDEN_ROUNDS} 轮修正，"
+                f"仍剩 {len(hits)} 处（未完全清除，使用当前版本）。",
                 file=sys.stderr,
             )
-        else:
-            print(f"[{tag}] {ch_label}禁止句式已全部清除。", file=sys.stderr)
 
-        return self._fix_redundant_metaphors(fixed, chapter_number)
+        return self._fix_redundant_metaphors(content, chapter_number)
 
     def _fix_redundant_metaphors(self, content: str, chapter_number: int = 0) -> str:
         """
@@ -2784,7 +2817,7 @@ class PolisherAgent(_ContentPostProcessMixin):
 
     def polish_chapter(
         self, content: str, style_reference: str = "", stream_callback=None
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         对章节内容进行全面润色
 
@@ -2792,6 +2825,11 @@ class PolisherAgent(_ContentPostProcessMixin):
             content: 待润色的章节内容
             style_reference: 风格参考（可以是前几章的优秀段落）
             stream_callback: 流式输出回调
+
+        Returns:
+            (polished_text, reasoning)
+            - polished_text: 润色后的完整正文
+            - reasoning:     模型思维链内容（不支持或无思维链时为空字符串）
         """
         novel = self.memory.global_mem.get_novel()
         style_desc = novel.writing_style or "" if novel else ""
@@ -2848,7 +2886,7 @@ class PolisherAgent(_ContentPostProcessMixin):
                 temperature=self.temperature,
             )
 
-        return self._fix_forbidden_syntax(result)
+        return self._fix_forbidden_syntax(result), self.llm.last_reasoning
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """

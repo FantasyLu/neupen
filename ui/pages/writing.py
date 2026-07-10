@@ -1037,6 +1037,8 @@ def page_writing():
                                     report = agent.review_chapter(
                                         selected_ch_num, current_text
                                     )
+                                    review_reasoning_key = f"review_reasoning_{novel_id}_{selected_ch_num}"
+                                    st.session_state[review_reasoning_key] = agent.detector.llm.last_reasoning
                                     agent.close()
                                     st.session_state[review_key] = report.to_dict()
                                     st.rerun()
@@ -1093,10 +1095,12 @@ def page_writing():
                             with st.spinner("润色中（含去AI味后处理，可能需要一点时间）…"):
                                 try:
                                     agent = PolisherAgent(novel_id)
-                                    polished = agent.polish_chapter(current_text)
+                                    polished, reasoning = agent.polish_chapter(current_text)
                                     agent.close()
                                     st.session_state[pending_key] = polished
                                     st.session_state[text_key] = polished
+                                    polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
+                                    st.session_state[polish_reasoning_key] = reasoning
                                     # 递增版本号，强制 ace 编辑器重建以显示新内容
                                     st.session_state[editor_version_key] = (
                                         st.session_state.get(editor_version_key, 0) + 1
@@ -1106,9 +1110,21 @@ def page_writing():
                                 except Exception as e:
                                     st.error(f"润色失败：{e}")
 
+                # 润色思维链展示
+                polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
+                polish_reasoning = st.session_state.get(polish_reasoning_key, "")
+                if polish_reasoning:
+                    with st.expander("💭 润色思考过程", expanded=False):
+                        st.markdown(polish_reasoning)
+
                 # 审核结果展示
                 manual_review = st.session_state.get(review_key)
                 if manual_review:
+                    review_reasoning_key = f"review_reasoning_{novel_id}_{selected_ch_num}"
+                    review_reasoning = st.session_state.get(review_reasoning_key, "")
+                    if review_reasoning:
+                        with st.expander("💭 AI 审核思考过程", expanded=False):
+                            st.markdown(review_reasoning)
                     st.divider()
                     score = manual_review.get("overall_score", 0)
                     passed = manual_review.get("passed", True)

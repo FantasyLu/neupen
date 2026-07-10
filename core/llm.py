@@ -444,6 +444,9 @@ class NovelLLM:
         self.provider = self.info["provider"]
         self._client = None
         self.novel_id = novel_id
+        # 最近一次非流式 generate() 的思维链内容（无则为空字符串）。
+        # 每次 generate() 调用后自动更新，供 UI 层读取展示。
+        self.last_reasoning: str = ""
 
     @property
     def client(self):
@@ -507,6 +510,7 @@ class NovelLLM:
         """记录 token 消耗到关联的小说项目数据库。"""
         if not self.novel_id:
             return
+        db = None
         try:
             from core.models import get_db, Novel
             db = get_db()
@@ -515,9 +519,11 @@ class NovelLLM:
                 novel.total_input_tokens = (novel.total_input_tokens or 0) + input_tokens
                 novel.total_output_tokens = (novel.total_output_tokens or 0) + output_tokens
                 db.commit()
-            db.close()
         except Exception:
             pass  # token 统计失败不应影响主流程
+        finally:
+            if db is not None:
+                db.close()
 
     # ── 对外统一接口 ────────────────────────────────────────────────
 
@@ -533,6 +539,19 @@ class NovelLLM:
         if self.provider == "anthropic":
             return self._generate_anthropic(system_prompt, user_prompt, max_tokens, cache_system, temperature)
         return self._generate_openai(system_prompt, user_prompt, max_tokens, temperature)
+
+    def generate_with_reasoning(self, system_prompt: str, user_prompt: str,
+                                 max_tokens: int = 8192,
+                                 temperature: float = None) -> tuple[str, str]:
+        """
+        非流式生成，同时返回正文和思维链。
+        返回: (content, reasoning)
+          - content:   模型输出的正文部分
+          - reasoning: 思维链内容（无则为空字符串）
+        内部调用 generate()，reasoning 从 self.last_reasoning 读取。
+        """
+        content = self.generate(system_prompt, user_prompt, max_tokens=max_tokens, temperature=temperature)
+        return content, self.last_reasoning
 
     def generate_stream(self, system_prompt: str, user_prompt: str,
                          max_tokens: int = 8192,
@@ -641,6 +660,8 @@ class NovelLLM:
                              temperature: float = None) -> str:
         import anthropic as _anthropic
 
+        self.last_reasoning = ""  # Anthropic 不支持思维链分离
+
         # 对长系统提示词启用 prompt caching
         if cache_system and len(system_prompt) > 1000:
             system_content = [{
@@ -717,17 +738,16 @@ class NovelLLM:
         """
         从 OpenAI-compatible 响应 message 中提取正文。
         兼容 DeepSeek-R1 的 reasoning_content 字段：
-        - 若存在 reasoning_content，将思维链以折叠注释形式前置于正文，
-          便于调试时查看推理过程，同时不影响后续 JSON 解析（注释在 JSON 之前）。
+        - reasoning_content（思维链）静默丢弃，与流式模式行为一致，
+          避免思维链混入小说正文或 JSON 结果。
         - 若 content 为空但 reasoning_content 非空（极少数情况），
           直接返回 reasoning_content 作为兜底。
         """
         content = getattr(message, "content", None) or ""
         reasoning = getattr(message, "reasoning_content", None) or ""
-        if reasoning and content:
-            # 思维链以 XML 注释块形式前置，不影响后续 JSON 提取
-            return f"<!--reasoning\n{reasoning}\n-->\n{content}"
-        if reasoning and not content:
+        if content:
+            return content
+        if reasoning:
             return reasoning
         return content
 
@@ -752,7 +772,10 @@ class NovelLLM:
                         getattr(response.usage, 'prompt_tokens', 0),
                         getattr(response.usage, 'completion_tokens', 0)
                     )
-                return self._extract_openai_content(response.choices[0].message)
+                msg = response.choices[0].message
+                # 提取思维链并存入 last_reasoning，供 UI 层读取
+                self.last_reasoning = getattr(msg, "reasoning_content", None) or ""
+                return self._extract_openai_content(msg)
             except Exception as e:
                 err = str(e)
                 if "401" in err or "authentication" in err.lower() or "invalid api key" in err.lower():
