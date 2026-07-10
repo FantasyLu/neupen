@@ -630,7 +630,7 @@ class NovelLLM:
                         getattr(response.usage, 'prompt_tokens', 0),
                         getattr(response.usage, 'completion_tokens', 0)
                     )
-                return response.choices[0].message.content or ""
+                return self._extract_openai_content(response.choices[0].message)
             except Exception as e:
                 raise RuntimeError(f"{self.info['display_name']} API 调用失败：{e}")
 
@@ -712,6 +712,25 @@ class NovelLLM:
 
     # ── OpenAI-compatible 后端 ──────────────────────────────────────
 
+    @staticmethod
+    def _extract_openai_content(message) -> str:
+        """
+        从 OpenAI-compatible 响应 message 中提取正文。
+        兼容 DeepSeek-R1 的 reasoning_content 字段：
+        - 若存在 reasoning_content，将思维链以折叠注释形式前置于正文，
+          便于调试时查看推理过程，同时不影响后续 JSON 解析（注释在 JSON 之前）。
+        - 若 content 为空但 reasoning_content 非空（极少数情况），
+          直接返回 reasoning_content 作为兜底。
+        """
+        content = getattr(message, "content", None) or ""
+        reasoning = getattr(message, "reasoning_content", None) or ""
+        if reasoning and content:
+            # 思维链以 XML 注释块形式前置，不影响后续 JSON 提取
+            return f"<!--reasoning\n{reasoning}\n-->\n{content}"
+        if reasoning and not content:
+            return reasoning
+        return content
+
     def _generate_openai(self, system_prompt: str, user_prompt: str,
                           max_tokens: int, temperature: float = None) -> str:
         kwargs = dict(
@@ -733,7 +752,7 @@ class NovelLLM:
                         getattr(response.usage, 'prompt_tokens', 0),
                         getattr(response.usage, 'completion_tokens', 0)
                     )
-                return response.choices[0].message.content or ""
+                return self._extract_openai_content(response.choices[0].message)
             except Exception as e:
                 err = str(e)
                 if "401" in err or "authentication" in err.lower() or "invalid api key" in err.lower():
@@ -757,6 +776,8 @@ class NovelLLM:
                         max_tokens: int, temperature: float = None) -> Generator[str, None, None]:
         """
         流式生成：对首次建立连接阶段加重试；yield 开始后不重试（避免重复输出）。
+        兼容 DeepSeek-R1：reasoning_content chunk 静默收集，不 yield 给调用方
+        （避免思维链混入小说正文），仅将最终 content 部分流出。
         """
         kwargs = dict(
             model=self.model_id,
@@ -775,5 +796,11 @@ class NovelLLM:
 
         stream = _with_retry(_open_stream, label=f"OpenAI-stream/{self.model_id}")
         for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            # reasoning_content：DeepSeek-R1 思维链字段，静默跳过不输出
+            if getattr(delta, "reasoning_content", None):
+                continue
+            if delta.content:
+                yield delta.content
