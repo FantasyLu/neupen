@@ -16,7 +16,6 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
-from core.platform_styles import get_style_description
 
 
 def _safe_json_loads(text: str) -> dict | list:
@@ -234,7 +233,8 @@ class OutlineAgent:
                 chapter_keywords.add(tok)
 
         global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=chapter_keywords if chapter_keywords else None
+            chapter_keywords=chapter_keywords if chapter_keywords else None,
+            active_chars=chapter.get_outline_characters() or None,
         )
 
         user_prompt = f"""当前小说上下文：
@@ -366,8 +366,20 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             if len(tok) >= 2:
                 desc_keywords.add(tok)
 
+        # 从 start~end 范围内已有章纲提取出场人物，过滤人物档案
+        all_char_names = {c.name for c in self.memory.global_mem.get_all_characters()}
+        range_active_chars: set[str] = set()
+        for ch_num in range(start, end + 1):
+            ch = self.memory.global_mem.get_chapter_outline(ch_num)
+            if ch:
+                range_active_chars.update(ch.get_outline_characters())
+        # 同时把描述中提到的人物名也纳入（用于尚无章纲的情况）
+        range_active_chars.update(desc_keywords & all_char_names)
+        active_chars_filter = range_active_chars if range_active_chars else None
+
         global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=desc_keywords if desc_keywords else None
+            chapter_keywords=desc_keywords if desc_keywords else None,
+            active_chars=active_chars_filter,
         )
 
         ch_count = end - start + 1
@@ -467,33 +479,13 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         )
         existing_chars = [c.name for c in all_chars]
 
-        # 构建现有人物状态摘要，供 AI 对比
-        char_state_lines = []
-        for c in all_chars:
-            parts = [f"【{c.name}】"]
-            if c.current_state:
-                parts.append(f"当前状态：{c.current_state[:120]}")
-            if c.growth_arc:
-                parts.append(f"成长弧光：{c.growth_arc[:80]}")
-            if c.abilities:
-                parts.append(f"能力：{c.abilities[:80]}")
-            rels = c.get_relationships()
-            if rels:
-                rel_strs = [f"{k}:{v}" for k, v in rels.items()]
-                parts.append(f"人际关系：{', '.join(rel_strs)[:120]}")
-            char_state_lines.append("  ".join(parts))
-        char_state_summary = "\n".join(char_state_lines) or "（无）"
-
         user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要同步记录的内容。
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
 
-【现有大纲和设定摘要】
+【现有大纲、设定与人物档案】
 {global_ctx}
-
-【已有人物及当前状态】
-{char_state_summary}
 
 ## 内容归属规则（必须严格遵守）
 
@@ -1006,27 +998,12 @@ class WriterAgent:
             style_ref_text = (novel.style_reference_text or "").strip()
 
             if style_profile:
-                _label_map = {
-                    "overall_style": "总体风格定位",
-                    "sentence_patterns": "句式特征",
-                    "vocabulary": "词汇风格",
-                    "narrative_voice": "叙述视角风格",
-                    "dialogue_style": "对话特点",
-                    "description_style": "描写特点",
-                    "rhythm_pacing": "节奏与节拍",
-                    "emotion_expression": "情感表达方式",
-                    "signature_techniques": "标志性手法",
-                    "polish_instructions": "写作核心指令",
-                }
-                lines = [
-                    f"- {lbl}：{style_profile[k]}"
-                    for k, lbl in _label_map.items()
-                    if style_profile.get(k)
-                ]
-                if lines:
+                # 复用 PolisherAgent._format_style_profile() 保证 int 维度→语义文字转换一致
+                _formatted = PolisherAgent.__new__(PolisherAgent)._format_style_profile(style_profile)
+                if _formatted:
                     style_block = (
-                        "\n【全书写作风格档案（请严格遵循以保持前后风格一致）】\n"
-                        + "\n".join(lines)
+                        "\n【全书写作风格档案（请严格遵循以保持前后风格一致，这是最高优先级的风格指令）】\n"
+                        + _formatted
                     )
                 # 有 style_profile 时不再额外注入原文片段（结构化档案已涵盖风格信息）
             elif style_ref_text:
@@ -1040,15 +1017,6 @@ class WriterAgent:
                 )
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
-
-        # 平台/标签风格块
-        platform_block = ""
-        if novel:
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            _ps = get_style_description(_pt, _tg)
-            if _ps:
-                platform_block = f"\n【目标平台写作风格要求（请严格按照此平台和标签的读者偏好来写作）】\n{_ps}\n"
 
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
@@ -1080,7 +1048,25 @@ class WriterAgent:
                 if fb
                 else ""
             )
-            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ""}》
+            # 在 prompt 最顶部提取章纲关键字段，置顶强化 LLM 注意力
+            _outline_lines = []
+            if chapter.outline_core_event:
+                _outline_lines.append(f"  ▶ 核心事件：{chapter.outline_core_event}")
+            if chapter.outline_conflict:
+                _outline_lines.append(f"  ▶ 主要冲突：{chapter.outline_conflict}")
+            if chapter.outline_scene:
+                _outline_lines.append(f"  ▶ 场景设定：{chapter.outline_scene}")
+            if chapter.outline_emotion:
+                _outline_lines.append(f"  ▶ 情感基调：{chapter.outline_emotion}")
+            _chars = chapter.get_outline_characters()
+            if _chars:
+                _outline_lines.append(f"  ▶ 出场人物：{', '.join(_chars)}")
+            _outline_mandate = (
+                "\n\n🔒 本章章纲强制执行清单（以下内容必须全部体现在正文中，缺一项即视为章纲违规）：\n"
+                + "\n".join(_outline_lines)
+                + "\n写作完成后请逐项自检：每条 ▶ 是否在正文中有对应情节？"
+            ) if _outline_lines else ""
+            return f"""📌 本章任务：第{chapter_number}章《{chapter.title or ""}》{_outline_mandate}
 
 ⛔ 本章写作前再次确认：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式。写完请自查，发现即改。
 
@@ -1097,7 +1083,7 @@ class WriterAgent:
 → 写完每段请心算当前总字数，发现超出本段预算立即收笔推进下一段
 {deai_block}{feedback_block}
 【写作上下文（下方所有设定和前情均须遵守）】
-{writing_context}{style_block}{platform_block}
+{writing_context}{style_block}
 
 【本章写作要求】
 1. 【核心事件完整性】章纲所述的核心事件必须在正文中有完整的"开始→过程→结果"三阶段。
@@ -1130,7 +1116,8 @@ class WriterAgent:
             ):
                 content_parts.append(text_chunk)
                 stream_callback(text_chunk)
-            return "".join(content_parts)
+            raw = "".join(content_parts)
+            return self._fix_forbidden_syntax(raw, chapter_number)
 
         # ── 非流式路径：生成后检测字数，超出范围最多重试 2 次 ──────────────
         _MAX_WORD_RETRIES = 2
@@ -1307,7 +1294,8 @@ class WriterAgent:
             hits.extend(pat.findall(content))
 
         if not hits:
-            return content  # 无违规，直接返回
+            # 无对比转折违规，但仍需执行比喻密度精简
+            return self._fix_redundant_metaphors(content, chapter_number)
 
         hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
         print(
@@ -1754,17 +1742,6 @@ class WriterAgent:
             elif style_desc:
                 style_block = f"\n【写作风格要求】\n{style_desc}"
 
-        # 平台风格
-        platform_block = ""
-        if novel:
-            from core.platform_styles import get_style_description
-
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            _ps = get_style_description(_pt, _tg)
-            if _ps:
-                platform_block = f"\n【目标平台写作风格要求】\n{_ps}"
-
         # ── System Prompt：静态规则全在这里（prompt cache 生效区域）────────────
         # 工具定义移到 user prompt，兼容 DeepSeek 等对 system prompt 权重较低的模型
         agentic_system = f"""{self.SYSTEM_PROMPT}
@@ -1780,7 +1757,7 @@ class WriterAgent:
 2. 人设一致性：每个人物言行必须符合其档案设定，能力边界不得超出设定
 3. 叙事连贯：开头自然衔接上章结尾的时间/地点/状态，场景转换要有物理过渡
 4. 章节收束：结尾需包含悬念或情感落点，禁止说书人式总结
-5. 禁止分节：不得在正文中使用任何小节标题或分节符号（"第一节""（一）""1.""—·—"等）；多场景之间用空行自然过渡{style_block}{platform_block}
+5. 禁止分节：不得在正文中使用任何小节标题或分节符号（"第一节""（一）""1.""—·—"等）；多场景之间用空行自然过渡{style_block}
 
 【去AI味规则（必须遵守）】
 {deai_rules}"""
@@ -1794,6 +1771,24 @@ class WriterAgent:
             if novel.logline:
                 novel_info += f"\n简介：{novel.logline}"
 
+        _agentic_outline_lines = []
+        if chapter.outline_core_event:
+            _agentic_outline_lines.append(f"  ▶ 核心事件：{chapter.outline_core_event}")
+        if chapter.outline_conflict:
+            _agentic_outline_lines.append(f"  ▶ 主要冲突：{chapter.outline_conflict}")
+        if chapter.outline_scene:
+            _agentic_outline_lines.append(f"  ▶ 场景设定：{chapter.outline_scene}")
+        if chapter.outline_emotion:
+            _agentic_outline_lines.append(f"  ▶ 情感基调：{chapter.outline_emotion}")
+        _agentic_chars = chapter.get_outline_characters()
+        if _agentic_chars:
+            _agentic_outline_lines.append(f"  ▶ 出场人物：{', '.join(_agentic_chars)}")
+        _agentic_outline_mandate = (
+            "🔒 本章章纲强制执行清单（以下内容必须全部体现在正文中，缺一项即视为章纲违规）：\n"
+            + "\n".join(_agentic_outline_lines)
+            + "\n写作完成后请逐项自检：每条 ▶ 是否在正文中有对应情节？"
+        ) if _agentic_outline_lines else ""
+
         initial_prompt = f"""{TOOL_DEFINITIONS}
 
 {novel_info}
@@ -1803,7 +1798,9 @@ class WriterAgent:
 【三段式分配参考】开篇铺垫约 {word_target // 5} 字 / 核心展开约 {word_target * 3 // 5} 字 / 收束收尾约 {word_target // 5} 字 → 写完每段心算总字数，超出本段预算立即推进
 ⛔ 写作前自查：绝对禁止"不是……而是……""不是A，是B""与其说……不如说……"等对比转折句式，写完请逐句检查，发现即改。
 
-【章纲】
+{_agentic_outline_mandate}
+
+【章纲详情（工具查询后综合参考）】
 {chapter.to_outline_text()}
 
 请先通过工具查询本章所需信息（出场人物档案、前情摘要、相关伏笔等），再输出完整正文。
@@ -2698,6 +2695,71 @@ class PolisherAgent:
 
 输出格式：合法的JSON，不含其他文字。"""
 
+    # 7个可量化风格维度的1-5档语义映射表
+    # key: 风格字段名，value: {1..5: 语义描述}
+    _STYLE_SLIDER_MAP = {
+        "sentence_patterns": {
+            1: "以短句和碎句为主，节奏急促、跳跃、克制",
+            2: "短句偏多，间以长句，节奏较为明快",
+            3: "长短句均衡交替，节奏张弛有度",
+            4: "长句偏多，偶有短句点缀，整体感觉从容不迫",
+            5: "以长句为主，句式绵密舒展，从句嵌套，节奏沉稳流畅",
+        },
+        "vocabulary": {
+            1: "口语化、生活化，大量俚语和日常用词，亲切直白",
+            2: "偏口语，措辞自然随意，略带文学感",
+            3: "雅俗均衡，日常用词为主，适度点缀文学词汇",
+            4: "偏书面，用词精炼考究，文学质感明显",
+            5: "高度书面化，措辞典雅，文白杂糅，带古典文学气息",
+        },
+        "narrative_voice": {
+            1: "叙述者高度克制，冷眼旁观，几乎不透露人物内心，只呈现行为和现象",
+            2: "保持一定距离，偶尔贴近人物视角，内心活动较少",
+            3: "叙述距离适中，内外兼顾，既有观察也有内心",
+            4: "贴近人物视角，大量内心流动，沉浸感强",
+            5: "完全沉浸式，几乎等同于第一人称内心独白，意识流倾向明显",
+        },
+        "dialogue_style": {
+            1: "对话极少，叙述为主，人物沉默多，言语克制",
+            2: "对话较少，以场景叙述为主，对话简短有力",
+            3: "叙述与对话均衡，对话推进情节",
+            4: "对话较多，人物交流频繁，靠对话展现关系和性格",
+            5: "大量对话，快速来回，接近剧本风格，叙述段落简短",
+        },
+        "description_style": {
+            1: "描写极简，不做渲染，只交代必要信息，留白极多",
+            2: "描写克制，仅在关键处点染，感官细节有限",
+            3: "描写适度，场景有质感，感官细节有选择地出现",
+            4: "描写较丰富，感官细节层叠，环境氛围渲染充分",
+            5: "描写浓密，大量感官细节堆叠，意象丰富，浸入感强",
+        },
+        "rhythm_pacing": {
+            1: "节奏极慢，大量留白和静场，克制平静，近似散文",
+            2: "节奏偏慢，从容不迫，情节推进缓和",
+            3: "节奏适中，张弛兼顾，高潮处加速，平静处收缓",
+            4: "节奏偏快，情节推进迅速，悬念密集，动作性强",
+            5: "节奏极快，场景切换频繁，事件密集，读者几乎没有喘息空间",
+        },
+        "emotion_expression": {
+            1: "情感高度克制，从不直接表达，全靠动作/物件/环境暗示，留白给读者",
+            2: "情感含蓄，偶有内心活动，但不做渲染",
+            3: "情感适度外显，内心描写与行为描写均衡",
+            4: "情感较为直白，内心活动较多，情绪渲染明显",
+            5: "情感浓烈直白，大量内心独白，情绪高度外露",
+        },
+    }
+
+    # 量化维度的中文标签（UI 展示用）
+    _STYLE_SLIDER_LABELS = {
+        "sentence_patterns": "句式长短",
+        "vocabulary":        "词汇雅俗",
+        "narrative_voice":   "叙述距离",
+        "dialogue_style":    "对话密度",
+        "description_style": "描写密度",
+        "rhythm_pacing":     "叙事节奏",
+        "emotion_expression":"情感表达方式",
+    }
+
     def __init__(self, novel_id: int, model_id: str = None, temperature: float = None):
         self.novel_id = novel_id
         self.temperature = temperature
@@ -2725,13 +2787,6 @@ class PolisherAgent:
             self._format_style_profile(style_profile) if style_profile else ""
         )
 
-        # 平台/标签风格
-        platform_style_text = ""
-        if novel:
-            _pt = novel.target_platform or ""
-            _tg = novel.get_target_tags()
-            platform_style_text = get_style_description(_pt, _tg)
-
         # 动态注入去AI味规则（读用户配置，fallback DEFAULT_DEAI_RULES）
         from core.config import DEFAULT_DEAI_RULES
 
@@ -2747,8 +2802,7 @@ class PolisherAgent:
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
-{f"【目标平台写作风格（润色时需符合此平台和标签的读者审美）】\n{platform_style_text}" if platform_style_text else ""}
-{f"【参考作者风格档案（请模仿以下风格特征进行润色）】\n{style_profile_text}" if style_profile_text else ""}
+{f"【全书写作风格档案（请严格按此风格润色）】\n{style_profile_text}" if style_profile_text else ""}
 {f"【风格参考样例】\n{style_reference[:3000]}{'...(已截断)' if len(style_reference) > 3000 else ''}" if style_reference else ""}
 【去AI味规则（润色时必须逐条执行，这是硬性要求）】
 {deai_rules}
@@ -3006,54 +3060,116 @@ class PolisherAgent:
         )
 
     def _format_style_profile(self, profile: dict) -> str:
-        """将风格档案转为多行文本，供注入润色提示词"""
+        """将风格档案转为多行文本，供注入润色提示词。
+
+        量化维度（7个）：存储 int 1-5，查 _STYLE_SLIDER_MAP 取语义文字；
+        若旧数据为 str，直接拼原文（向后兼容）。
+        文本维度（overall_style / signature_techniques / polish_instructions / custom_notes）：直接拼。
+        """
         if not profile:
             return ""
-        field_labels = [
-            ("overall_style", "总体风格"),
-            ("sentence_patterns", "句式特征"),
-            ("vocabulary", "词汇风格"),
-            ("narrative_voice", "叙述风格"),
-            ("dialogue_style", "对话风格"),
-            ("description_style", "描写特点"),
-            ("rhythm_pacing", "节奏特征"),
-            ("emotion_expression", "情感表达"),
-            ("signature_techniques", "标志性手法"),
-            ("polish_instructions", "润色指令"),
-        ]
         lines = []
-        for field, label in field_labels:
-            if profile.get(field):
-                lines.append(f"- {label}：{profile[field]}")
+
+        # 总体风格（文本）
+        if profile.get("overall_style"):
+            lines.append(f"- 总体风格：{profile['overall_style']}")
+
+        # 7个量化维度
+        slider_label_map = {
+            "sentence_patterns": "句式长短",
+            "vocabulary":        "词汇雅俗",
+            "narrative_voice":   "叙述距离",
+            "dialogue_style":    "对话密度",
+            "description_style": "描写密度",
+            "rhythm_pacing":     "叙事节奏",
+            "emotion_expression":"情感表达方式",
+        }
+        for field, label in slider_label_map.items():
+            val = profile.get(field)
+            if val is None:
+                continue
+            if isinstance(val, int) and val in self._STYLE_SLIDER_MAP.get(field, {}):
+                semantic = self._STYLE_SLIDER_MAP[field][val]
+                note = profile.get(f"{field}_note", "").strip()
+                line = f"- {label}：{semantic}"
+                if note:
+                    line += f"（补充：{note}）"
+                lines.append(line)
+            elif isinstance(val, str) and val.strip():
+                # 旧格式字符串，直接拼（_note 字段对旧格式同样生效）
+                note = profile.get(f"{field}_note", "").strip()
+                line = f"- {label}：{val}"
+                if note:
+                    line += f"（补充：{note}）"
+                lines.append(line)
+
+        # 标志性手法（文本）
+        if profile.get("signature_techniques"):
+            lines.append(f"- 标志性手法：{profile['signature_techniques']}")
+
+        # 润色指令（文本）
+        if profile.get("polish_instructions"):
+            lines.append(f"- 润色指令：{profile['polish_instructions']}")
+
+        # 补充说明（文本）
+        if profile.get("custom_notes"):
+            lines.append(f"- 补充说明：{profile['custom_notes']}")
+
         return "\n".join(lines)
 
     def analyze_style(self, reference_text: str) -> dict:
         """
-        分析参考文本的写作风格，返回结构化风格档案（10个维度）
+        分析参考文本的写作风格，返回结构化风格档案。
+
+        7个量化维度返回 1-5 整数，其余返回文本字符串。
 
         Args:
             reference_text: 喜欢的作家作品片段（建议500-3000字）
 
         Returns:
-            包含10个风格维度的dict，关键字段为 polish_instructions
+            包含风格维度的dict：
+            - 量化维度（int 1-5）：sentence_patterns / vocabulary / narrative_voice /
+              dialogue_style / description_style / rhythm_pacing / emotion_expression
+            - 文本维度（str）：overall_style / signature_techniques / polish_instructions
+            - 补充（str，默认空）：custom_notes
         """
-        user_prompt = f"""请分析以下参考文本的写作风格，提取10个维度的特征：
+        slider_guide = ""
+        for field, label in self._STYLE_SLIDER_LABELS.items():
+            levels = self._STYLE_SLIDER_MAP[field]
+            desc_lines = "；".join(f"{k}={v}" for k, v in levels.items())
+            slider_guide += f"  - {label}（{field}）：{desc_lines}\n"
+
+        user_prompt = f"""请分析以下参考文本的写作风格，返回JSON风格档案。
 
 【参考文本】
 {reference_text[:8000]}{"...(已截断)" if len(reference_text) > 8000 else ""}
 
-请输出JSON格式的风格档案，每个字段的值必须具体、可操作：
+【输出要求】
+请严格按照以下JSON结构输出，字段说明如下：
+
+1. overall_style（str）：总体风格定位，一句话概括，如"张爱玲式的冷峻市井现实主义"
+
+2. 以下7个维度请返回1-5的整数，对应语义如下：
+{slider_guide}
+3. signature_techniques（str）：该作者标志性手法，具体描述反复出现的意象、技巧或表达方式
+
+4. polish_instructions（str）：重要！用行动导向语言列出5-8条具体润色指令，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写
+
+5. custom_notes（str）：留空字符串""
+
+JSON结构：
 {{
-  "overall_style": "总体风格定位（一句话概括，如：张爱玲式的冷峻市井现实主义）",
-  "sentence_patterns": "句式特征（长短句比例、句式结构偏好、标点使用习惯等，需举例）",
-  "vocabulary": "词汇风格（雅俗程度、惯用词汇类型、文白比例等）",
-  "narrative_voice": "叙述风格（叙述距离近/远、视角特点、信息呈现方式如暗示/直述）",
-  "dialogue_style": "对话特点（频率高低、对话长短偏好、口语化程度、标点习惯）",
-  "description_style": "描写特点（感官偏好如视听嗅触、比喻手法、景物描写密度）",
-  "rhythm_pacing": "节奏特征（段落疏密规律、快慢切换方式、如何制造呼吸感）",
-  "emotion_expression": "情感表达（直抒胸臆 vs 含蓄克制的程度、情绪调动手法）",
-  "signature_techniques": "标志性手法（该作者特有的技巧、反复出现的意象或表达方式）",
-  "polish_instructions": "润色指令（重要！请用行动导向语言列出5-8条具体指令，告诉润色者该做什么，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写 ③对话后不加心理解释，让行为说话 ④比喻要接地气，取材日常器物而非自然意象）"
+  "overall_style": "...",
+  "sentence_patterns": 3,
+  "vocabulary": 3,
+  "narrative_voice": 3,
+  "dialogue_style": 3,
+  "description_style": 3,
+  "rhythm_pacing": 3,
+  "emotion_expression": 3,
+  "signature_techniques": "...",
+  "polish_instructions": "...",
+  "custom_notes": ""
 }}"""
 
         response = self.llm.generate(
@@ -3066,7 +3182,16 @@ class PolisherAgent:
         json_start = response.find("{")
         json_end = response.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            return _safe_json_loads(response[json_start:json_end])
+            raw = _safe_json_loads(response[json_start:json_end])
+            # 确保量化维度为 int，容错字符串数字
+            for field in self._STYLE_SLIDER_MAP:
+                if field in raw:
+                    try:
+                        raw[field] = int(raw[field])
+                        raw[field] = max(1, min(5, raw[field]))  # 钳制到1-5
+                    except (ValueError, TypeError):
+                        pass  # 保留原值，UI 层降级处理
+            return raw
         raise ValueError(f"风格分析返回格式错误：{response[:400]}")
 
     def close(self):

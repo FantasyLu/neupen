@@ -843,9 +843,10 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
     def run_plot_aligner(self, chapter_number: int, content: str) -> GateResult:
         """
         Reviewer-A: 剧情对齐官 (PlotAligner)
-        职责：章纲核心事件是否发生、关键冲突是否写到、章节结局是否符合章纲。
+        职责：章纲核心事件是否发生、关键冲突是否写到、章节结局是否符合章纲、
+              情感基调/出场人物/伏笔埋收是否落实。
         Context：章纲文本 + 前3章摘要（无人物档案、无世界观）。
-        熔断阈值：8.5
+        熔断阈值：8.0
         """
         chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
         if not chapter:
@@ -864,16 +865,31 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
             for ch in recent[-3:]
         ]) if recent else "(无)"
 
-        system_prompt = """你是一位严格的剧情对齐官（PlotAligner）。
-你的唯一职责：对照章纲，检查正文是否完整呈现了本章规定的核心事件、冲突和结局。
-不要评价文笔、人设、世界观，只看剧情结构是否对齐章纲。
+        # 补充章纲中的伏笔字段，拼入 user_prompt 供 LLM 逐条核查
+        fs_set = chapter.get_outline_foreshadowing_set()
+        fs_collect = chapter.get_outline_foreshadowing_collect()
+        fs_set_text = "、".join(fs_set) if fs_set else "（无）"
+        fs_collect_text = "、".join(fs_collect) if fs_collect else "（无）"
+        chars = chapter.get_outline_characters()
+        chars_text = "、".join(chars) if chars else "（无）"
 
-评分采用 10 分制硬性扣分标尺：
-- 满分 10 分
-- 章纲核心事件未发生或严重缺失：一处扣 3.0 分
+        system_prompt = """你是一位严格的剧情对齐官（PlotAligner）。
+你的唯一职责：对照章纲，逐条检查正文是否完整落实了本章规定的所有要素。
+不要评价文笔，只看章纲规定的内容是否在正文中真实呈现。
+
+评分采用 10 分制硬性扣分标尺（各项独立扣分，可叠加，最低 0 分）：
+
+【第一组：剧情骨架（权重高，优先检查）】
+- 章纲核心事件未发生或严重缺失（无完整起因→过程→结果）：扣 3.0 分
 - 章纲规定的核心冲突未写出：扣 2.0 分
-- 章纲结局/转折与正文不符：扣 2.5 分
+- 章纲结局/转折与正文不符：扣 2.0 分
 - 新增与章纲无关的重大剧情（跑偏）：扣 1.5 分
+
+【第二组：细节落实（逐条核对 user_prompt 中的具名列表）】
+- 章纲规定的情感基调在正文中完全缺失或严重偏离：扣 1.0 分
+- 章纲规定的出场人物有明显缺席（核心人物未出现）：扣 1.0 分
+- 章纲要求本章埋下的伏笔未在正文中植入：每处扣 0.5 分（上限 1.0 分）
+- 章纲要求本章回收的伏笔未在正文中兑现：每处扣 0.5 分（上限 1.0 分）
 
 输出严格 JSON，不含其他文字：
 {
@@ -882,23 +898,31 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
   "breakdown": {
     "core_event_coverage": 10.0,
     "conflict_coverage": 8.0,
-    "ending_alignment": 9.0
+    "ending_alignment": 9.0,
+    "emotion_alignment": 10.0,
+    "character_presence": 10.0,
+    "foreshadowing_set": 10.0,
+    "foreshadowing_collect": 10.0
   },
   "action": "PASS",
-  "feedback": "精确说明扣分原因和具体修改方案。PASS 时也要指出瑕疵。"
+  "feedback": "按两组顺序逐项说明：① 剧情骨架各项结论，② 细节落实各项结论。有扣分必须写明具体缺失内容和修改方案。"
 }
 action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
 
         user_prompt = f"""【本章章纲】
 {outline_text}
 
+【本章应埋下的伏笔】{fs_set_text}
+【本章应回收的伏笔】{fs_collect_text}
+【本章出场人物】{chars_text}
+
 【前情摘要（近3章）】
 {recent_text}
 
 【待审核正文】
-{content[:6000]}{'...(已截断)' if len(content) > 6000 else ''}
+{content[:10000]}{'...(已截断)' if len(content) > 10000 else ''}
 
-请严格对照章纲，逐条检查核心事件、冲突、结局是否在正文中完整体现。"""
+请严格对照章纲，逐条检查核心事件、冲突、结局、情感基调、出场人物、伏笔埋收是否在正文中完整体现。"""
 
         try:
             response = self._call_llm(system_prompt, user_prompt, max_tokens=2048)
@@ -1314,10 +1338,10 @@ action 为 "PASS" 表示 total_score >= 8.0，"REJECT" 表示不达标。"""
             else self.run_continuity_tracker
         )
         gate_defs = [
-            ("plot_aligner",       self.run_plot_aligner,    0.25, "剧情对齐"),
-            ("character_guard",    self.run_character_guard, 0.25, "人设世界观"),
-            ("continuity_tracker", continuity_fn,            0.25, "时空状态"),
-            ("style_refiner",      self.run_style_refiner,   0.25, "文风去AI"),
+            ("plot_aligner",       self.run_plot_aligner,    0.40, "剧情对齐"),
+            ("character_guard",    self.run_character_guard, 0.20, "人设世界观"),
+            ("continuity_tracker", continuity_fn,            0.20, "时空状态"),
+            ("style_refiner",      self.run_style_refiner,   0.20, "文风去AI"),
         ]
 
         results: list[GateResult] = []

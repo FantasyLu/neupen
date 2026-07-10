@@ -209,7 +209,7 @@ streamlit run app.py
 ### 写作
 
 - **AI 写作助手**（左侧栏）：已整合至侧边栏全局 AI 创作助手，支持对话式辅助修改，输出的章节代码块可一键保存
-- **生成流水线**：写作 → 润色 → 四审核**并行**循环（剧情对齐 / 人设世界观 / 时空状态 / 文风去AI，各权重 25%，已通过的关卡下轮跳过，全部通过提前退出，最多 5 轮）→ 摘要生成 → 变更同步，一键完成
+- **生成流水线**：写作（章纲强制执行清单置顶注入）→ 润色 → 四审核**并行**循环（剧情对齐 40% / 人设世界观 20% / 时空状态 20% / 文风去AI 20%，全量重审，全部通过提前退出，最多 5 轮）→ 摘要生成 → 变更同步，一键完成
 - **正文编辑**：手动改正文，保存时触发同步检测（新人物/人物变化/大纲偏离/世界观变更），逐项确认或跳过
 - **章节摘要**：查看和编辑 AI 生成的摘要和关键事件
 - **审核报告**：四审核得分及反馈逐项展示，支持逐项 AI 讨论和一键修复，手动编辑审核评分
@@ -894,7 +894,7 @@ neupen/
 | 大纲师 `OutlineAgent` | 生成结构化大纲 JSON（总纲 + 卷纲 + 章纲） | `generate_full_outline()`, `generate_chapter_range_outlines()`, `refine_chapter_outline()`, `analyze_chapter_consistency()`, `extract_relationships()`, `parse_document()` |
 | 人设师 `CharacterAgent` | 生成人物档案，检测人物矛盾（分批处理，每批最多 10 人） | `generate_characters()`, `check_character_consistency()`, `update_character_state()` |
 | 写手部 `WriterAgent` | 基于三层记忆 + 章纲生成正文，支持流式输出；非流式模式下字数偏差时最多重试 2 次，每次注入精准偏差反馈 | `write_chapter()`, `summarize_chapter()`, `regenerate_section()` |
-| 审核师 `ReviewerAgent` | 四审核**并行**流水线（剧情对齐 / 人设世界观 / 时空状态 / 文风去AI，各 25% 权重），并行执行后合并 REJECT feedback 由 WriterAgent 统一修正，已通过关卡下轮跳过，循环直到全部通过或达最大轮数（默认 5 轮，设置页可调）；旧版串行三关卡保留兼容 | `parallel_pipeline_review()`, `pipeline_review()`（旧版兼容）, `fix_all_issues()`, `auto_fix_minor_issues()`, `review_chapter()`（旧版兼容） |
+| 审核师 `ReviewerAgent` | 四审核**并行**流水线（剧情对齐 40% / 人设世界观 20% / 时空状态 20% / 文风去AI 20%），并行执行后合并 REJECT feedback 由 WriterAgent 统一修正，全量重审全部 4 个关卡，循环直到全部通过或达最大轮数（默认 5 轮，设置页可调）；旧版串行三关卡保留兼容 | `parallel_pipeline_review()`, `pipeline_review()`（旧版兼容）, `fix_all_issues()`, `auto_fix_minor_issues()`, `review_chapter()`（旧版兼容） |
 | 润色师 `PolisherAgent` | 消除 AI 痕迹、增强文学性，支持风格迁移 | `polish_chapter()`, `apply_style_to_selection()`, `analyze_style()` |
 | 读者模拟 `ReaderAgent` | 三种读者视角的体验评分 | `evaluate_chapter()` |
 | 灵感师 `IdeaAgent` | 多轮创意对话，提取项目配置 | `chat()`, `extract_project_config()` |
@@ -954,14 +954,14 @@ neupen/
 
 **四审核并行流水线**（主流程）四个 Reviewer 同时执行，每个专注单一维度：
 
-| Reviewer | 检测维度 | 示例 |
-|----------|---------|------|
-| `plot_aligner` 剧情对齐 | 大纲偏离、情节一致性 | 章纲要求决战，正文写的是郊游 |
-| `character_guard` 人设世界观 | 人物 OOC、世界观冲突 | 冷漠型角色突然热情；角色掌握了设定中不存在的能力 |
-| `continuity_tracker` 时空状态 | 状态连续性、时空矛盾 | 上章左臂废了这章用左手攀爬；角色无理由跨城瞬移 |
-| `style_refiner` 文风去AI | 去 AI 痕迹、写作风格 | 连续碎句、总结式段尾、上帝视角滥用 |
+| Reviewer | 权重 | 检测维度 | 示例 |
+|----------|------|---------|------|
+| `plot_aligner` 剧情对齐 | 40% | 大纲偏离、情节一致性；7项扣分（核心事件-2、主要冲突-1.5、场景-1、情感基调-1、出场人物缺席-1、伏笔埋/收各-0.5/处）；正文截断上限 10000 字 | 章纲要求决战，正文写的是郊游 |
+| `character_guard` 人设世界观 | 20% | 人物 OOC、世界观冲突 | 冷漠型角色突然热情；角色掌握了设定中不存在的能力 |
+| `continuity_tracker` 时空状态 | 20% | 状态连续性、时空矛盾 | 上章左臂废了这章用左手攀爬；角色无理由跨城瞬移 |
+| `style_refiner` 文风去AI | 20% | 去 AI 痕迹、写作风格 | 连续碎句、总结式段尾、上帝视角滥用 |
 
-四审全 PASS → 加权最终得分（各 25%）；有任意 REJECT → 合并所有 feedback 交 WriterAgent **一次性修正** → **全量重审所有4个关卡**（包括已通过的），循环直到全部通过或达到最大轮数（默认 5 轮，设置页可调）。
+四审全 PASS → 加权最终得分（plot_aligner×0.4 + 其余各×0.2）；有任意 REJECT → 合并所有 feedback 交 WriterAgent **一次性修正** → **全量重审所有4个关卡**（包括已通过的），循环直到全部通过或达到最大轮数（默认 5 轮，设置页可调）。
 
 > **为什么不跳过已通过关卡**：WriterAgent 修正 B 时可能连带破坏 A 已通过的内容，若 A 被跳过则该破坏无法被发现，导致最终报告中 A 的得分停留在历史旧值、形成虚假通过。每轮全量重审确保"全部通过"的结论真实有效。
 
@@ -1005,12 +1005,12 @@ neupen/
 │  ReviewerAgent.parallel_pipeline_review()                         │
 │                                                                   │
 │  ┌──────────────────────────────────────────────────────────┐    │
-│  │  四个 Reviewer 并行执行（各 25% 权重）                     │    │
+│  │  四个 Reviewer 并行执行                                    │    │
 │  │                                                           │    │
-│  │  🎯 plot_aligner      剧情对齐     阈值 8.0               │    │
-│  │  🛡️ character_guard   人设世界观   阈值 8.0               │    │
-│  │  🔗 continuity_tracker 时空状态    阈值 8.5               │    │
-│  │  ✨ style_refiner     文风去AI     阈值 8.0               │    │
+│  │  🎯 plot_aligner      剧情对齐     阈值 8.0  权重 40%     │    │
+│  │  🛡️ character_guard   人设世界观   阈值 8.0  权重 20%     │    │
+│  │  🔗 continuity_tracker 时空状态    阈值 8.5  权重 20%     │    │
+│  │  ✨ style_refiner     文风去AI     阈值 8.0  权重 20%     │    │
 │  └──────────────────────────────────────────────────────────┘    │
 │                             │                                     │
 │           ┌─────────────────┴──────────────────┐                 │
@@ -1042,21 +1042,24 @@ neupen/
 
 #### NovelWorkflow 调用链
 
-采用**四审核并行**流水线，四个 Reviewer 同时跑，合并 REJECT feedback 后 WriterAgent 一次性修正，已通过关卡下轮跳过：
+采用**四审核并行**流水线，四个 Reviewer 同时跑，合并 REJECT feedback 后 WriterAgent 一次性修正，全量重审全部 4 个关卡（已通过关卡同样重审，避免修正时连带破坏）：
 
 ```
 write_and_review_chapter(chapter_number, word_target, auto_polish)
 │
 ├── 1. WriterAgent.write_chapter()              → 生成草稿（流式输出）
+│      · 章纲强制执行清单置顶注入（核心事件/冲突/场景/情感/出场人物）
 ├── 2. PolisherAgent.polish_chapter()           → 润色（可关闭）
 ├── 3. 四审核并行循环（最多 5 轮，全通过提前退出）
-│      ├── plot_aligner       (25%) — 剧情对齐（阈值 8.0）
-│      ├── character_guard    (25%) — 人设/世界观守护（阈值 8.0）
-│      ├── continuity_tracker (25%) — 时空状态连续性（阈值 8.5）
-│      └── style_refiner      (25%) — 文风去AI痕迹（阈值 8.0）
+│      ├── plot_aligner       (40%) — 剧情对齐（阈值 8.0）
+│      │     扣分维度：核心事件(-2)、主要冲突(-1.5)、场景(-1)、情感(-1)、
+│      │               出场人物缺席(-1)、伏笔埋设(-0.5/处)、伏笔收束(-0.5/处)
+│      ├── character_guard    (20%) — 人设/世界观守护（阈值 8.0）
+│      ├── continuity_tracker (20%) — 时空状态连续性（阈值 8.5）
+│      └── style_refiner      (20%) — 文风去AI痕迹（阈值 8.0）
 │      ↓ 并行执行，合并所有 REJECT feedback
-│      有未通过 → WriterAgent 一次性统筹修正 → 全量重审全部4个关卡（已通过关卡同样重审）
-│      全部通过 → 最终得分 = 各关卡得分 × 0.25 加权平均
+│      有未通过 → WriterAgent 一次性统筹修正 → 全量重审全部4个关卡（含已通过项）
+│      全部通过 → 最终得分 = plot_aligner×0.4 + 其余各×0.2 加权平均
 ├── 4. 保存 → SQLite + LanceDB + 版本历史
 ├── 5. WriterAgent.summarize_chapter()          → 摘要供后续记忆注入
 └── 6. 返回变更同步检测结果（新人物/人物变化/大纲偏离/世界观变更）

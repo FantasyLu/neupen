@@ -10,7 +10,7 @@ from core.models import get_db, Novel, Chapter, Character, Foreshadowing, NovelD
 from core.workflow import load_novel
 from core.llm import DEFAULT_MODEL_ID, check_api_key, get_model_info
 from core.permissions import can_edit
-from core.platform_styles import load_platform_styles
+from core.platform_styles import get_all_platform_styles, get_platform_slider_defaults
 from ui.components.model_selector import (
     build_model_options, render_model_card, render_all_models_panel,
     FOLLOW_LABEL, build_agent_model_options,
@@ -876,28 +876,142 @@ def page_settings():
             st.markdown("#### 第二步：确认并编辑风格特征")
             draft = st.session_state.get("style_profile_draft") or current_profile
 
+            # ── 加载当前小说的平台建议值 ──
+            db_pt = get_db()
+            novel_pt = db_pt.query(Novel).filter(Novel.id == novel_id).first()
+            db_pt.close()
+            _pt = novel_pt.target_platform or "" if novel_pt else ""
+            _tg = novel_pt.get_target_tags() if novel_pt else []
+            platform_defaults = get_platform_slider_defaults(_pt, _tg)  # dict or None
+
             if not draft:
-                st.info("完成第一步的风格分析后，这里将展示提取出的风格特征")
-            else:
-                STYLE_FIELDS = [
-                    ("overall_style",        "总体风格定位",   60),
-                    ("sentence_patterns",    "句式特征",       80),
-                    ("vocabulary",           "词汇风格",       80),
-                    ("narrative_voice",      "叙述风格",       80),
-                    ("dialogue_style",       "对话特点",       70),
-                    ("description_style",    "描写特点",       80),
-                    ("rhythm_pacing",        "节奏特征",       70),
-                    ("emotion_expression",   "情感表达方式",   70),
-                    ("transition_style",     "转场方式",       60),
-                    ("polish_instructions",  "润色指令（AI 据此润色）", 100),
-                ]
+                if platform_defaults:
+                    st.info(f"📝 尚未设置风格档案。当前平台「{_pt}」的建议风格已作为默认值填入，可直接调整后保存。")
+                else:
+                    st.info("完成第一步的风格分析后，这里将展示提取出的风格特征")
+            
+            # 无草稿但有平台默认值时，用平台默认值作为 draft 展示
+            if not draft and platform_defaults:
+                draft = platform_defaults
+
+            if draft:
+                from core.agents import PolisherAgent
+
                 updated_profile = {}
-                for key, label, height in STYLE_FIELDS:
-                    updated_profile[key] = st.text_area(label, value=draft.get(key, ""), height=height)
+
+                # ── 总体风格（文本，单行）──
+                updated_profile["overall_style"] = st.text_input(
+                    "总体风格定位",
+                    value=draft.get("overall_style", ""),
+                    placeholder="如：张爱玲式的冷峻市井现实主义",
+                )
+
+                st.markdown("##### 风格量化维度")
+                if platform_defaults and _pt:
+                    st.caption(f"拖动滑条选择档位，下方会显示对应的语义说明。蓝色 ℹ️ 表示与「{_pt}」平台建议风格存在明显差异。")
+                else:
+                    st.caption("拖动滑条选择档位，下方会显示对应的语义说明")
+
+
+                # ── 7个量化维度（select_slider）──
+                SLIDER_FIELDS = [
+                    ("sentence_patterns", "句式长短"),
+                    ("vocabulary",        "词汇雅俗"),
+                    ("narrative_voice",   "叙述距离"),
+                    ("dialogue_style",    "对话密度"),
+                    ("description_style", "描写密度"),
+                    ("rhythm_pacing",     "叙事节奏"),
+                    ("emotion_expression","情感表达方式"),
+                ]
+                for field, label in SLIDER_FIELDS:
+                    raw_val = draft.get(field)
+                    # 向后兼容：旧格式字符串降级为平台建议值或3
+                    if isinstance(raw_val, str):
+                        st.warning(f"「{label}」为旧格式文本，已重置为中间值，建议重新分析或手动调整。")
+                        default_val = platform_defaults.get(field, 3) if platform_defaults else 3
+                    elif isinstance(raw_val, int) and 1 <= raw_val <= 5:
+                        default_val = raw_val
+                    else:
+                        # 无值时：优先用平台建议值，否则居中
+                        default_val = platform_defaults.get(field, 3) if platform_defaults else 3
+
+                    platform_suggested = platform_defaults.get(field) if platform_defaults else None
+
+                    # 构建 help tooltip：各档语义 + 平台建议标记
+                    semantic_map = PolisherAgent._STYLE_SLIDER_MAP.get(field, {})
+                    help_lines = []
+                    for v in range(1, 6):
+                        s = semantic_map.get(v, "")
+                        marker = " ← 平台建议" if v == platform_suggested else ""
+                        if s:
+                            help_lines.append(f"{v}：{s}{marker}")
+                    help_text = "\n".join(help_lines) if help_lines else None
+
+                    chosen = st.select_slider(
+                        label,
+                        options=[1, 2, 3, 4, 5],
+                        value=default_val,
+                        key=f"style_slider_{field}",
+                        help=help_text,
+                    )
+                    # 当前档位语义说明（caption，单行简洁）+ 冲突时加警告
+                    semantic = semantic_map.get(chosen, "")
+                    if platform_suggested is not None and abs(chosen - platform_suggested) >= 2:
+                        tags_str = "、".join(_tg) if _tg else ""
+                        st.caption(f"▸ {semantic}  ⚠️ 平台建议 {platform_suggested}（{_pt}·{tags_str}）")
+                    elif semantic:
+                        st.caption(f"▸ {semantic}")
+
+                    updated_profile[field] = chosen
+
+                    # 每个维度下的可折叠补充框
+                    note_key = f"{field}_note"
+                    existing_note = draft.get(note_key, "")
+                    expander_label = f"补充说明（{label}）" + ("  ✏️" if existing_note else "")
+                    with st.expander(expander_label, expanded=bool(existing_note)):
+                        updated_profile[note_key] = st.text_area(
+                            f"{label} 补充",
+                            value=existing_note,
+                            height=68,
+                            placeholder=f"可在此补充「{label}」滑条无法表达的细节，如特殊场景下的例外规则…",
+                            key=f"style_note_{field}",
+                            label_visibility="collapsed",
+                        )
+
+                st.markdown("##### 文本维度")
+
+                # ── 标志性手法（文本）──
+                updated_profile["signature_techniques"] = st.text_area(
+                    "标志性手法",
+                    value=draft.get("signature_techniques", ""),
+                    height=80,
+                    placeholder="该作者特有的技巧、反复出现的意象或表达方式…",
+                )
+
+                # ── 润色指令（文本，最关键）──
+                updated_profile["polish_instructions"] = st.text_area(
+                    "润色指令（AI 据此润色）",
+                    value=draft.get("polish_instructions", ""),
+                    height=110,
+                    placeholder="用行动导向语言列出5-8条具体指令，如：①多用三至五字短句营造急促节奏 ②以嗅觉触觉替代纯视觉描写…",
+                )
+
+                # ── 补充说明（自由文本区）──
+                st.markdown("##### 其他补充")
+                updated_profile["custom_notes"] = st.text_area(
+                    "其他风格说明（补充上方未覆盖的风格特征）",
+                    value=draft.get("custom_notes", ""),
+                    height=80,
+                    placeholder="如需补充滑条无法表达的细节风格，在此填写，将直接注入润色提示词…",
+                )
 
                 if st.button("💾 保存风格档案", width="stretch", type="primary",
                               disabled=not can_edit(novel_id)):
-                    updated_profile = {k: v for k, v in updated_profile.items() if v.strip()}
+                    # int 值直接保留，str 值过滤空字符串
+                    updated_profile = {
+                        k: v for k, v in updated_profile.items()
+                        if isinstance(v, int) or (isinstance(v, str) and v.strip())
+                    }
                     with st.spinner("保存中…"):
                         workflow = load_novel(novel_id)
                         result = workflow.update_style_profile(updated_profile)
@@ -961,7 +1075,7 @@ def page_settings():
             novel_platform = db.query(Novel).filter(Novel.id == novel_id).first()
             db.close()
 
-            all_styles = load_platform_styles()
+            all_styles = get_all_platform_styles()
             platform_names = list(all_styles.keys())
 
             current_platform = novel_platform.target_platform or ""
@@ -1000,14 +1114,8 @@ def page_settings():
                     st.success("✅ 平台配置已保存")
                     st.rerun()
 
-            # 当前生效的风格描述预览
-            if current_platform and current_tags:
-                from core.platform_styles import get_style_description
-                preview = get_style_description(current_platform, current_tags)
-                if preview:
-                    with st.expander(f"📋 {current_platform} 风格描述预览", expanded=True):
-                        st.info(preview)
-            elif selected_platform:
+            # 当前平台标签提示
+            if selected_platform:
                 tags = list(all_styles.get(selected_platform, {}).keys())
                 if tags:
                     st.caption(f"该平台可用标签：{'、'.join(tags[:8])}{'…' if len(tags) > 8 else ''}")

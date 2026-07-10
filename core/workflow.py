@@ -1101,8 +1101,11 @@ class NovelWorkflow:
             if not novel:
                 db.close()
                 return WorkflowResult(success=False, message="小说项目不存在")
-            # 过滤空值字段
-            cleaned = {k: v for k, v in profile.items() if v and str(v).strip()}
+            # 过滤空值字段（int 值直接保留，str 值过滤空字符串）
+            cleaned = {
+                k: v for k, v in profile.items()
+                if isinstance(v, int) or (v and str(v).strip())
+            }
             novel.set_style_profile(cleaned)
             db.commit()
             db.close()
