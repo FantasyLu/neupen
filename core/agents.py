@@ -233,7 +233,8 @@ class OutlineAgent:
                 chapter_keywords.add(tok)
 
         global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=chapter_keywords if chapter_keywords else None
+            chapter_keywords=chapter_keywords if chapter_keywords else None,
+            active_chars=chapter.get_outline_characters() or None,
         )
 
         user_prompt = f"""当前小说上下文：
@@ -365,8 +366,20 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
             if len(tok) >= 2:
                 desc_keywords.add(tok)
 
+        # 从 start~end 范围内已有章纲提取出场人物，过滤人物档案
+        all_char_names = {c.name for c in self.memory.global_mem.get_all_characters()}
+        range_active_chars: set[str] = set()
+        for ch_num in range(start, end + 1):
+            ch = self.memory.global_mem.get_chapter_outline(ch_num)
+            if ch:
+                range_active_chars.update(ch.get_outline_characters())
+        # 同时把描述中提到的人物名也纳入（用于尚无章纲的情况）
+        range_active_chars.update(desc_keywords & all_char_names)
+        active_chars_filter = range_active_chars if range_active_chars else None
+
         global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=desc_keywords if desc_keywords else None
+            chapter_keywords=desc_keywords if desc_keywords else None,
+            active_chars=active_chars_filter,
         )
 
         ch_count = end - start + 1
@@ -466,33 +479,13 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
         )
         existing_chars = [c.name for c in all_chars]
 
-        # 构建现有人物状态摘要，供 AI 对比
-        char_state_lines = []
-        for c in all_chars:
-            parts = [f"【{c.name}】"]
-            if c.current_state:
-                parts.append(f"当前状态：{c.current_state[:120]}")
-            if c.growth_arc:
-                parts.append(f"成长弧光：{c.growth_arc[:80]}")
-            if c.abilities:
-                parts.append(f"能力：{c.abilities[:80]}")
-            rels = c.get_relationships()
-            if rels:
-                rel_strs = [f"{k}:{v}" for k, v in rels.items()]
-                parts.append(f"人际关系：{', '.join(rel_strs)[:120]}")
-            char_state_lines.append("  ".join(parts))
-        char_state_summary = "\n".join(char_state_lines) or "（无）"
-
         user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要同步记录的内容。
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
 
-【现有大纲和设定摘要】
+【现有大纲、设定与人物档案】
 {global_ctx}
-
-【已有人物及当前状态】
-{char_state_summary}
 
 ## 内容归属规则（必须严格遵守）
 
