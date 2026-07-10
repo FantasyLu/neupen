@@ -2717,7 +2717,7 @@ class PolisherAgent(_ContentPostProcessMixin):
 
 3. **增强文学性**：
    - 加入更多感官细节（嗅觉、触觉、听觉）
-   - 比喻只在能让读者产生直接描写无法传达的新感知时才使用，不主动添加；去掉已有的无效比喻
+   - **比喻密度硬性上限：全文每千字不超过 3 处比喻词（像/如同/仿佛/宛如/好似/犹如/恰似/有如）**；绝对不主动新增比喻，只删减无效比喻；若原文比喻已达标，保持原样
    - 通过细节展现情感，而非直接说
    - 让对话更自然，有留白
 
@@ -2850,6 +2850,13 @@ class PolisherAgent(_ContentPostProcessMixin):
         # ── 润色前：先清理原文中的无效比喻，避免润色时又大量补回 ────────────
         content = self._fix_redundant_metaphors(content)
 
+        # 统计润色前的比喻数，供 prompt 量化约束使用
+        import re as _re
+        _metaphor_count = sum(content.count(w) for w in self._METAPHOR_WORDS_MULTI)
+        _metaphor_count += len(_re.findall(r'(?<![好])像(?!样|是这|是那|这样|那样|这种|那种)', content))
+        _char_count = max(len(content), 1)
+        _metaphor_limit = max(1, int(_char_count / 1000 * self._METAPHOR_DENSITY_THRESHOLD))
+
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
@@ -2862,7 +2869,8 @@ class PolisherAgent(_ContentPostProcessMixin):
 {content}
 
 请在保持故事情节不变的前提下，提升文学质量，输出润色后的完整正文。
-⚠️ 再次提醒：润色后的文本中绝对不允许出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写："""
+⚠️ 比喻密度硬性约束：输入正文当前有 {_metaphor_count} 处比喻词，全文约 {_char_count} 字，允许上限为 {_metaphor_limit} 处（3处/千字）。润色后比喻数必须 ≤ {_metaphor_limit}，绝对不得新增比喻，只能删减无效比喻。
+⚠️ 禁止句式：润色后不得出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写："""
 
         # 动态估算 max_tokens：中文字符约 1.5 token，润色后长度接近原文，按 ×2 兜底，上限 32000
         _estimated_tokens = max(8000, min(32000, len(content) * 2))
