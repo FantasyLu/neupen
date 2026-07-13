@@ -747,18 +747,18 @@ def page_writing():
                             thinking_text = data.get("thinking_text", "").strip()
                             reasoning = data.get("reasoning", "").strip()
                             tool_count = data.get("tool_count", 0)
-                            # 即使 thinking_text 为空，也显示工具调用意图
                             header = f"💭 **思考**（准备调用 {tool_count} 个工具）" if tool_count else "💭 **思考**"
                             agentic_status.write(header)
-                            if thinking_text:
+                            # reasoning 直接写入 status 主体，截取前 300 字避免过长
+                            if reasoning:
+                                preview = reasoning[:300] + ("…" if len(reasoning) > 300 else "")
+                                agentic_status.write(preview)
+                                _gen_log.append(f"{header}\n{preview}")
+                            elif thinking_text:
                                 agentic_status.write(thinking_text)
                                 _gen_log.append(f"{header}\n{thinking_text}")
                             else:
                                 _gen_log.append(header)
-                            if reasoning:
-                                with agentic_status:
-                                    with st.expander("🧠 模型思维链", expanded=False):
-                                        st.markdown(reasoning)
                         elif event_type == StepEvent.TOOL_CALL:
                             tool = data.get("tool", "")
                             args = data.get("args", {})
