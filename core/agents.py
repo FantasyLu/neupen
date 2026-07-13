@@ -1889,6 +1889,7 @@ class WriterAgent(_ContentPostProcessMixin):
             system_prompt=agentic_system,
             initial_user_prompt=initial_prompt,
             max_tokens_per_call=max(4000, int(word_max / 1.5 * 1.2)),
+            force_tool_first=True,  # 强制第一轮必须调用工具，否则注入提示重试
         ):
             yield (event_type, data)
             if event_type == StepEvent.FINAL_OUTPUT:
