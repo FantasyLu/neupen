@@ -283,17 +283,15 @@ class AgenticLoop:
                 if force_tool_first and _is_first_round:
                     # 第一轮没有工具调用，注入强制提示要求先查询
                     print(
-                        "[AgenticLoop] force_tool_first: 第一轮未调用工具，注入强制提示",
+                        "[AgenticLoop] force_tool_first: 第一轮未调用工具，丢弃输出重新要求查询",
                         file=sys.stderr,
                     )
-                    messages.append({"role": "assistant", "content": response})
-                    messages.append({"role": "user", "content": (
-                        "⚠️ 你刚才直接输出了正文，但规则要求必须先通过工具查询信息。\n"
-                        "请现在立即调用工具（至少查询出场人物档案和前情摘要），"
-                        "查询完成后再输出完整正文。"
-                    )})
+                    # 丢弃第一轮正文，追加简短 assistant 占位 + user 查询要求
+                    # 不暴露"被打断"的上下文，LLM 感知不到强制注入
+                    messages.append({"role": "assistant", "content": "好的，我先查询相关信息。"})
+                    messages.append({"role": "user", "content": "请调用工具查询出场人物档案和前情摘要后再写正文。"})
                     _is_first_round = False
-                    continue  # 重新进入循环，不 yield FINAL_OUTPUT
+                    continue
                 # 正常最终输出
                 yield (StepEvent.FINAL_OUTPUT, {
                     "text": response,
