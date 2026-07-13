@@ -200,9 +200,11 @@ def page_outline():
                         total_chapters=new_ch_count,
                         progress_callback=lambda m: progress_ph.info(m)
                     )
+                    regen_reasoning = workflow.outline_agent.llm.last_reasoning
                     workflow.close()
                     progress_ph.empty()
                     st.session_state["confirm_regen_outline"] = False
+                    st.session_state["regen_outline_reasoning"] = regen_reasoning
                     if result.success:
                         st.session_state.pop(textarea_key, None)
                         st.success(result.message)
@@ -212,6 +214,11 @@ def page_outline():
                 if r2.button("取消", key="cancel_regen_btn"):
                     st.session_state["confirm_regen_outline"] = False
                     st.rerun()
+
+        regen_reasoning = st.session_state.get("regen_outline_reasoning", "")
+        if regen_reasoning:
+            with st.expander("💭 AI 大纲思考过程", expanded=False):
+                st.markdown(regen_reasoning)
 
         # 卷大纲
         st.divider()
@@ -385,14 +392,19 @@ def page_outline():
                             result_list = agent.generate_chapter_range_outlines(
                                 int(range_start), int(range_end), range_desc.strip()
                             )
-                            agent.close()
                             st.session_state[batch_result_key] = result_list
+                            st.session_state[f"{batch_result_key}_reasoning"] = agent.llm.last_reasoning
+                            agent.close()
                         except Exception as e:
                             st.error(f"生成失败：{e}")
 
         # 批量生成结果预览 & 确认保存
         batch_result = st.session_state.get(batch_result_key)
         if batch_result:
+            batch_reasoning = st.session_state.get(f"{batch_result_key}_reasoning", "")
+            if batch_reasoning:
+                with st.expander("💭 AI 章纲思考过程", expanded=False):
+                    st.markdown(batch_reasoning)
             st.markdown("#### 📋 生成结果预览")
             st.caption(f"共 {len(batch_result)} 章，确认后将写入数据库")
             for item in batch_result:
@@ -591,6 +603,7 @@ def page_outline():
                     try:
                         agent = OutlineAgent(novel_id, parse_model_id)
                         parsed = agent.parse_document(doc_text.strip())
+                        st.session_state["import_parse_reasoning"] = agent.llm.last_reasoning
                         agent.close()
                         st.session_state["import_parsed_result"] = parsed
                     except Exception as e:
@@ -598,6 +611,10 @@ def page_outline():
 
             parsed_result = st.session_state.get("import_parsed_result")
             if parsed_result:
+                parse_reasoning = st.session_state.get("import_parse_reasoning", "")
+                if parse_reasoning:
+                    with st.expander("💭 AI 解析思考过程", expanded=False):
+                        st.markdown(parse_reasoning)
                 st.divider()
                 st.markdown("#### 解析结果预览")
                 total_outline = parsed_result.get("total_outline", {})

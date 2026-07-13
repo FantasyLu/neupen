@@ -449,6 +449,7 @@ def page_writing():
                                                 _p.caption(m)
                                             ),
                                             prefilled_content=_final_content,
+                                            skip_review=True,  # Agentic 已完成审核，跳过标准审核
                                         )
                                     except Exception as _e:
                                         ph.empty()
@@ -735,53 +736,66 @@ def page_writing():
                     # ── Agentic 写作路径 ──────────────────────────────────
                     status_area.info(f"🧠 Agentic 模式：Agent 正在思考需要哪些信息…")
 
-                    # 用 st.status 包裹全程，保证回调内的写操作实时 flush 到浏览器
+                    def _handle_event(event_type: str, data: dict, agentic_status):
+                        """处理单个 agentic 事件，更新 st.status 内容。"""
+                        from core.agentic_loop import StepEvent
+                        if event_type == StepEvent.THINKING:
+                            thinking_text = data.get("thinking_text", "").strip()
+                            reasoning = data.get("reasoning", "").strip()
+                            if reasoning:
+                                with agentic_status:
+                                    with st.expander("🧠 模型思维链", expanded=False):
+                                        st.markdown(reasoning)
+                            if thinking_text:
+                                agentic_status.write("💭 **思考**")
+                                agentic_status.write(thinking_text)
+                        elif event_type == StepEvent.TOOL_CALL:
+                            tool = data.get("tool", "")
+                            args = data.get("args", {})
+                            idx = data.get("call_index", "?")
+                            limit = data.get("max_calls", 15)
+                            args_str = "、".join(f"{k}={v}" for k, v in args.items())
+                            agentic_status.write(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
+                            status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
+                        elif event_type == StepEvent.TOOL_RESULT:
+                            result_len = data.get("result_length", 0)
+                            agentic_status.write(f"→ 获取 {result_len} 字")
+                        elif event_type == StepEvent.DUPLICATE_SKIP:
+                            tool = data.get("tool", "")
+                            agentic_status.write(f"*(重复查询 `{tool}`，使用缓存)*")
+                        elif event_type == StepEvent.STALL_DETECTED:
+                            agentic_status.write("⚠️ 检测到重复查询，开始生成正文…")
+                            status_area.info("✍️ 信息收集完毕，开始生成正文…")
+                        elif event_type == StepEvent.MAX_CALLS_REACHED:
+                            agentic_status.write("📊 已达查询上限，开始生成正文…")
+                            status_area.info("✍️ 查询完成，开始生成正文…")
+                        elif event_type == StepEvent.BUDGET_EXCEEDED:
+                            agentic_status.write("⚠️ Token 预算接近上限，开始生成正文…")
+                            status_area.info("✍️ 开始生成正文…")
+                        elif event_type == StepEvent.FINAL_OUTPUT:
+                            agentic_status.write("✍️ 信息收集完毕，正在生成正文…")
+                            status_area.info("✅ 正文生成完成，进入审核流程…")
+                            all_reasoning = data.get("all_reasoning", "").strip()
+                            if all_reasoning:
+                                st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = all_reasoning
+                        elif event_type == StepEvent.STATUS_MSG:
+                            agentic_status.write(data.get("msg", ""))
+
                     with st.status("🤔 Agent 思考过程", expanded=True) as agentic_status:
-
-                        def agentic_step_cb(event_type: str, data: dict):
-                            from core.agentic_loop import StepEvent
-
-                            if event_type == StepEvent.THINKING:
-                                thinking_text = data.get("thinking_text", "").strip()
-                                if thinking_text:
-                                    agentic_status.write("💭 **思考**")
-                                    agentic_status.write(thinking_text)
-                            elif event_type == StepEvent.TOOL_CALL:
-                                tool = data.get("tool", "")
-                                args = data.get("args", {})
-                                idx = data.get("call_index", "?")
-                                limit = data.get("max_calls", 15)
-                                args_str = "、".join(f"{k}={v}" for k, v in args.items())
-                                agentic_status.write(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
-                                status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
-                            elif event_type == StepEvent.TOOL_RESULT:
-                                result_len = data.get("result_length", 0)
-                                agentic_status.write(f"→ 获取 {result_len} 字")
-                            elif event_type == StepEvent.DUPLICATE_SKIP:
-                                tool = data.get("tool", "")
-                                agentic_status.write(f"*(重复查询 `{tool}`，使用缓存)*")
-                            elif event_type == StepEvent.STALL_DETECTED:
-                                agentic_status.write("⚠️ 检测到重复查询，开始生成正文…")
-                                status_area.info("✍️ 信息收集完毕，开始生成正文…")
-                            elif event_type == StepEvent.MAX_CALLS_REACHED:
-                                agentic_status.write("📊 已达查询上限，开始生成正文…")
-                                status_area.info("✍️ 查询完成，开始生成正文…")
-                            elif event_type == StepEvent.BUDGET_EXCEEDED:
-                                agentic_status.write("⚠️ Token 预算接近上限，开始生成正文…")
-                                status_area.info("✍️ 开始生成正文…")
-                            elif event_type == StepEvent.FINAL_OUTPUT:
-                                agentic_status.write("✍️ 信息收集完毕，正在生成正文…")
-                                status_area.info("✅ 正文生成完成，进入审核流程…")
-
                         agentic_status.write("**写作阶段**")
-                        # 调用 agentic 写作（直接调用 WriterAgent，不经过 workflow）
                         writer = WriterAgent(novel_id)
-                        content = writer.write_chapter_agentic(
+
+                        # ── generator 迭代：每个事件立即刷新 UI ──────────────
+                        content = ""
+                        for event_type, data in writer.write_chapter_agentic_gen(
                             chapter_number=selected_ch_num,
                             word_target=word_target,
                             word_count_tolerance=word_tolerance,
-                            step_callback=agentic_step_cb,
-                        )
+                        ):
+                            _handle_event(event_type, data, agentic_status)
+                            if event_type == "content_ready":
+                                content = data.get("content", "")
+
                         status_area.info(
                             f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
                         )
@@ -789,17 +803,19 @@ def page_writing():
                         agentic_status.write("---")
                         agentic_status.write("**审核阶段**")
 
-                        # ── Agentic 审核（含三关卡重试）────────────────────────
+                        # ── Agentic 审核 generator ────────────────────────────
                         reviewer = ReviewerAgent(novel_id)
-                        review_result = reviewer.review_chapter_agentic(
+                        review_result = {}
+                        for event_type, data in reviewer.review_chapter_agentic_gen(
                             chapter_number=selected_ch_num,
                             content=content,
-                            step_callback=agentic_step_cb,
                             writer_agent=writer,
-                        )
+                        ):
+                            _handle_event(event_type, data, agentic_status)
+                            if event_type == "content_ready":
+                                review_result = data.get("result", {})
                         reviewer.close()
 
-                        # 取审核后的最终内容（可能已经过修正）
                         final_content = review_result.get("content", content)
                         review_rounds = review_result.get("rounds", 1)
                         review_passed = review_result.get("passed", False)
@@ -817,7 +833,12 @@ def page_writing():
 
                     writer.close()
 
-                    # 将最终内容交给 workflow 保存（跳过写作步骤，直接保存+润色）
+                    # 保存写作阶段思维链（兜底：若 FINAL_OUTPUT 事件未写入，则用 last_reasoning）
+                    _wr_key = f"write_reasoning_{novel_id}_{selected_ch_num}"
+                    if not st.session_state.get(_wr_key) and writer.llm.last_reasoning:
+                        st.session_state[_wr_key] = writer.llm.last_reasoning
+
+                    # 将最终内容交给 workflow 保存（跳过写作步骤+标准审核，直接保存+润色）
                     status_area.info("💾 正在保存并润色…")
                     result = workflow.write_and_review_chapter(
                         chapter_number=selected_ch_num,
@@ -826,6 +847,7 @@ def page_writing():
                         auto_polish=auto_polish,
                         progress_callback=progress_cb,
                         prefilled_content=final_content,  # 传入已审核/修正的内容
+                        skip_review=True,  # Agentic 已完成审核，跳过标准审核避免双重执行
                     )
 
                 else:
@@ -839,6 +861,10 @@ def page_writing():
                         progress_callback=progress_cb,
                         stream_callback=stream_cb,
                     )
+                    # 标准路径：流式时 last_reasoning 为空，非流式时有值
+                    wr = workflow.writer_agent.llm.last_reasoning
+                    if wr:
+                        st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = wr
 
                 workflow.close()
                 st.session_state.is_writing = False
@@ -868,6 +894,13 @@ def page_writing():
                                 )
                                 st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
                                 st.markdown(f"- {c.get('description', '')}")
+
+                    write_reasoning = st.session_state.get(
+                        f"write_reasoning_{novel_id}_{selected_ch_num}", ""
+                    )
+                    if write_reasoning:
+                        with st.expander("💭 写作思考过程", expanded=False):
+                            st.markdown(write_reasoning)
 
                     # 自动同步检测结果写入 session state → 用户无需手动触发
                     sync_checks = result.data.get("sync_checks", {})
@@ -1037,6 +1070,8 @@ def page_writing():
                                     report = agent.review_chapter(
                                         selected_ch_num, current_text
                                     )
+                                    review_reasoning_key = f"review_reasoning_{novel_id}_{selected_ch_num}"
+                                    st.session_state[review_reasoning_key] = agent.detector.llm.last_reasoning
                                     agent.close()
                                     st.session_state[review_key] = report.to_dict()
                                     st.rerun()
@@ -1093,10 +1128,12 @@ def page_writing():
                             with st.spinner("润色中（含去AI味后处理，可能需要一点时间）…"):
                                 try:
                                     agent = PolisherAgent(novel_id)
-                                    polished = agent.polish_chapter(current_text)
+                                    polished, reasoning = agent.polish_chapter(current_text)
                                     agent.close()
                                     st.session_state[pending_key] = polished
                                     st.session_state[text_key] = polished
+                                    polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
+                                    st.session_state[polish_reasoning_key] = reasoning
                                     # 递增版本号，强制 ace 编辑器重建以显示新内容
                                     st.session_state[editor_version_key] = (
                                         st.session_state.get(editor_version_key, 0) + 1
@@ -1106,9 +1143,21 @@ def page_writing():
                                 except Exception as e:
                                     st.error(f"润色失败：{e}")
 
+                # 润色思维链展示
+                polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
+                polish_reasoning = st.session_state.get(polish_reasoning_key, "")
+                if polish_reasoning:
+                    with st.expander("💭 润色思考过程", expanded=False):
+                        st.markdown(polish_reasoning)
+
                 # 审核结果展示
                 manual_review = st.session_state.get(review_key)
                 if manual_review:
+                    review_reasoning_key = f"review_reasoning_{novel_id}_{selected_ch_num}"
+                    review_reasoning = st.session_state.get(review_reasoning_key, "")
+                    if review_reasoning:
+                        with st.expander("💭 AI 审核思考过程", expanded=False):
+                            st.markdown(review_reasoning)
                     st.divider()
                     score = manual_review.get("overall_score", 0)
                     passed = manual_review.get("passed", True)

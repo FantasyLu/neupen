@@ -562,6 +562,7 @@ def render_global_chat(novel_id: int):
 
         # ── 执行 dispatch（意图分类 + 路由）──────────────────────
         dispatch_result: dict = {}
+        canvas_reasoning = ""
         with st.spinner("思考中…"):
             try:
                 dispatch_result = agent.dispatch(
@@ -582,6 +583,7 @@ def render_global_chat(novel_id: int):
                     )
                     dispatch_result["reply"] = agentic_reply
 
+                canvas_reasoning = agent.llm.last_reasoning
                 agent.close()
             except Exception as e:
                 agent.close()
@@ -608,6 +610,10 @@ def render_global_chat(novel_id: int):
         if agentic_steps and intent == "chat":
             steps_md = "\n".join(agentic_steps)
             reply = f"{reply}\n\n<details>\n<summary>🔍 查询过程（{len([s for s in agentic_steps if s.startswith('**')])} 次）</summary>\n\n{steps_md}\n</details>"
+
+        # 思维链：有 reasoning 时以折叠块形式附在回复末尾
+        if canvas_reasoning:
+            reply = f"{reply}\n\n<details>\n<summary>💭 思考过程</summary>\n\n{canvas_reasoning}\n\n</details>"
 
         # 操作类任务且有结果内容：包装为类型化代码块附在回复末尾
         if result_content and result_type in ("chapter", "outline", "character"):

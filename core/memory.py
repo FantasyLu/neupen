@@ -44,29 +44,37 @@ from core.models import (
 # LanceDB 初始化
 # ======================================
 
+import threading
+
 _embedding_model = None
 _lancedb_conn = None
+_embedding_lock = threading.Lock()
+_lancedb_lock = threading.Lock()
 
 TABLE_NAME = "chapter_chunks"
 
 
 def _get_embedding_model():
-    """获取 Embedding 模型（单例缓存，首次调用时下载模型）"""
+    """获取 Embedding 模型（单例缓存，首次调用时下载模型，线程安全）"""
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = (
-            get_registry()
-            .get("sentence-transformers")
-            .create(name=EMBEDDING_MODEL, device="cpu")
-        )
+        with _embedding_lock:
+            if _embedding_model is None:
+                _embedding_model = (
+                    get_registry()
+                    .get("sentence-transformers")
+                    .create(name=EMBEDDING_MODEL, device="cpu")
+                )
     return _embedding_model
 
 
 def _get_lancedb():
-    """获取 LanceDB 连接（单例缓存）"""
+    """获取 LanceDB 连接（单例缓存，线程安全）"""
     global _lancedb_conn
     if _lancedb_conn is None:
-        _lancedb_conn = lancedb.connect(str(LANCEDB_DIR))
+        with _lancedb_lock:
+            if _lancedb_conn is None:
+                _lancedb_conn = lancedb.connect(str(LANCEDB_DIR))
     return _lancedb_conn
 
 
@@ -910,8 +918,17 @@ def _compress_world_setting_sync(novel_obj, world_raw: dict, db) -> dict:
         db.commit()
         return compressed
     except Exception as e:
-        print(f"[压缩警告] 世界观压缩失败，回退原文：{e}", file=sys.stderr)
-        return world_raw
+        print(f"[压缩警告] 世界观压缩失败，回退原文（超长字段将截断）：{e}", file=sys.stderr)
+        # 兜底截断：避免超大原文传入后续流程导致 token 溢出
+        try:
+            from core.config import COMPRESS_WORLD_TARGET_MAX
+            _limit = COMPRESS_WORLD_TARGET_MAX
+        except Exception:
+            _limit = 400
+        return {
+            k: (v[:_limit] + "…（已截断）" if isinstance(v, str) and len(v) > _limit else v)
+            for k, v in world_raw.items()
+        }
 
 
 def _compress_outline_sync(outline, db, novel) -> None:
@@ -942,7 +959,19 @@ def _compress_outline_sync(outline, db, novel) -> None:
                     setattr(outline, f"{field}_compressed", orig)
         db.commit()
     except Exception as e:
-        print(f"[压缩警告] 大纲压缩失败，回退原文：{e}", file=sys.stderr)
+        print(f"[压缩警告] 大纲压缩失败，回退原文（超长字段将截断）：{e}", file=sys.stderr)
+        # 兜底截断：避免超大字段传入后续流程导致 token 溢出
+        try:
+            from core.config import COMPRESS_OUTLINE_TARGETS, COMPRESS_OUTLINE_THRESHOLD
+            for field, target in COMPRESS_OUTLINE_TARGETS.items():
+                orig = getattr(outline, field, None)
+                if orig and len(str(orig)) > COMPRESS_OUTLINE_THRESHOLD:
+                    setattr(outline, f"{field}_compressed", str(orig)[:target] + "…（已截断）")
+                elif orig:
+                    setattr(outline, f"{field}_compressed", orig)
+            db.commit()
+        except Exception as inner_e:
+            print(f"[压缩警告] 大纲截断兜底也失败：{inner_e}", file=sys.stderr)
 
 
 # ======================================
