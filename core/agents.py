@@ -1871,8 +1871,11 @@ class WriterAgent(_ContentPostProcessMixin):
 【章纲详情（工具查询后综合参考）】
 {chapter.to_outline_text()}
 
-请先通过工具查询本章所需信息（出场人物档案、前情摘要、相关伏笔等），再输出完整正文。
-⚠️ 正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
+⚠️ 强制要求：你现在必须先调用工具查询信息，禁止在查询完成前直接输出正文。
+请立即开始工具调用，至少查询以下内容再写正文：
+- 出场人物的角色档案（query_character）
+- 前几章摘要或关键场景（query_chapter_summary 或 search_past_chapters）
+查询完成后再输出完整正文，正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
 章节编号严格锁定为 {chapter_number}，禁止写成其他数字。"""
 
         loop = AgenticLoop(
