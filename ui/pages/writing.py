@@ -1008,18 +1008,6 @@ def page_writing():
                         st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
                         st.markdown(f"- {c.get('description', '')}")
 
-            # ── 润色说明（思路 + 改动列表）
-            polish_report = st.session_state.get(f"polish_report_{novel_id}_{selected_ch_num}", "")
-            if polish_report:
-                with st.expander("📝 润色说明", expanded=False):
-                    st.markdown(polish_report)
-
-            # ── 润色思考过程（仅支持思维链的模型有值）
-            polish_reasoning = st.session_state.get(f"polish_reasoning_{novel_id}_{selected_ch_num}", "")
-            if polish_reasoning:
-                with st.expander("💭 润色思考过程", expanded=False):
-                    st.markdown(polish_reasoning)
-
         # 章节内容区（tabs）
         pending = st.session_state.get(pending_key)
         if selected_ch:
