@@ -116,10 +116,19 @@ class _ContentPostProcessMixin:
                 )
             content = fixed_content
 
-        # ── Step 2: 对比转折句式循环 LLM 修正（最多 3 轮，直至清零）──────────
+        # ── Step 2: 对比转折句式循环 LLM 修正（最多 5 轮，直至清零）──────────
         FORBIDDEN_PATTERNS = [
             re.compile(r"不是.{1,30}[，,]?\s*而是.{1,30}"),
             re.compile(r"不是.{1,30}[，,]\s*是.{1,30}"),
+            # 无标点版：「不是A是B」，排除副词紧接「是」的误匹配
+            re.compile(r"不是[\u4e00-\u9fff，,、\s]{1,20}(?<![都也还只就更才已曾很太那这什么])是[\u4e00-\u9fff]{2,20}"),
+            # 跨句版：「不是X。[换行]是Y」或「不是X。不是Y。是Z」（句号分隔、允许跨行）
+            re.compile(
+                r"不是[\u4e00-\u9fff，,、的了着过]{1,30}[。．]\s*"
+                r"(?:不是[\u4e00-\u9fff，,、的了着过]{1,30}[。．]\s*)*"
+                r"是[\u4e00-\u9fff，,、的了着过]{1,30}",
+                re.MULTILINE,
+            ),
             re.compile(r"与其说.{1,30}不如说"),
             re.compile(r"与其.{1,30}不如.{1,30}"),
         ]
@@ -130,14 +139,14 @@ class _ContentPostProcessMixin:
                 result.extend(pat.findall(text))
             return result
 
-        MAX_FORBIDDEN_ROUNDS = 3
+        MAX_FORBIDDEN_ROUNDS = 5
 
         hits = _find_hits(content)
 
         if not hits:
             return self._fix_redundant_metaphors(content, chapter_number)
 
-        hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+        hit_lines = "\n".join(f"  - {h.replace(chr(10), ' ↵ ')}" for h in hits[:8])
         print(
             f"[{tag}] {ch_label}检测到 {len(hits)} 处禁止句式，发起自动修正…\n{hit_lines}",
             file=sys.stderr,
@@ -150,7 +159,7 @@ class _ContentPostProcessMixin:
                 file=sys.stderr,
             )
 
-            hit_lines = "\n".join(f"  - {h}" for h in hits[:8])
+            hit_lines = "\n".join(f"  - {h.replace(chr(10), ' ↵ ')}" for h in hits[:8])
             fix_prompt = f"""以下是一段小说正文，其中存在绝对禁止的对比转折句式（"不是……而是……"/"与其说……不如说……"等变体）。
 
 【检测到的违规句子】
@@ -160,7 +169,7 @@ class _ContentPostProcessMixin:
 {content}
 
 修改规则：
-1. 将所有"不是A而是B"/"不是A，是B"/"不是A是B"/"与其说A不如说B"等句式，拆成两个独立陈述句，只写事实和动作，删去对比评论。
+1. 将所有"不是A而是B"/"不是A，是B"/"不是A是B"/"不是A。是B"（含跨行/换行版本）/"与其说A不如说B"等句式，拆成两个独立陈述句，只写事实和动作，删去对比评论。
 2. 仅修改违规句子，其余内容原样保留，不得添加、删减、改写其他段落。
 3. 直接输出修改后的完整正文，不加任何说明或标注。"""
 
@@ -211,7 +220,7 @@ class _ContentPostProcessMixin:
             return total, density
 
         def _find_metaphor_sentences(text: str) -> list[str]:
-            """提取含比喻词的句子（按句号/换行切割，最多返回 10 条）"""
+            """提取含比喻词的句子（按句号/换行切割）"""
             # 按常见句末标点或换行切分
             sentences = re.split(r'(?<=[。！？\n])', text)
             hits = []
@@ -223,7 +232,7 @@ class _ContentPostProcessMixin:
                 s = s.strip()
                 if s and metaphor_re.search(s):
                     hits.append(s[:80] + ('…' if len(s) > 80 else ''))
-            return hits[:10]
+            return hits
 
         total, density = _count_density(content)
         print(
@@ -240,7 +249,7 @@ class _ContentPostProcessMixin:
         metaphor_hits = _find_metaphor_sentences(content)
         hit_lines = "\n".join(f"  - {s}" for s in metaphor_hits)
         print(
-            f"[{tag}] {ch_label}检测到超密度比喻，发起精简（示例句）：\n{hit_lines}",
+            f"[{tag}] {ch_label}检测到超密度比喻，发起精简（共 {len(metaphor_hits)} 句）：\n{hit_lines}",
             file=sys.stderr,
         )
 
@@ -295,6 +304,15 @@ class _ContentPostProcessMixin:
             print(
                 f"[{tag}] {ch_label}已执行 {MAX_ROUNDS} 轮精简，"
                 f"当前密度 {density:.1f}/千字（未完全达标，使用当前版本）。",
+                file=sys.stderr,
+            )
+
+        # 精简结束后打印仍保留的比喻句
+        remaining_hits = _find_metaphor_sentences(content)
+        if remaining_hits:
+            remaining_lines = "\n".join(f"  - {s}" for s in remaining_hits)
+            print(
+                f"[{tag}] {ch_label}精简后仍保留的比喻句（共 {total} 处，{len(remaining_hits)} 句）：\n{remaining_lines}",
                 file=sys.stderr,
             )
 
