@@ -490,7 +490,7 @@ class NovelWorkflow:
                 if progress_callback:
                     progress_callback(f"✨ 润色草稿...")
                 try:
-                    current_content, _ = self.polisher_agent.polish_chapter(
+                    current_content, _, _polish_report = self.polisher_agent.polish_chapter(
                         current_content
                     )
                 except Exception:

@@ -1128,12 +1128,14 @@ def page_writing():
                             with st.spinner("润色中（含去AI味后处理，可能需要一点时间）…"):
                                 try:
                                     agent = PolisherAgent(novel_id)
-                                    polished, reasoning = agent.polish_chapter(current_text)
+                                    polished, reasoning, polish_report = agent.polish_chapter(current_text)
                                     agent.close()
                                     st.session_state[pending_key] = polished
                                     st.session_state[text_key] = polished
                                     polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
                                     st.session_state[polish_reasoning_key] = reasoning
+                                    polish_report_key = f"polish_report_{novel_id}_{selected_ch_num}"
+                                    st.session_state[polish_report_key] = polish_report
                                     # 递增版本号，强制 ace 编辑器重建以显示新内容
                                     st.session_state[editor_version_key] = (
                                         st.session_state.get(editor_version_key, 0) + 1
@@ -1142,6 +1144,13 @@ def page_writing():
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"润色失败：{e}")
+
+                # 润色说明展示（润色思路 + 改动列表）
+                polish_report_key = f"polish_report_{novel_id}_{selected_ch_num}"
+                polish_report = st.session_state.get(polish_report_key, "")
+                if polish_report:
+                    with st.expander("📝 润色说明", expanded=True):
+                        st.markdown(polish_report)
 
                 # 润色思维链展示
                 polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"

@@ -2877,9 +2877,12 @@ class PolisherAgent(_ContentPostProcessMixin):
             model_id = (_novel.llm_model or None) if _novel else None
         self.llm = NovelLLM(model_id, novel_id=self.novel_id)
 
+    # 分隔符：用于切分 LLM 返回的润色说明和正文
+    _POLISH_REPORT_SEP = "===POLISH_TEXT==="
+
     def polish_chapter(
         self, content: str, style_reference: str = "", stream_callback=None
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         """
         对章节内容进行全面润色
 
@@ -2889,9 +2892,10 @@ class PolisherAgent(_ContentPostProcessMixin):
             stream_callback: 流式输出回调
 
         Returns:
-            (polished_text, reasoning)
-            - polished_text: 润色后的完整正文
-            - reasoning:     模型思维链内容（不支持或无思维链时为空字符串）
+            (polished_text, reasoning, polish_report)
+            - polished_text:  润色后的完整正文
+            - reasoning:      模型思维链内容（不支持或无思维链时为空字符串）
+            - polish_report:  LLM 输出的润色说明（思路 + 改动列表），无时为空字符串
         """
         novel = self.memory.global_mem.get_novel()
         style_desc = novel.writing_style or "" if novel else ""
@@ -2919,6 +2923,7 @@ class PolisherAgent(_ContentPostProcessMixin):
         _char_count = max(len(content), 1)
         _metaphor_limit = max(1, int(_char_count / 1000 * self._METAPHOR_DENSITY_THRESHOLD))
 
+        sep = self._POLISH_REPORT_SEP
         user_prompt = f"""请对以下小说章节进行文笔润色：
 
 {f"【风格要求】{style_desc}" if style_desc else ""}
@@ -2930,9 +2935,21 @@ class PolisherAgent(_ContentPostProcessMixin):
 【待润色内容】
 {content}
 
-请在保持故事情节不变的前提下，提升文学质量，输出润色后的完整正文。
+请在保持故事情节不变的前提下，提升文学质量。
 ⚠️ 比喻密度硬性约束：输入正文当前有 {_metaphor_count} 处比喻词，全文约 {_char_count} 字，允许上限为 {_metaphor_limit} 处（3处/千字）。润色后比喻数必须 ≤ {_metaphor_limit}，绝对不得新增比喻，只能删减无效比喻。
-⚠️ 禁止句式：润色后不得出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写："""
+⚠️ 禁止句式：润色后不得出现"不是……而是……""不是……是……""与其说……不如说……"等对比转折句式，若原文有请一并改写。
+
+【输出格式要求（必须严格遵守）】
+先输出润色说明（不超过200字），格式如下：
+润色思路：（一句话说明本次润色的核心目标和方向）
+主要改动：
+- （段落/位置）：（改了什么、为什么）
+- （段落/位置）：（改了什么、为什么）
+
+然后另起一行输出分隔符（单独占一行，前后无其他内容）：
+{sep}
+
+分隔符之后输出润色后的完整正文，不加任何说明或标注。"""
 
         # 动态估算 max_tokens：中文字符约 1.5 token，润色后长度接近原文，按 ×2 兜底，上限 32000
         _estimated_tokens = max(8000, min(32000, len(content) * 2))
@@ -2956,7 +2973,17 @@ class PolisherAgent(_ContentPostProcessMixin):
                 temperature=self.temperature,
             )
 
-        return self._fix_forbidden_syntax(result), self.llm.last_reasoning
+        # 解析 LLM 输出：按分隔符切分润色说明和正文
+        if sep in result:
+            parts = result.split(sep, 1)
+            polish_report = parts[0].strip()
+            polished_text = parts[1].strip()
+        else:
+            # 兜底：LLM 未输出分隔符，整体视为正文
+            polish_report = ""
+            polished_text = result
+
+        return self._fix_forbidden_syntax(polished_text), self.llm.last_reasoning, polish_report
 
     def apply_style_to_selection(self, selected_text: str, instruction: str) -> str:
         """
