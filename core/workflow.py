@@ -486,11 +486,13 @@ class NovelWorkflow:
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
 
             # Step 2: 润色（先润色，让审核对最终呈现的文本做判断）
+            _polish_report = ""
+            _polish_reasoning = ""
             if auto_polish:
                 if progress_callback:
                     progress_callback(f"✨ 润色草稿...")
                 try:
-                    current_content, _, _polish_report = self.polisher_agent.polish_chapter(
+                    current_content, _polish_reasoning, _polish_report = self.polisher_agent.polish_chapter(
                         current_content
                     )
                 except Exception:
@@ -671,6 +673,8 @@ class NovelWorkflow:
                     "review_passed": final_passed,
                     "overall_score": final_score,
                     "sync_checks": sync_checks,
+                    "polish_report": _polish_report,
+                    "polish_reasoning": _polish_reasoning,
                 },
             )
 
