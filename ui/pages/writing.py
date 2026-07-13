@@ -787,9 +787,11 @@ def page_writing():
                             status_area.info("✍️ 开始生成正文…")
                             _gen_log.append("⚠️ Token 预算接近上限，开始生成正文…")
                         elif event_type == StepEvent.FINAL_OUTPUT:
-                            agentic_status.write("✍️ 信息收集完毕，正在生成正文…")
-                            status_area.info("✅ 正文生成完成，进入审核流程…")
-                            _gen_log.append("✍️ 信息收集完毕，正在生成正文…")
+                            word_count = len(data.get("text", ""))
+                            msg = f"✍️ 正文生成完成（{word_count} 字），进入字数校验…"
+                            agentic_status.write(msg)
+                            status_area.info(msg)
+                            _gen_log.append(msg)
                             all_reasoning = data.get("all_reasoning", "").strip()
                             if all_reasoning:
                                 if stage == "write":
@@ -799,6 +801,7 @@ def page_writing():
                         elif event_type == StepEvent.STATUS_MSG:
                             msg = data.get("msg", "")
                             agentic_status.write(msg)
+                            status_area.info(msg)
                             _gen_log.append(msg)
 
                     with st.status("🤔 Agent 思考过程", expanded=True) as agentic_status:
@@ -817,7 +820,7 @@ def page_writing():
                                 content = data.get("content", "")
 
                         status_area.info(
-                            f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
+                            f"✅ 写作完成（{len(content)} 字），进入 Agentic 审核…"
                         )
 
                         # 写作阶段结束后立即保存 last_reasoning（兜底：FINAL_OUTPUT 未携带 reasoning 时）

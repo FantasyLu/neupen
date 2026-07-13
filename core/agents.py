@@ -1897,6 +1897,9 @@ class WriterAgent(_ContentPostProcessMixin):
         _MAX_WORD_RETRIES = 2
         import sys as _sys
 
+        # 通知 UI：正文已生成，展示字数
+        yield (StepEvent.STATUS_MSG, {"msg": f"✍️ 正文生成完成，共 {len(content)} 字，正在校验字数…"})
+
         for _attempt in range(_MAX_WORD_RETRIES):
             actual = len(content)
             if word_min <= actual <= word_max:
@@ -1909,6 +1912,9 @@ class WriterAgent(_ContentPostProcessMixin):
                     f"（{actual}/{word_min}~{word_max}），发起补写重试（第{_attempt + 1}次）…",
                     file=_sys.stderr,
                 )
+                yield (StepEvent.STATUS_MSG, {
+                    "msg": f"⚠️ 字数不足（{actual} 字，目标 {word_min}~{word_max}），发起补写重试（{_attempt + 1}/{_MAX_WORD_RETRIES}）…"
+                })
                 fix_instruction = (
                     f"⚠️ 字数不足：当前 {actual} 字，距最低要求还差 {deficit} 字。\n"
                     f"请在保持原有风格和情节不变的前提下，扩充以下方向（选择最自然的方式）：\n"
@@ -1925,6 +1931,9 @@ class WriterAgent(_ContentPostProcessMixin):
                     f"（{actual}/{word_min}~{word_max}），发起 LLM 精简重试（第{_attempt + 1}次）…",
                     file=_sys.stderr,
                 )
+                yield (StepEvent.STATUS_MSG, {
+                    "msg": f"⚠️ 字数超限（{actual} 字，上限 {word_max}），发起精简重试（{_attempt + 1}/{_MAX_WORD_RETRIES}）…"
+                })
                 fix_instruction = (
                     f"⚠️ 字数超限：当前 {actual} 字，超出上限 {surplus} 字。\n"
                     f"请按以下优先级压缩，三阶段情节骨架保留完整：\n"
@@ -1955,6 +1964,7 @@ class WriterAgent(_ContentPostProcessMixin):
                     max_tokens=max(4000, int(word_max / 1.5 * 1.2)),
                     temperature=self.temperature,
                 )
+                yield (StepEvent.STATUS_MSG, {"msg": f"✅ 字数重试完成，当前 {len(content)} 字"})
             except Exception as e:
                 print(
                     f"[WriterAgent-Agentic] 字数重试时 LLM 调用失败：{e}，使用当前版本",
@@ -1971,6 +1981,7 @@ class WriterAgent(_ContentPostProcessMixin):
                     file=_sys.stderr,
                 )
 
+        yield (StepEvent.STATUS_MSG, {"msg": "🔧 正在执行后处理（禁止句式修正）…"})
         final_content = self._fix_forbidden_syntax(content, chapter_number)
         yield (StepEvent.CONTENT_READY, {"content": final_content, "stage": "write"})
 
