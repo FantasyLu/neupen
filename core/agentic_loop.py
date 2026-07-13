@@ -57,14 +57,16 @@ def _hash_call(tool_name: str, args: dict) -> str:
 class StepEvent:
     """描述 Agentic Loop 中的一个步骤事件"""
 
-    THINKING = "thinking"  # LLM 输出了思考内容（含工具调用请求）
-    TOOL_CALL = "tool_call"  # 即将执行工具
-    TOOL_RESULT = "tool_result"  # 工具执行完成
+    THINKING = "thinking"          # LLM 输出了思考内容（含工具调用请求）
+    TOOL_CALL = "tool_call"        # 即将执行工具
+    TOOL_RESULT = "tool_result"    # 工具执行完成
     DUPLICATE_SKIP = "duplicate_skip"  # 重复调用，使用缓存
     STALL_DETECTED = "stall_detected"  # 检测到停滞
-    MAX_CALLS_REACHED = "max_calls"  # 达到最大调用次数
-    BUDGET_EXCEEDED = "budget"  # Token 预算耗尽
-    FINAL_OUTPUT = "final_output"  # 最终输出
+    MAX_CALLS_REACHED = "max_calls"    # 达到最大调用次数
+    BUDGET_EXCEEDED = "budget"         # Token 预算耗尽
+    FINAL_OUTPUT = "final_output"      # 最终输出
+    CONTENT_READY = "content_ready"    # 写作/审核全流程完成，携带最终内容和结果
+    STATUS_MSG = "status_msg"          # 纯状态文字通知（无数据副作用）
 
 
 # ──────────────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ class AgenticLoop:
         self._token_budget = int(context_window * token_budget_ratio)
 
     def _emit(self, event_type: str, data: dict):
-        """触发步骤事件回调"""
+        """触发步骤事件回调（兼容旧式 step_callback）"""
         if self.step_callback:
             try:
                 self.step_callback(event_type, data)
@@ -158,61 +160,94 @@ class AgenticLoop:
         """
         从 LLM 响应中解析所有工具调用。
         返回 [(tool_name, args), ...] 列表。
+        预处理全角标点 → 半角，再用 json.loads 严格解析，失败则用 json_repair 兜底修复。
         """
+        # 全角标点 → 半角（LLM 有时在 JSON 里混入中文标点）
+        # 用 dict 形式避免源文件中文引号字符长度歧义
+        _FULLWIDTH_MAP = str.maketrans({
+            '，': ',', '：': ':', '；': ';',
+            '\u201c': '"', '\u201d': '"',   # " "
+            '\u2018': "'", '\u2019': "'",   # ' '
+            '（': '(', '）': ')',
+            '【': '[', '】': ']',
+        })
+
         calls = []
         for raw in _TOOL_CALL_RE.findall(response):
-            raw = raw.strip()
+            raw = raw.strip().translate(_FULLWIDTH_MAP)
+            data = None
             try:
                 data = json.loads(raw)
-                tool_name = data.get("tool", "")
-                args = data.get("args", {})
-                if tool_name and isinstance(args, dict):
-                    calls.append((tool_name, args))
-                else:
+            except json.JSONDecodeError as e:
+                # json_repair 兜底：处理 LLM 输出的不规范 JSON（单引号、缺引号、末尾逗号等）
+                try:
+                    from json_repair import repair_json
+                    repaired = repair_json(raw, return_objects=True)
+                    if isinstance(repaired, dict):
+                        data = repaired
+                        print(
+                            f"[AgenticLoop] 工具调用 JSON 已自动修复（原始错误：{e}）",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[AgenticLoop] 工具调用 JSON 修复后非 dict，忽略：{raw}",
+                            file=sys.stderr,
+                        )
+                except Exception as repair_err:
                     print(
-                        f"[AgenticLoop] 忽略格式不完整的工具调用：{raw}",
+                        f"[AgenticLoop] 工具调用 JSON 解析失败：{e}；修复也失败：{repair_err}\n原文：{raw}",
                         file=sys.stderr,
                     )
-            except json.JSONDecodeError as e:
+
+            if data is None:
+                continue
+            tool_name = data.get("tool", "")
+            args = data.get("args", {})
+            if tool_name and isinstance(args, dict):
+                calls.append((tool_name, args))
+            else:
                 print(
-                    f"[AgenticLoop] 工具调用 JSON 解析失败：{e}\n原文：{raw}",
+                    f"[AgenticLoop] 忽略格式不完整的工具调用：{raw}",
                     file=sys.stderr,
                 )
         return calls
 
-    def run(
+    def run_gen(
         self,
         system_prompt: str,
         initial_user_prompt: str,
         max_tokens_per_call: int = 8192,
-    ) -> str:
+    ):
         """
-        执行 Agentic Loop，返回最终文本结果。
+        Generator 版 Agentic Loop。
+
+        每个步骤事件以 (event_type, data) 的形式 yield 出来，
+        调用方可逐事件处理（UI 实时刷新）。
+        最终输出在 event_type == StepEvent.FINAL_OUTPUT 的 data["text"] 里。
 
         流程：
           1. 发送初始 prompt，LLM 响应
           2. 若响应含工具调用：执行工具 → 追加结果 → 继续循环
-          3. 若响应无工具调用：视为最终输出，返回
+          3. 若响应无工具调用：视为最终输出，yield FINAL_OUTPUT 后结束
           4. 任一终止条件触发（次数/停滞/预算）：
-             追加强制指令 → 最后一次调用 → 返回结果
+             追加强制指令 → 最后一次调用 → yield FINAL_OUTPUT 后结束
         """
         messages = [{"role": "user", "content": initial_user_prompt}]
         call_count = 0
         call_cache: dict[str, str] = {}  # hash → result（去重缓存）
         stall_counter = 0  # 连续无新信息次数
+        _all_reasonings: list[str] = []  # 收集所有轮次的 reasoning_content
 
         # ── 主循环 ──────────────────────────────────────────────
         while True:
             # Token 预算检查
             current_tokens = _estimate_tokens(messages)
             if current_tokens > self._token_budget:
-                self._emit(
-                    StepEvent.BUDGET_EXCEEDED,
-                    {
-                        "estimated_tokens": current_tokens,
-                        "budget": self._token_budget,
-                    },
-                )
+                yield (StepEvent.BUDGET_EXCEEDED, {
+                    "estimated_tokens": current_tokens,
+                    "budget": self._token_budget,
+                })
                 break
 
             # 调用 LLM
@@ -224,34 +259,42 @@ class AgenticLoop:
                 )
             except Exception as e:
                 print(f"[AgenticLoop] LLM 调用失败：{e}", file=sys.stderr)
-                # 降级：直接返回错误提示（不崩溃）
-                return f"[生成失败] {e}"
+                yield (StepEvent.FINAL_OUTPUT, {
+                    "text": f"[生成失败] {e}",
+                    "all_reasoning": "\n\n---\n\n".join(_all_reasonings),
+                })
+                return
+
+            # 收集本轮 reasoning_content（支持思维链的模型才有值）
+            round_reasoning = self.llm.last_reasoning or ""
+            if round_reasoning:
+                _all_reasonings.append(round_reasoning)
 
             # 解析工具调用
             tool_calls = self._parse_tool_calls(response)
 
             # ── 无工具调用 → 最终输出 ──────────────────────────
             if not tool_calls:
-                self._emit(StepEvent.FINAL_OUTPUT, {"text": response})
-                return response
+                yield (StepEvent.FINAL_OUTPUT, {
+                    "text": response,
+                    "all_reasoning": "\n\n---\n\n".join(_all_reasonings),
+                })
+                return
 
             # ── 触发思考事件（通知 UI：LLM 决定查询了什么）──────
-            # 去掉工具调用块，只保留 LLM 的思考文字供 UI 展示
             thinking_text = _TOOL_CALL_RE.sub("", response).strip()
-            self._emit(
-                StepEvent.THINKING,
-                {
-                    "thinking_text": thinking_text,
-                    "tool_count": len(tool_calls),
-                },
-            )
+            yield (StepEvent.THINKING, {
+                "thinking_text": thinking_text,
+                "tool_count": len(tool_calls),
+                "reasoning": round_reasoning,
+            })
 
             # 将 LLM 响应追加到消息历史
             messages.append({"role": "assistant", "content": response})
 
             # ── 次数上限检查 ─────────────────────────────────────
             if call_count >= self.max_tool_calls:
-                self._emit(StepEvent.MAX_CALLS_REACHED, {"call_count": call_count})
+                yield (StepEvent.MAX_CALLS_REACHED, {"call_count": call_count})
                 break
 
             # ── 执行所有工具调用 ─────────────────────────────────
@@ -262,42 +305,31 @@ class AgenticLoop:
                 call_hash = _hash_call(tool_name, args)
 
                 if call_hash in call_cache:
-                    # 去重：返回缓存结果
                     result = call_cache[call_hash]
-                    self._emit(
-                        StepEvent.DUPLICATE_SKIP,
-                        {
-                            "tool": tool_name,
-                            "args": args,
-                            "cached_result_preview": result[:100],
-                        },
-                    )
+                    yield (StepEvent.DUPLICATE_SKIP, {
+                        "tool": tool_name,
+                        "args": args,
+                        "cached_result_preview": result[:100],
+                    })
                 else:
-                    # 新调用：执行并缓存
-                    self._emit(
-                        StepEvent.TOOL_CALL,
-                        {
-                            "tool": tool_name,
-                            "args": args,
-                            "call_index": call_count + 1,
-                            "max_calls": self.max_tool_calls,
-                        },
-                    )
+                    yield (StepEvent.TOOL_CALL, {
+                        "tool": tool_name,
+                        "args": args,
+                        "call_index": call_count + 1,
+                        "max_calls": self.max_tool_calls,
+                    })
 
                     result = self._execute_with_timeout(tool_name, args)
                     call_cache[call_hash] = result
                     call_count += 1
                     new_info_count += 1
 
-                    self._emit(
-                        StepEvent.TOOL_RESULT,
-                        {
-                            "tool": tool_name,
-                            "args": args,
-                            "result_preview": result[:200],
-                            "result_length": len(result),
-                        },
-                    )
+                    yield (StepEvent.TOOL_RESULT, {
+                        "tool": tool_name,
+                        "args": args,
+                        "result_preview": result[:200],
+                        "result_length": len(result),
+                    })
 
                 tool_results_parts.append(f"[工具结果: {tool_name}]\n{result}")
 
@@ -312,25 +344,20 @@ class AgenticLoop:
                 stall_counter = 0
 
             if stall_counter >= self.stall_threshold:
-                self._emit(
-                    StepEvent.STALL_DETECTED,
-                    {
-                        "stall_count": stall_counter,
-                        "threshold": self.stall_threshold,
-                    },
-                )
+                yield (StepEvent.STALL_DETECTED, {
+                    "stall_count": stall_counter,
+                    "threshold": self.stall_threshold,
+                })
                 break
 
         # ── 强制最终输出（各类终止条件触发后）──────────────────
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "你已收集到足够的信息（或查询已达到上限）。"
-                    "请现在直接输出完整的最终结果，不要再调用任何工具，不要输出 <tool_call> 块。"
-                ),
-            }
-        )
+        messages.append({
+            "role": "user",
+            "content": (
+                "你已收集到足够的信息（或查询已达到上限）。"
+                "请现在直接输出完整的最终结果，不要再调用任何工具，不要输出 <tool_call> 块。"
+            ),
+        })
 
         try:
             final_response = self.llm.generate_chat(
@@ -342,5 +369,32 @@ class AgenticLoop:
             print(f"[AgenticLoop] 强制输出时 LLM 调用失败：{e}", file=sys.stderr)
             final_response = f"[生成失败，已达工具调用上限] {e}"
 
-        self._emit(StepEvent.FINAL_OUTPUT, {"text": final_response})
-        return final_response
+        final_reasoning = self.llm.last_reasoning or ""
+        if final_reasoning:
+            _all_reasonings.append(final_reasoning)
+
+        yield (StepEvent.FINAL_OUTPUT, {
+            "text": final_response,
+            "all_reasoning": "\n\n---\n\n".join(_all_reasonings),
+        })
+
+    def run(
+        self,
+        system_prompt: str,
+        initial_user_prompt: str,
+        max_tokens_per_call: int = 8192,
+    ) -> str:
+        """
+        同步包装：消费 run_gen()，返回最终文本。
+        供非 UI 场景（批量、测试等）直接调用；同时通过 _emit 触发 step_callback。
+        """
+        final_text = ""
+        for event_type, data in self.run_gen(
+            system_prompt=system_prompt,
+            initial_user_prompt=initial_user_prompt,
+            max_tokens_per_call=max_tokens_per_call,
+        ):
+            self._emit(event_type, data)
+            if event_type == StepEvent.FINAL_OUTPUT:
+                final_text = data.get("text", "")
+        return final_text

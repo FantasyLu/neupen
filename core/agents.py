@@ -210,6 +210,21 @@ class _ContentPostProcessMixin:
             density = total / max(len(text), 1) * 1000
             return total, density
 
+        def _find_metaphor_sentences(text: str) -> list[str]:
+            """提取含比喻词的句子（按句号/换行切割，最多返回 10 条）"""
+            # 按常见句末标点或换行切分
+            sentences = re.split(r'(?<=[。！？\n])', text)
+            hits = []
+            metaphor_re = re.compile(
+                r'(?:' + '|'.join(re.escape(w) for w in self._METAPHOR_WORDS_MULTI) +
+                r'|(?<![好])像(?!样|是这|是那|这样|那样|这种|那种))'
+            )
+            for s in sentences:
+                s = s.strip()
+                if s and metaphor_re.search(s):
+                    hits.append(s[:80] + ('…' if len(s) > 80 else ''))
+            return hits[:10]
+
         total, density = _count_density(content)
         print(
             f"[{tag}] {ch_label}比喻词统计：{total} 处"
@@ -220,6 +235,14 @@ class _ContentPostProcessMixin:
         if density < self._METAPHOR_DENSITY_THRESHOLD:
             print(f"[{tag}] {ch_label}比喻密度正常，跳过精简。", file=sys.stderr)
             return content
+
+        # 打印命中的比喻句子
+        metaphor_hits = _find_metaphor_sentences(content)
+        hit_lines = "\n".join(f"  - {s}" for s in metaphor_hits)
+        print(
+            f"[{tag}] {ch_label}检测到超密度比喻，发起精简（示例句）：\n{hit_lines}",
+            file=sys.stderr,
+        )
 
         for round_i in range(1, MAX_ROUNDS + 1):
             print(
@@ -1692,39 +1715,22 @@ class WriterAgent(_ContentPostProcessMixin):
             self.SYSTEM_PROMPT, user_prompt, temperature=self.temperature
         )
 
-    def write_chapter_agentic(
+    def write_chapter_agentic_gen(
         self,
         chapter_number: int,
         word_target: int = 3000,
         word_count_tolerance: float = 0.15,
-        step_callback=None,
-    ) -> str:
+    ):
         """
-        Agentic 写章节：Agent 自主决定需要查询哪些信息后再撰写。
+        Generator 版 Agentic 写章节。
 
-        与 write_chapter() 的区别：
-        - 不预先调用 build_writing_context() 一次性注入所有信息
-        - 通过 AgenticLoop 让 LLM 边思考边按需查询（角色档案、伏笔、历史片段等）
-        - 最多 15 次工具调用（含去重、停滞检测等防死循环保护）
-        - step_callback 实时向 UI 推送查询步骤
+        每个步骤以 (event_type, data) yield 出来，UI 可逐事件实时刷新。
+        最终内容在 event_type == StepEvent.CONTENT_READY 的 data["content"] 里。
 
-        prompt 分层设计（最大化信息密度、最小化每轮 token）：
-        - System Prompt：写作身份 + 工具定义 + 去AI味规则 + 风格档案
-                        （静态内容，Anthropic prompt caching 只计算一次）
-        - User Prompt：仅包含章纲 + 字数要求 + 写作指令
-                        （动态内容，每次生成不同）
-        - 后续工具轮：仅追加工具查询结果（极短，按需精准）
-
-        Args:
-            chapter_number: 章节序号
-            word_target: 目标字数
-            word_count_tolerance: 字数容差（默认 ±15%）
-            step_callback: (event_type: str, data: dict) -> None，可选
-
-        Returns:
-            生成的章节正文
+        字数重试和禁止句式修正在 generator 内部同步执行（不阻塞 UI，
+        因为 generator 只有 yield 才让出控制权，两段代码都很短）。
         """
-        from core.agentic_loop import AgenticLoop
+        from core.agentic_loop import AgenticLoop, StepEvent
         from core.tool_executor import ToolExecutor, TOOL_DEFINITIONS
         from core.config import DEFAULT_DEAI_RULES
 
@@ -1854,14 +1860,18 @@ class WriterAgent(_ContentPostProcessMixin):
         loop = AgenticLoop(
             llm=self.llm,
             tool_executor=ToolExecutor(self.memory, current_chapter=chapter_number),
-            step_callback=step_callback,
         )
 
-        content = loop.run(
+        # yield from run_gen()：每个事件让出控制权给 UI
+        content = ""
+        for event_type, data in loop.run_gen(
             system_prompt=agentic_system,
             initial_user_prompt=initial_prompt,
             max_tokens_per_call=max(4000, int(word_max / 1.5 * 1.2)),
-        )
+        ):
+            yield (event_type, data)
+            if event_type == StepEvent.FINAL_OUTPUT:
+                content = data.get("text", "")
 
         # ── 字数校验 + 轻量重试（最多2次，不走完整 agentic loop）────────────────
         # 超限时先尝试程序截断（快速无损），截断后达标则直接返回；
@@ -1943,7 +1953,35 @@ class WriterAgent(_ContentPostProcessMixin):
                     file=_sys.stderr,
                 )
 
-        return self._fix_forbidden_syntax(content, chapter_number)
+        final_content = self._fix_forbidden_syntax(content, chapter_number)
+        yield (StepEvent.CONTENT_READY, {"content": final_content, "stage": "write"})
+
+    def write_chapter_agentic(
+        self,
+        chapter_number: int,
+        word_target: int = 3000,
+        word_count_tolerance: float = 0.15,
+        step_callback=None,
+    ) -> str:
+        """
+        同步包装：消费 write_chapter_agentic_gen()，返回最终正文字符串。
+        供批量写作等非 UI 场景调用；step_callback 仍然支持。
+        """
+        from core.agentic_loop import StepEvent
+        content = ""
+        for event_type, data in self.write_chapter_agentic_gen(
+            chapter_number=chapter_number,
+            word_target=word_target,
+            word_count_tolerance=word_count_tolerance,
+        ):
+            if step_callback:
+                try:
+                    step_callback(event_type, data)
+                except Exception:
+                    pass
+            if event_type == StepEvent.CONTENT_READY:
+                content = data.get("content", "")
+        return content
 
     def fix_chapter_with_feedback(
         self,
@@ -2462,46 +2500,21 @@ class ReviewerAgent:
             system_prompt, user_prompt, max_tokens=12000, temperature=self.temperature
         )
 
-    def review_chapter_agentic(
+    def review_chapter_agentic_gen(
         self,
         chapter_number: int,
         content: str,
-        step_callback=None,
         writer_agent=None,
-    ) -> dict:
+    ):
         """
-        Agentic 审核：ReviewerAgent 自主查询需要对比的历史信息后给出评审报告。
-        支持三关卡重试：REJECT 后调用 WriterAgent 修正，再次 agentic 审核，最多重试 MAX_GATE_RETRIES 次。
+        Generator 版 Agentic 审核。
 
-        与 parallel_pipeline_review() 的区别：
-        - 不预先注入固定的审核上下文
-        - 让 LLM 自主决定需要查询哪些历史章节、人物档案、伏笔来做对比审核
-        - 支持 REJECT→修正→重审 循环（最多 MAX_GATE_RETRIES 次），保障最终质量
-        - 返回格式与 parallel_pipeline_review() 兼容（passed / final_score / reject_feedbacks）
-
-        Args:
-            chapter_number: 章节号
-            content: 待审核正文
-            step_callback: (event_type, data) -> None，实时展示查询步骤
-            writer_agent: WriterAgent 实例（可选）。提供后 REJECT 时自动修正并重审；
-                          不提供则仅做单轮审核，不触发重试修正。
-
-        Returns:
-            {
-                "passed": bool,
-                "final_score": float,
-                "reject_feedbacks": str | None,
-                "agentic_report": str,       # 最后一轮的完整审核报告
-                "all_reports": list[str],    # 每轮审核报告列表
-                "content": str,              # 最终正文（可能经过修正）
-                "rounds": int,               # 实际审核轮数
-                "gates": [],
-                "all_gate_results": [],
-            }
+        每个步骤以 (event_type, data) yield 出来，UI 可逐事件实时刷新。
+        最终审核结果在 event_type == StepEvent.CONTENT_READY 的 data["result"] 里。
         """
         import re as _re
         import sys as _sys
-        from core.agentic_loop import AgenticLoop
+        from core.agentic_loop import AgenticLoop, StepEvent
         from core.tool_executor import ToolExecutor, TOOL_DEFINITIONS
         from core.config import MAX_GATE_RETRIES
 
@@ -2590,7 +2603,6 @@ class ReviewerAgent:
 
             if _re.search(r"【审核结论】\s*REJECT", report_text):
                 passed = False
-                # 提取问题清单 + 综合反馈作为 feedback
                 issues_match = _re.search(
                     r"【问题清单】([\s\S]+?)(?=【综合反馈】|$)", report_text
                 )
@@ -2611,7 +2623,7 @@ class ReviewerAgent:
         passed = False
         final_score = 0.0
         reject_feedbacks = None
-        total_rounds = 1 + MAX_GATE_RETRIES  # 初审 + 最多重试次数
+        total_rounds = 1 + MAX_GATE_RETRIES
 
         for round_idx in range(total_rounds):
             is_retry = round_idx > 0
@@ -2621,23 +2633,29 @@ class ReviewerAgent:
                 file=_sys.stderr,
             )
 
-            # 构造本轮审核 prompt
+            yield (StepEvent.STATUS_MSG, {
+                "msg": f"🔍 {round_label}（第{chapter_number}章）",
+                "round": round_idx + 1,
+            })
+
             initial_prompt = _build_review_prompt(current_content, prev_feedback)
 
-            # 执行 agentic 审核
             loop = AgenticLoop(
                 llm=self.llm,
                 tool_executor=ToolExecutor(self.memory),
-                step_callback=step_callback,
             )
-            report_text = loop.run(
+            report_text = ""
+            for event_type, data in loop.run_gen(
                 system_prompt=agentic_system,
                 initial_user_prompt=initial_prompt,
                 max_tokens_per_call=4096,
-            )
+            ):
+                yield (event_type, data)
+                if event_type == StepEvent.FINAL_OUTPUT:
+                    report_text = data.get("text", "")
+
             all_reports.append(report_text)
 
-            # 解析本轮结论
             passed, final_score, reject_feedbacks = _parse_report(report_text)
             print(
                 f"[ReviewerAgent-Agentic] {round_label} → {'PASS' if passed else 'REJECT'} {final_score:.1f}/10",
@@ -2645,25 +2663,23 @@ class ReviewerAgent:
             )
 
             if passed:
-                break  # 通过，直接退出
-
-            # REJECT：若有 WriterAgent 且还有剩余重试次数，发起修正
-            if writer_agent is None or round_idx >= total_rounds - 1:
-                # 无 writer_agent 或已用完重试次数，返回最终结果
                 break
 
-            # ── 修正阶段：让 WriterAgent 根据 feedback 修改正文 ──────────────
+            if writer_agent is None or round_idx >= total_rounds - 1:
+                break
+
             print(
                 f"[ReviewerAgent-Agentic] 调用 WriterAgent 修正（问题反馈 {len(reject_feedbacks or '')} 字）",
                 file=_sys.stderr,
             )
+            yield (StepEvent.STATUS_MSG, {"msg": "✏️ 正在根据审核意见修正正文…"})
             try:
                 current_content = writer_agent.fix_chapter_with_feedback(
                     chapter_number=chapter_number,
                     content=current_content,
                     feedback=reject_feedbacks,
                 )
-                prev_feedback = reject_feedbacks  # 下轮重审时注入上轮问题
+                prev_feedback = reject_feedbacks
             except Exception as e:
                 print(
                     f"[ReviewerAgent-Agentic] WriterAgent 修正失败：{e}，跳过修正",
@@ -2671,7 +2687,7 @@ class ReviewerAgent:
                 )
                 break
 
-        return {
+        result = {
             "passed": passed,
             "final_score": round(final_score, 2),
             "gates": [],
@@ -2682,6 +2698,34 @@ class ReviewerAgent:
             "content": current_content,
             "rounds": len(all_reports),
         }
+        yield (StepEvent.CONTENT_READY, {"result": result, "stage": "review"})
+
+    def review_chapter_agentic(
+        self,
+        chapter_number: int,
+        content: str,
+        step_callback=None,
+        writer_agent=None,
+    ) -> dict:
+        """
+        同步包装：消费 review_chapter_agentic_gen()，返回审核结果 dict。
+        供非 UI 场景调用；step_callback 仍然支持。
+        """
+        from core.agentic_loop import StepEvent
+        result = {}
+        for event_type, data in self.review_chapter_agentic_gen(
+            chapter_number=chapter_number,
+            content=content,
+            writer_agent=writer_agent,
+        ):
+            if step_callback:
+                try:
+                    step_callback(event_type, data)
+                except Exception:
+                    pass
+            if event_type == StepEvent.CONTENT_READY:
+                result = data.get("result", {})
+        return result
 
     def close(self):
         self.memory.close()

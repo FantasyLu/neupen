@@ -389,6 +389,7 @@ class NovelWorkflow:
         progress_callback: Callable = None,
         stream_callback: Callable = None,
         prefilled_content: str = None,
+        skip_review: bool = False,
     ) -> WorkflowResult:
         """
         完整的章节生成流水线（三关卡漏斗式审核）：
@@ -404,6 +405,7 @@ class NovelWorkflow:
             progress_callback: 进度回调 (message: str)
             stream_callback: 流式输出回调 (chunk: str)
             prefilled_content: 预填充内容（Agentic 模式使用，跳过写作步骤直接进入润色+审核）
+            skip_review: 跳过 Step 3 并行审核（Agentic 路径已完成审核，避免双重审核）
 
         Returns:
             WorkflowResult，包含最终内容和审核报告
@@ -431,6 +433,7 @@ class NovelWorkflow:
                 progress_callback=progress_callback,
                 stream_callback=stream_callback,
                 prefilled_content=prefilled_content,
+                skip_review=skip_review,
             )
         finally:
             ch_lock.release()
@@ -444,6 +447,7 @@ class NovelWorkflow:
         progress_callback: Callable = None,
         stream_callback: Callable = None,
         prefilled_content: str = None,
+        skip_review: bool = False,
     ) -> WorkflowResult:
         """write_and_review_chapter 的实际实现（由幂等包装层调用）"""
         import json as json_module
@@ -493,6 +497,7 @@ class NovelWorkflow:
                     pass  # 润色失败则继续用草稿
 
             # Step 3: 并行四审核流水线
+            # Agentic 路径已完成自己的审核+修正闭环，skip_review=True 时跳过，避免双重审核。
             # 流程：4个 Reviewer 并行 → 合并 REJECT feedback → WriterAgent 一次性修正润色后文本
             #        → 仅未通过的 Reviewer 重审（已通过的跳过），循环直到全通过或达到最大轮数
             # 最大轮数：quality_config > 全局默认 MAX_PARALLEL_REVIEW_ROUNDS
@@ -504,34 +509,50 @@ class NovelWorkflow:
             final_score = 0.0
             last_parallel_result: dict = {}
 
-            last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
-                chapter_number,
-                current_content,
-                progress_callback=progress_callback,
-                max_rounds=_max_review_rounds,
-                writer_agent=self.writer_agent,
-                word_target=word_target,
-                word_count_tolerance=_tolerance,
-            )
-
-            all_gate_results_dicts = last_parallel_result["all_gate_results"]
-            final_score = last_parallel_result["final_score"]
-            final_passed = last_parallel_result["passed"]
-            # 若经过多轮修正，内容已更新
-            current_content = last_parallel_result.get("content", current_content)
-
-            if final_passed:
+            if skip_review:
+                # Agentic 路径：跳过标准审核，直接视为通过
                 if progress_callback:
-                    progress_callback(
-                        f"✅ 四审全通过！最终加权得分：{final_score:.1f}/10"
-                        f"（共 {last_parallel_result.get('rounds', 1)} 轮）"
-                    )
+                    progress_callback("⏭️ Agentic 模式已完成审核，跳过标准审核流程")
+                last_parallel_result = {
+                    "passed": True,
+                    "final_score": 10.0,
+                    "content": current_content,
+                    "all_gate_results": [],
+                    "gates": [],
+                    "rounds": 0,
+                }
+                all_gate_results_dicts = []
+                final_score = 10.0
+                final_passed = True
             else:
-                if progress_callback:
-                    progress_callback(
-                        f"⚠️ 审核 {last_parallel_result.get('rounds', _max_review_rounds)} 轮仍有问题未通过"
-                        f"（{final_score:.1f}/10），使用当前版本继续"
-                    )
+                last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
+                    chapter_number,
+                    current_content,
+                    progress_callback=progress_callback,
+                    max_rounds=_max_review_rounds,
+                    writer_agent=self.writer_agent,
+                    word_target=word_target,
+                    word_count_tolerance=_tolerance,
+                )
+
+                all_gate_results_dicts = last_parallel_result["all_gate_results"]
+                final_score = last_parallel_result["final_score"]
+                final_passed = last_parallel_result["passed"]
+                # 若经过多轮修正，内容已更新
+                current_content = last_parallel_result.get("content", current_content)
+
+                if final_passed:
+                    if progress_callback:
+                        progress_callback(
+                            f"✅ 四审全通过！最终加权得分：{final_score:.1f}/10"
+                            f"（共 {last_parallel_result.get('rounds', 1)} 轮）"
+                        )
+                else:
+                    if progress_callback:
+                        progress_callback(
+                            f"⚠️ 审核 {last_parallel_result.get('rounds', _max_review_rounds)} 轮仍有问题未通过"
+                            f"（{final_score:.1f}/10），使用当前版本继续"
+                        )
 
             # 保存审核结果到数据库
             last_gates = last_parallel_result.get("gates", [])
