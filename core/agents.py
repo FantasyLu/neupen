@@ -1814,9 +1814,12 @@ class WriterAgent(_ContentPostProcessMixin):
         # 工具定义移到 user prompt，兼容 DeepSeek 等对 system prompt 权重较低的模型
         agentic_system = f"""{self.SYSTEM_PROMPT}
 
-在开始写作前，你可以通过工具主动查询需要的信息。
-这让你能够像一位真正熟悉故事世界的作家：知道每个人物的过去、了解之前发生的事件、掌握已经埋下的伏笔。
-充分利用工具获取信息，然后写出一章真正连贯、有深度的内容。
+在开始写作前，你必须通过工具查询信息，才能开始写正文。
+章纲只提供了情节骨架，以下关键信息章纲里没有，只能从数据库获取：
+- 人物的完整性格细节、当前心理状态、最新的人际关系变化
+- 上一章结尾时各人物的具体处境与情绪
+- 需要回收或埋下的伏笔的具体措辞和上下文背景
+跳过查询直接写，会导致人设漂移、前后断层，这是不可接受的。
 
 ━━━ 写作硬性规则（每章必须遵守）━━━
 
@@ -1871,11 +1874,14 @@ class WriterAgent(_ContentPostProcessMixin):
 【章纲详情（工具查询后综合参考）】
 {chapter.to_outline_text()}
 
-⚠️ 强制要求：你现在必须先调用工具查询信息，禁止在查询完成前直接输出正文。
-请立即开始工具调用，至少查询以下内容再写正文：
-- 出场人物的角色档案（query_character）
-- 前几章摘要或关键场景（query_chapter_summary 或 search_past_chapters）
-查询完成后再输出完整正文，正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
+【第一步：工具查询（必须执行，不可跳过）】
+章纲中的出场人物名只是索引，人物的完整档案（性格/当前状态/人际关系）只在数据库中，章纲里没有。
+上一章的结尾处境、伏笔的具体细节，同样只能通过工具获取。
+请在同一次回复中并行调用以下工具（一次包含多个 <tool_call>，不要分多次）：
+- 每位出场人物 → query_character（人物名见上方强制清单）
+- 上一章摘要 → query_chapter_summary（chapter_num = {chapter_number - 1}）
+- 如有需回收/埋下的伏笔 → query_foreshadowing
+查询完成后再输出正文，正文第一行必须是固定格式的章节标题：# 第{chapter_number}章《{chapter.title or ""}》
 章节编号严格锁定为 {chapter_number}，禁止写成其他数字。"""
 
         loop = AgenticLoop(

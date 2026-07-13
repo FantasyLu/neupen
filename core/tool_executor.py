@@ -78,9 +78,8 @@ TOOL_DEFINITIONS = """
    — 示例（假设当前写第14章）：{"tool": "query_outline_range", "args": {"start": 10, "end": 13}}
 
 ━━━ 使用规则 ━━━
+- 每次回复可同时包含多个 <tool_call> 块（并行查询，推荐一次性查完所有需要的信息）
 - 获取到足够信息后，直接输出最终内容，不要再调用工具
-- 每次回复可同时包含多个 <tool_call> 块（并行查询）
-- 不需要查询时，直接输出内容即可
 - ⚠️ query_outline_range / query_chapter_summary 只能查当前章节之前的章节，查当前章或之后章节会返回错误
 """
 
