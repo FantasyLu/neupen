@@ -740,61 +740,30 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
 
         raise ValueError(f"章纲生成返回格式错误：{response[:300]}")
 
-    def analyze_chapter_consistency(self, chapter_number: int, content: str) -> dict:
+    # ── Sub-Agent 私有方法（并行执行，各司其职）──────────────────────────────
+
+    def _analyze_characters(
+        self,
+        chapter_number: int,
+        content: str,
+        existing_chars: list[str],
+    ) -> dict:
+        """Sub-Agent 1：识别新人物 + 人物状态/能力/关系变化。
+
+        只携带已有人物名列表，不传大纲/世界观，减少噪音。
+        失败时返回空结构，不上抛异常。
         """
-        分析章节内容，检测是否需要同步更新大纲或设定。
+        import sys
+        existing_names_text = "、".join(existing_chars) if existing_chars else "（暂无）"
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，只关注**人物**相关的变化：
+1. 是否出现了尚未记录在案的新角色？
+2. 已有人物的身体状态、受伤/恢复、能力获得/失去、人际关系是否发生了变化？
 
-        Returns:
-            {
-              "new_characters": [{"name", "role", "personality", "background", "reason"}],
-              "character_updates": [{"name", "field", "new_value", "reason"}],
-              "timeline_events": [{"event_name", "event_description", "in_story_time",
-                                   "characters_involved", "impact"}],
-              "foreshadowing_updates": [{"name", "description", "importance",
-                                         "collect_by_chapter", "notes"}],
-              "outline_updates": [{"field", "merged_content", "reason"}],
-              "world_setting_updates": [{"key", "value", "reason"}]
-            }
-
-        归属规则（严格执行）：
-          - 人物身体/状态/能力/关系变化  → character_updates
-          - 本章重要事件（谁做了什么）   → timeline_events
-          - 新揭示的伏笔/情报/线索       → foreshadowing_updates
-          - 全书矛盾/弧光的结构性变化    → outline_updates（仅在根本性转折时）
-          - 新揭示的世界观规则/设定      → world_setting_updates
-        """
-        # 从章纲提取关键词，过滤无关世界观/伏笔
-        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
-        from core.memory import _extract_chapter_keywords
-
-        chapter_keywords = _extract_chapter_keywords(chapter) if chapter else set()
-
-        all_chars = self.memory.global_mem.get_all_characters()
-        global_ctx = self.memory.global_mem.build_global_context(
-            chapter_keywords=chapter_keywords if chapter_keywords else None,
-            current_chapter=chapter_number,
-        )
-        existing_chars = [c.name for c in all_chars]
-
-        user_prompt = f"""请仔细阅读第{chapter_number}章正文，与现有大纲、设定和人物档案对照，找出需要同步记录的内容。
+【已有人物列表】
+{existing_names_text}
 
 【第{chapter_number}章正文】
 {content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
-
-【现有大纲、设定与人物档案】
-{global_ctx}
-
-## 内容归属规则（必须严格遵守）
-
-| 内容类型 | 放入哪个字段 |
-|---|---|
-| 人物身体状态、受伤、能力获得/失去、关系变化 | character_updates |
-| 本章发生的重要事件（谁做了什么、结果如何） | timeline_events |
-| 新埋下的伏笔、暗示、线索、情报 | foreshadowing_updates |
-| 全书矛盾结构或主角弧光发生**根本性转折**（如主线矛盾从A变成B、主角价值观彻底颠覆） | outline_updates |
-| 新揭示的世界运行规则、地名、势力、体系 | world_setting_updates |
-
-**禁止将单章事件细节、人物状态变化、伏笔情报塞入 outline_updates！**
 
 请按以下 JSON 格式输出，只列出章节中实际发生的变化，不要虚构：
 
@@ -803,10 +772,10 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
     {{
       "name": "角色名",
       "role": "主角/配角/反派等",
-      "personality": "性格特点",
+      "personality": "性格特点（从章节推断）",
       "background": "背景信息（从章节推断）",
       "relationships": {{"已有人物A": "关系描述"}},
-      "reason": "为什么需要新增"
+      "reason": "为什么需要新增（本章中首次出现的证据）"
     }}
   ],
   "character_updates": [
@@ -816,67 +785,28 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
       "new_value": "更新后的完整内容（替换旧值，非追加）",
       "reason": "本章中发生了什么导致此变化"
     }}
-  ],
-  "timeline_events": [
-    {{
-      "event_name": "事件名称（15字以内）",
-      "event_description": "事件描述（谁在哪里做了什么，结果如何，100字以内）",
-      "in_story_time": "故事内时间（如：第三年春、日落时分，不确定可留空）",
-      "characters_involved": ["人物A", "人物B"],
-      "impact": "事件对后续剧情的影响（50字以内）"
-    }}
-  ],
-  "foreshadowing_updates": [
-    {{
-      "name": "伏笔名称（15字以内）",
-      "description": "伏笔内容详细描述（100字以内）",
-      "importance": "high 或 medium 或 low",
-      "collect_by_chapter": null,
-      "notes": "回收建议或关联线索（可留空）"
-    }}
-  ],
-  "outline_updates": [
-    {{
-      "field": "main_conflict 或 protagonist_arc 或 ending_summary 等字段名",
-      "merged_content": "替换原字段的完整新文本（≤300字，必须是一段连贯文字，体现结构性变化）",
-      "reason": "为什么全书级矛盾/弧光发生了根本性变化（必须说明是结构性转折，不是单章细节）"
-    }}
-  ],
-  "world_setting_updates": [
-    {{
-      "key": "设定条目名称",
-      "value": "具体设定内容",
-      "reason": "章节中揭示了这个新设定"
-    }}
   ]
 }}
 
-只返回 JSON，不包含其他文字。某类没有需要更新时对应数组留空 []。
+注意：
+- new_characters 只填已有人物列表中**完全没有**的角色
+- character_updates 中 name 必须严格来自已有人物列表，不得填写不在列表中的名字
+- 只返回 JSON，不包含其他文字，没有变化时对应数组留空 []"""
 
-**outline_updates 极其严格**：绝大多数章节 outline_updates 应为 []。只有当本章造成全书矛盾的根本性结构改变（如：敌人变成盟友、主线目标彻底转变）时，才填写 outline_updates，且 merged_content 字数不超过 300 字。"""
-
-        response = self.llm.generate(
-            self.SYSTEM_PROMPT,
-            user_prompt,
-            max_tokens=4096,
-            temperature=self.temperature,
-        )
-        json_start = response.find("{")
-        json_end = response.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            result = _safe_json_loads(response[json_start:json_end])
-            # 过滤掉 character_updates 中不在已有人物列表里的条目（防止 AI 乱填）
-            if isinstance(result, dict) and "character_updates" in result:
+        try:
+            response = self.llm.generate(
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=2048,
+                temperature=self.temperature,
+            )
+            j0, j1 = response.find("{"), response.rfind("}") + 1
+            if j0 >= 0 and j1 > j0:
+                result = _safe_json_loads(response[j0:j1])
+                # 过滤 character_updates 中不在已有人物列表里的条目
                 result["character_updates"] = [
-                    u
-                    for u in result.get("character_updates", [])
+                    u for u in result.get("character_updates", [])
                     if u.get("name") in existing_chars
                 ]
-            # 过滤掉 new_characters 中实际已存在的角色：
-            #   ① 精确名命中（LLM 名字与库里完全一致但仍误报）
-            #   ② 包含关系命中（别称/简称/尊称，如"老周"↔"周建国"），
-            #      要求双方名字长度均 ≥ 2，避免单字误杀
-            if isinstance(result, dict) and "new_characters" in result:
+                # 过滤 new_characters 中实际已存在的角色（含别称/简称）
                 def _is_existing(name: str) -> bool:
                     if name in existing_chars:
                         return True
@@ -890,23 +820,258 @@ total_outline 和 world_setting 的字段若文档未提及则留空字符串。
                     c for c in result.get("new_characters", [])
                     if not _is_existing(c.get("name", ""))
                 ]
-            # 确保新字段存在（兼容旧版 LLM 未输出的情况）
-            result.setdefault("timeline_events", [])
-            result.setdefault("foreshadowing_updates", [])
-            # outline_updates 字数兜底：超过 350 字的 merged_content 截断并警告
-            for upd in result.get("outline_updates", []):
-                mc = upd.get("merged_content", "")
-                if len(mc) > 350:
-                    upd["merged_content"] = mc[:350]
-                    upd["_truncated"] = True
-            return result
+                return result
+        except Exception as e:
+            print(f"[OutlineAgent] _analyze_characters 失败：{e}", file=sys.stderr)
+        return {"new_characters": [], "character_updates": []}
+
+    def _analyze_timeline(
+        self,
+        chapter_number: int,
+        content: str,
+        chapter_outline_text: str,
+    ) -> dict:
+        """Sub-Agent 2：提取本章重要时间线事件。
+
+        只需要章纲摘要 + 正文，不需要人物档案/世界观。
+        失败时返回空结构，不上抛异常。
+        """
+        import sys
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，提取本章发生的**重要事件**，用于记录时间线。
+
+【本章章纲（供参考）】
+{chapter_outline_text or "（无章纲信息）"}
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+请按以下 JSON 格式输出，只列出对后续剧情有意义的事件（1-5 条为宜），不要虚构：
+
+{{
+  "timeline_events": [
+    {{
+      "event_name": "事件名称（15字以内）",
+      "event_description": "事件描述（谁在哪里做了什么，结果如何，100字以内）",
+      "in_story_time": "故事内时间（如：第三年春、日落时分，不确定可留空）",
+      "characters_involved": ["人物A", "人物B"],
+      "impact": "事件对后续剧情的影响（50字以内）"
+    }}
+  ]
+}}
+
+只返回 JSON，不包含其他文字，没有重要事件时留空 []"""
+
+        try:
+            response = self.llm.generate(
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=1024,
+                temperature=self.temperature,
+            )
+            j0, j1 = response.find("{"), response.rfind("}") + 1
+            if j0 >= 0 and j1 > j0:
+                return _safe_json_loads(response[j0:j1])
+        except Exception as e:
+            print(f"[OutlineAgent] _analyze_timeline 失败：{e}", file=sys.stderr)
+        return {"timeline_events": []}
+
+    def _analyze_foreshadowing(
+        self,
+        chapter_number: int,
+        content: str,
+        existing_fs_names: list[str],
+    ) -> dict:
+        """Sub-Agent 3：识别本章新埋下的伏笔/线索/情报。
+
+        传入已有伏笔名列表避免重复录入，不传人物档案/大纲全文。
+        失败时返回空结构，不上抛异常。
+        """
+        import sys
+        existing_fs_text = "、".join(existing_fs_names) if existing_fs_names else "（暂无）"
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，只关注**伏笔与线索**：
+本章是否埋下了新的伏笔、暗示、悬念或情报，且这些内容在后续章节中需要被回收/揭示？
+
+【已有伏笔列表（不要重复录入）】
+{existing_fs_text}
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+请按以下 JSON 格式输出，只列出本章**新出现**的伏笔，不要重复已有伏笔，不要虚构：
+
+{{
+  "foreshadowing_updates": [
+    {{
+      "name": "伏笔名称（15字以内，要具体）",
+      "description": "伏笔内容详细描述（100字以内，说清楚在正文哪里埋下的）",
+      "importance": "high 或 medium 或 low",
+      "collect_by_chapter": null,
+      "notes": "回收建议或关联线索（可留空）"
+    }}
+  ]
+}}
+
+只返回 JSON，不包含其他文字，没有新伏笔时留空 []"""
+
+        try:
+            response = self.llm.generate(
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=1024,
+                temperature=self.temperature,
+            )
+            j0, j1 = response.find("{"), response.rfind("}") + 1
+            if j0 >= 0 and j1 > j0:
+                return _safe_json_loads(response[j0:j1])
+        except Exception as e:
+            print(f"[OutlineAgent] _analyze_foreshadowing 失败：{e}", file=sys.stderr)
+        return {"foreshadowing_updates": []}
+
+    def _analyze_outline_world(
+        self,
+        chapter_number: int,
+        content: str,
+        global_ctx: str,
+    ) -> dict:
+        """Sub-Agent 4：检测全书级结构变化 + 新世界观规则。
+
+        这是最保守的 sub-agent，绝大多数章节应返回全空。
+        使用更低的 temperature(0.1) 减少误触发。
+        失败时返回空结构，不上抛异常。
+        """
+        import sys
+        user_prompt = f"""请仔细阅读第{chapter_number}章正文，只关注以下两类**极罕见**的变化：
+
+1. **全书矛盾结构/主角弧光的根本性转折**（outline_updates）
+   - 例如：敌人变成盟友、主线目标从A彻底转变为B、主角价值观彻底颠覆
+   - ❌ 不是：单章事件细节、人物状态变化、局部剧情转折
+   - ⚠️ 绝大多数章节 outline_updates 应为 []
+
+2. **新揭示的世界运行规则/地名/势力/体系**（world_setting_updates）
+   - 例如：首次出现的魔法体系规则、新势力登场、新地点揭示
+   - ❌ 不是：人物行为、剧情事件、人物关系
+
+【现有大纲与世界观】
+{global_ctx}
+
+【第{chapter_number}章正文】
+{content[:8000]}{"…（已截断）" if len(content) > 8000 else ""}
+
+请按以下 JSON 格式输出，严格只填写上述两类变化，不要虚构：
+
+{{
+  "outline_updates": [
+    {{
+      "field": "main_conflict 或 protagonist_arc 或 ending_summary 等字段名",
+      "merged_content": "替换原字段的完整新文本（≤300字，必须体现根本性结构变化）",
+      "reason": "为什么这是全书级的根本性转折（必须说明结构性变化，不是单章细节）"
+    }}
+  ],
+  "world_setting_updates": [
+    {{
+      "key": "设定条目名称",
+      "value": "具体设定内容",
+      "reason": "章节中首次揭示了这个世界规则/设定"
+    }}
+  ]
+}}
+
+只返回 JSON，不包含其他文字。
+**再次强调**：outline_updates 在绝大多数章节应为 []，只有真正的全书级结构性转折才填写。"""
+
+        try:
+            response = self.llm.generate(
+                self.SYSTEM_PROMPT, user_prompt, max_tokens=1024,
+                temperature=0.1,  # 最保守，减少误触发
+            )
+            j0, j1 = response.find("{"), response.rfind("}") + 1
+            if j0 >= 0 and j1 > j0:
+                result = _safe_json_loads(response[j0:j1])
+                # outline_updates 字数兜底
+                for upd in result.get("outline_updates", []):
+                    mc = upd.get("merged_content", "")
+                    if len(mc) > 350:
+                        upd["merged_content"] = mc[:350]
+                        upd["_truncated"] = True
+                return result
+        except Exception as e:
+            print(f"[OutlineAgent] _analyze_outline_world 失败：{e}", file=sys.stderr)
+        return {"outline_updates": [], "world_setting_updates": []}
+
+    # ── 主方法（公有接口，调用方零感知）────────────────────────────────────────
+
+    def analyze_chapter_consistency(self, chapter_number: int, content: str) -> dict:
+        """
+        分析章节内容，检测是否需要同步更新大纲或设定。
+
+        内部并行调用 4 个专职 Sub-Agent，各司其职：
+          - Sub-Agent 1 (_analyze_characters)    → new_characters + character_updates
+          - Sub-Agent 2 (_analyze_timeline)       → timeline_events
+          - Sub-Agent 3 (_analyze_foreshadowing)  → foreshadowing_updates
+          - Sub-Agent 4 (_analyze_outline_world)  → outline_updates + world_setting_updates
+
+        Returns:
+            {
+              "new_characters": [...],
+              "character_updates": [...],
+              "timeline_events": [...],
+              "foreshadowing_updates": [...],
+              "outline_updates": [...],
+              "world_setting_updates": [...]
+            }
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from core.memory import _extract_chapter_keywords
+
+        # ── 共享前置查询（一次性，4 个 sub-agent 按需取用）──────────────────
+        chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
+        chapter_keywords = _extract_chapter_keywords(chapter) if chapter else set()
+        all_chars = self.memory.global_mem.get_all_characters()
+        existing_chars = [c.name for c in all_chars]
+
+        # 已有伏笔名列表（仅名字，不传完整内容，减少 sub-agent 3 的 token）
+        all_fs = self.memory.global_mem.get_all_foreshadowings()
+        existing_fs_names = [f.name for f in all_fs if f.name]
+
+        # 章纲摘要文本（sub-agent 2 使用）
+        chapter_outline_text = chapter.to_outline_text() if chapter else ""
+
+        # 完整全局上下文（仅 sub-agent 4 使用，其他 sub-agent 不需要）
+        global_ctx = self.memory.global_mem.build_global_context(
+            chapter_keywords=chapter_keywords if chapter_keywords else None,
+            current_chapter=chapter_number,
+        )
+
+        # ── 并行执行 4 个 sub-agent ──────────────────────────────────────────
+        _empty = {
+            "new_characters": [], "character_updates": [],
+            "timeline_events": [], "foreshadowing_updates": [],
+            "outline_updates": [], "world_setting_updates": [],
+        }
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            f_chars   = executor.submit(
+                self._analyze_characters, chapter_number, content, existing_chars
+            )
+            f_time    = executor.submit(
+                self._analyze_timeline, chapter_number, content, chapter_outline_text
+            )
+            f_fs      = executor.submit(
+                self._analyze_foreshadowing, chapter_number, content, existing_fs_names
+            )
+            f_outline = executor.submit(
+                self._analyze_outline_world, chapter_number, content, global_ctx
+            )
+
+        # ── 合并结果（各字段独立，某个失败不影响其他）──────────────────────
+        chars_result   = f_chars.result()
+        time_result    = f_time.result()
+        fs_result      = f_fs.result()
+        outline_result = f_outline.result()
+
         return {
-            "new_characters": [],
-            "character_updates": [],
-            "timeline_events": [],
-            "foreshadowing_updates": [],
-            "outline_updates": [],
-            "world_setting_updates": [],
+            "new_characters":        chars_result.get("new_characters", []),
+            "character_updates":     chars_result.get("character_updates", []),
+            "timeline_events":       time_result.get("timeline_events", []),
+            "foreshadowing_updates": fs_result.get("foreshadowing_updates", []),
+            "outline_updates":       outline_result.get("outline_updates", []),
+            "world_setting_updates": outline_result.get("world_setting_updates", []),
         }
 
     def extract_relationships(self, chapter_number: int, content: str) -> list[dict]:
