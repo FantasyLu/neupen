@@ -725,9 +725,9 @@ LanceDB 还有一个独特优势：**单表多小说**。所有小说的 chunk �
 
 ### Q12: 你是怎么做 Agent 可观测性的？
 
-**回答：** 系统集成了 Arize Phoenix + OpenTelemetry，在 `app.py` 启动时通过 `@st.cache_resource` 单次初始化，自动拉起本地 Phoenix 服务（`phoenix serve`）。
+**回答：** 系统集成了 Arize Phoenix + OpenTelemetry，在 `app.py` 启动时通过 `@st.cache_resource` 单次初始化，自动拉起本地 Phoenix 服务（`localhost:6006`）。
 
-**为什么不在项目 venv 中直接 pip install phoenix？** Phoenix 18.x 要求 `opentelemetry-semconv>=0.50b0`，而项目依赖的 CrewAI 把 `opentelemetry-api` 锁死在 `~=1.34.0`，两者存在传递依赖冲突。解决方案是用 `uv tool install arize-phoenix` 隔离安装，通过 subprocess 调用 `~/.local/bin/phoenix serve` 启动服务端，项目 venv 只需要 `opentelemetry-sdk` + `opentelemetry-exporter-otlp` + `openinference-instrumentation-*` 这几个轻量包。
+**为什么不在项目 venv 中直接 `pip install arize-phoenix`？** 可以，而且就是这么做的。Phoenix 直接安装在项目 venv 中，`core/tracing.py` 启动时优先使用 `sys.executable` 同目录下的 `.venv/bin/phoenix` 可执行文件，通过 subprocess 在后台拉起 server，不依赖任何外部安装。
 
 **Span 粒度设计：** 两层并用——workflow 级别手动 span（`workflow.write_chapter` / `agent.writer` / `agent.polisher` / `reviewer.gate.{name}`）记录业务语义；OTel instrumentor 自动捕获每个 LLM 调用的 token 数、model、latency。这样既能在 Phoenix UI 看到一次章节生成的完整调用链，也能下钻到具体某次 Anthropic API 调用的耗时和消耗。
 

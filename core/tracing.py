@@ -9,12 +9,15 @@ Agent 轨迹追踪模块 — Arize Phoenix + OpenTelemetry
 
 访问 UI：http://localhost:6006
 
+依赖：arize-phoenix 已在项目 venv 中安装（pip install arize-phoenix），
+      启动时优先使用 venv 内的 .venv/bin/phoenix 可执行文件。
+
 环境变量：
   NEUPEN_TRACING=0        禁用 tracing（默认启用）
   PHOENIX_HOST            指定外部 Phoenix host，设置后跳过本地启动
   PHOENIX_PORT            Phoenix HTTP 端口（默认 6006）
   PHOENIX_GRPC_PORT       Phoenix gRPC 端口（默认 4317）
-  PHOENIX_BIN             phoenix 可执行文件路径（默认自动查找）
+  PHOENIX_BIN             覆盖 phoenix 可执行文件路径（默认使用 venv 内的 phoenix）
 """
 
 import atexit
@@ -44,20 +47,20 @@ _PHOENIX_STARTUP_TIMEOUT = int(os.environ.get("PHOENIX_STARTUP_TIMEOUT", "30"))
 def _find_phoenix_bin() -> str:
     """
     按优先级查找 phoenix 可执行文件：
-    1. 环境变量 PHOENIX_BIN
-    2. ~/.local/bin/phoenix（uv tool install 默认位置）
+    1. 环境变量 PHOENIX_BIN（高级用户手动覆盖）
+    2. 当前 venv 的 bin 目录（与 sys.executable 同目录，pip install 默认位置）
     3. PATH 中的 phoenix
     返回找到的路径，找不到返回 None。
     """
-    # 1. 环境变量
+    # 1. 环境变量覆盖
     env_bin = os.environ.get("PHOENIX_BIN")
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
-    # 2. uv tool 默认安装位置
-    uv_bin = os.path.expanduser("~/.local/bin/phoenix")
-    if os.path.isfile(uv_bin) and os.access(uv_bin, os.X_OK):
-        return uv_bin
+    # 2. venv bin 目录（pip install arize-phoenix 的默认安装位置）
+    venv_bin = os.path.join(os.path.dirname(sys.executable), "phoenix")
+    if os.path.isfile(venv_bin) and os.access(venv_bin, os.X_OK):
+        return venv_bin
 
     # 3. PATH
     path_bin = shutil.which("phoenix")
@@ -91,7 +94,7 @@ def _start_phoenix_server() -> bool:
     if not phoenix_bin:
         logger.warning(
             "[Tracing] 未找到 phoenix 可执行文件。\n"
-            "请运行：uv tool install arize-phoenix\n"
+            "请运行：pip install arize-phoenix\n"
             "或设置环境变量 PHOENIX_BIN 指向 phoenix 二进制路径"
         )
         return False
