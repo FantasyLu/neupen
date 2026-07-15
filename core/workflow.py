@@ -34,6 +34,7 @@ from core.config import (
     WORD_COUNT_TOLERANCE,
     MAX_PARALLEL_REVIEW_ROUNDS,
 )
+from core.tracing import start_span
 
 
 # ======================================
@@ -452,6 +453,40 @@ class NovelWorkflow:
         """write_and_review_chapter 的实际实现（由幂等包装层调用）"""
         import json as json_module
 
+        with start_span("workflow.write_chapter", {
+            "novel_id": self.novel_id,
+            "chapter_number": chapter_number,
+            "word_target": word_target,
+            "auto_polish": auto_polish,
+            "skip_review": skip_review,
+        }) as root_span:
+            return self._write_and_review_chapter_traced(
+                root_span=root_span,
+                chapter_number=chapter_number,
+                word_target=word_target,
+                word_count_tolerance=word_count_tolerance,
+                auto_polish=auto_polish,
+                progress_callback=progress_callback,
+                stream_callback=stream_callback,
+                prefilled_content=prefilled_content,
+                skip_review=skip_review,
+            )
+
+    def _write_and_review_chapter_traced(
+        self,
+        root_span,
+        chapter_number: int,
+        word_target: int = 3000,
+        word_count_tolerance: float = None,
+        auto_polish: bool = True,
+        progress_callback: Callable = None,
+        stream_callback: Callable = None,
+        prefilled_content: str = None,
+        skip_review: bool = False,
+    ) -> WorkflowResult:
+        """write_and_review_chapter 的实际实现（由幂等包装层调用）"""
+        import json as json_module
+
         try:
             _novel = self.memory.global_mem.get_novel()
             # 字数容差：UI 传入 > quality_config > 全局默认
@@ -474,25 +509,32 @@ class NovelWorkflow:
                 if progress_callback:
                     progress_callback(f"✍️ 正在写作第{chapter_number}章...")
 
-                current_content = self.writer_agent.write_chapter(
-                    chapter_number=chapter_number,
-                    word_target=word_target,
-                    word_count_tolerance=_tolerance,
-                    stream_callback=stream_callback,
-                )
+                with start_span("agent.writer", {"chapter_number": chapter_number, "word_target": word_target}) as writer_span:
+                    current_content = self.writer_agent.write_chapter(
+                        chapter_number=chapter_number,
+                        word_target=word_target,
+                        word_count_tolerance=_tolerance,
+                        stream_callback=stream_callback,
+                    )
+                    writer_span.set_attribute("output_word_count", len(current_content))
             draft_content = current_content
+            root_span.set_attribute("draft_word_count", len(draft_content))
             self.memory.save_new_chapter(chapter_number, draft_content, "draft")
 
             chapter = self.memory.global_mem.get_chapter_outline(chapter_number)
 
             # Step 2: 润色（先润色，让审核对最终呈现的文本做判断）
+            _polish_report = ""
+            _polish_reasoning = ""
             if auto_polish:
                 if progress_callback:
                     progress_callback(f"✨ 润色草稿...")
                 try:
-                    current_content, _ = self.polisher_agent.polish_chapter(
-                        current_content
-                    )
+                    with start_span("agent.polisher", {"chapter_number": chapter_number}) as polish_span:
+                        current_content, _polish_reasoning, _polish_report = self.polisher_agent.polish_chapter(
+                            current_content
+                        )
+                        polish_span.set_attribute("output_word_count", len(current_content))
                 except Exception:
                     pass  # 润色失败则继续用草稿
 
@@ -525,21 +567,24 @@ class NovelWorkflow:
                 final_score = 10.0
                 final_passed = True
             else:
-                last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
-                    chapter_number,
-                    current_content,
-                    progress_callback=progress_callback,
-                    max_rounds=_max_review_rounds,
-                    writer_agent=self.writer_agent,
-                    word_target=word_target,
-                    word_count_tolerance=_tolerance,
-                )
-
-                all_gate_results_dicts = last_parallel_result["all_gate_results"]
-                final_score = last_parallel_result["final_score"]
-                final_passed = last_parallel_result["passed"]
-                # 若经过多轮修正，内容已更新
-                current_content = last_parallel_result.get("content", current_content)
+                with start_span("agent.reviewer", {"chapter_number": chapter_number, "max_rounds": _max_review_rounds}) as reviewer_span:
+                    last_parallel_result = self.reviewer_agent.parallel_pipeline_review(
+                        chapter_number,
+                        current_content,
+                        progress_callback=progress_callback,
+                        max_rounds=_max_review_rounds,
+                        writer_agent=self.writer_agent,
+                        word_target=word_target,
+                        word_count_tolerance=_tolerance,
+                    )
+                    all_gate_results_dicts = last_parallel_result["all_gate_results"]
+                    final_score = last_parallel_result["final_score"]
+                    final_passed = last_parallel_result["passed"]
+                    reviewer_span.set_attribute("final_score", final_score)
+                    reviewer_span.set_attribute("passed", final_passed)
+                    reviewer_span.set_attribute("rounds", last_parallel_result.get("rounds", 1))
+                    # 若经过多轮修正，内容已更新
+                    current_content = last_parallel_result.get("content", current_content)
 
                 if final_passed:
                     if progress_callback:
@@ -671,6 +716,8 @@ class NovelWorkflow:
                     "review_passed": final_passed,
                     "overall_score": final_score,
                     "sync_checks": sync_checks,
+                    "polish_report": _polish_report,
+                    "polish_reasoning": _polish_reasoning,
                 },
             )
 

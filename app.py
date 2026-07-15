@@ -244,6 +244,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+@st.cache_resource
+def _init_tracing():
+    from core.tracing import init_tracing
+    return init_tracing()
+
+_init_tracing()
+
 from ui.app import main
 
 main()

@@ -736,50 +736,78 @@ def page_writing():
                     # ── Agentic 写作路径 ──────────────────────────────────
                     status_area.info(f"🧠 Agentic 模式：Agent 正在思考需要哪些信息…")
 
-                    def _handle_event(event_type: str, data: dict, agentic_status):
-                        """处理单个 agentic 事件，更新 st.status 内容。"""
+                    _gen_log: list[str] = []  # 收集本次生成过程日志，完成后存入 session_state
+
+                    def _handle_event(event_type: str, data: dict, agentic_status, stage: str = "write"):
+                        """处理单个 agentic 事件，更新 st.status 内容并收集日志。
+                        stage: "write" 写作阶段 / "review" 审核阶段，用于区分 reasoning 存储 key。
+                        """
                         from core.agentic_loop import StepEvent
                         if event_type == StepEvent.THINKING:
                             thinking_text = data.get("thinking_text", "").strip()
                             reasoning = data.get("reasoning", "").strip()
+                            tool_count = data.get("tool_count", 0)
+                            header = f"💭 **思考**（准备调用 {tool_count} 个工具）" if tool_count else "💭 **思考**"
+                            agentic_status.write(header)
+                            # reasoning 直接写入 status 主体，截取前 300 字避免过长
                             if reasoning:
-                                with agentic_status:
-                                    with st.expander("🧠 模型思维链", expanded=False):
-                                        st.markdown(reasoning)
-                            if thinking_text:
-                                agentic_status.write("💭 **思考**")
+                                preview = reasoning[:300] + ("…" if len(reasoning) > 300 else "")
+                                agentic_status.write(preview)
+                                _gen_log.append(f"{header}\n{preview}")
+                            elif thinking_text:
                                 agentic_status.write(thinking_text)
+                                _gen_log.append(f"{header}\n{thinking_text}")
+                            else:
+                                _gen_log.append(header)
                         elif event_type == StepEvent.TOOL_CALL:
                             tool = data.get("tool", "")
                             args = data.get("args", {})
                             idx = data.get("call_index", "?")
                             limit = data.get("max_calls", 15)
                             args_str = "、".join(f"{k}={v}" for k, v in args.items())
-                            agentic_status.write(f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}")
+                            msg = f"**[{idx}/{limit}]** 查询 `{tool}` — {args_str}"
+                            agentic_status.write(msg)
                             status_area.info(f"🔍 正在查询：{tool}（{idx}/{limit}）")
+                            _gen_log.append(msg)
                         elif event_type == StepEvent.TOOL_RESULT:
                             result_len = data.get("result_length", 0)
-                            agentic_status.write(f"→ 获取 {result_len} 字")
+                            msg = f"→ 获取 {result_len} 字"
+                            agentic_status.write(msg)
+                            _gen_log.append(msg)
                         elif event_type == StepEvent.DUPLICATE_SKIP:
                             tool = data.get("tool", "")
-                            agentic_status.write(f"*(重复查询 `{tool}`，使用缓存)*")
+                            msg = f"*(重复查询 `{tool}`，使用缓存)*"
+                            agentic_status.write(msg)
+                            _gen_log.append(msg)
                         elif event_type == StepEvent.STALL_DETECTED:
                             agentic_status.write("⚠️ 检测到重复查询，开始生成正文…")
                             status_area.info("✍️ 信息收集完毕，开始生成正文…")
+                            _gen_log.append("⚠️ 检测到重复查询，开始生成正文…")
                         elif event_type == StepEvent.MAX_CALLS_REACHED:
                             agentic_status.write("📊 已达查询上限，开始生成正文…")
                             status_area.info("✍️ 查询完成，开始生成正文…")
+                            _gen_log.append("📊 已达查询上限，开始生成正文…")
                         elif event_type == StepEvent.BUDGET_EXCEEDED:
                             agentic_status.write("⚠️ Token 预算接近上限，开始生成正文…")
                             status_area.info("✍️ 开始生成正文…")
+                            _gen_log.append("⚠️ Token 预算接近上限，开始生成正文…")
                         elif event_type == StepEvent.FINAL_OUTPUT:
-                            agentic_status.write("✍️ 信息收集完毕，正在生成正文…")
-                            status_area.info("✅ 正文生成完成，进入审核流程…")
+                            word_count = len(data.get("text", ""))
+                            msg = f"✍️ 正文生成完成（{word_count} 字），进入字数校验…"
+                            agentic_status.write(msg)
+                            status_area.info(msg)
+                            _gen_log.append(msg)
                             all_reasoning = data.get("all_reasoning", "").strip()
                             if all_reasoning:
-                                st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = all_reasoning
+                                if stage == "write":
+                                    st.session_state[f"write_reasoning_{novel_id}_{selected_ch_num}"] = all_reasoning
+                                else:
+                                    st.session_state[f"review_reasoning_agentic_{novel_id}_{selected_ch_num}"] = all_reasoning
                         elif event_type == StepEvent.STATUS_MSG:
-                            agentic_status.write(data.get("msg", ""))
+                            msg = data.get("msg", "")
+                            agentic_status.write(msg)
+                            status_area.info(msg)
+                            _gen_log.append(msg)
 
                     with st.status("🤔 Agent 思考过程", expanded=True) as agentic_status:
                         agentic_status.write("**写作阶段**")
@@ -792,13 +820,18 @@ def page_writing():
                             word_target=word_target,
                             word_count_tolerance=word_tolerance,
                         ):
-                            _handle_event(event_type, data, agentic_status)
+                            _handle_event(event_type, data, agentic_status, stage="write")
                             if event_type == "content_ready":
                                 content = data.get("content", "")
 
                         status_area.info(
-                            f"✍️ 正文生成完成（{len(content)} 字），进入 Agentic 审核…"
+                            f"✅ 写作完成（{len(content)} 字），进入 Agentic 审核…"
                         )
+
+                        # 写作阶段结束后立即保存 last_reasoning（兜底：FINAL_OUTPUT 未携带 reasoning 时）
+                        _wr_key = f"write_reasoning_{novel_id}_{selected_ch_num}"
+                        if not st.session_state.get(_wr_key) and writer.llm.last_reasoning:
+                            st.session_state[_wr_key] = writer.llm.last_reasoning
 
                         agentic_status.write("---")
                         agentic_status.write("**审核阶段**")
@@ -811,7 +844,7 @@ def page_writing():
                             content=content,
                             writer_agent=writer,
                         ):
-                            _handle_event(event_type, data, agentic_status)
+                            _handle_event(event_type, data, agentic_status, stage="review")
                             if event_type == "content_ready":
                                 review_result = data.get("result", {})
                         reviewer.close()
@@ -825,6 +858,7 @@ def page_writing():
                         agentic_status.write(
                             f"**审核完成**：{result_label} | 得分 {review_score}/10 | 共 {review_rounds} 轮"
                         )
+                        _gen_log.append(f"**审核完成**：{result_label} | 得分 {review_score}/10 | 共 {review_rounds} 轮")
                         agentic_status.update(
                             label=f"🤔 Agent 思考过程（{'通过' if review_passed else '未通过'}，{review_score}/10）",
                             state="complete" if review_passed else "error",
@@ -833,10 +867,13 @@ def page_writing():
 
                     writer.close()
 
-                    # 保存写作阶段思维链（兜底：若 FINAL_OUTPUT 事件未写入，则用 last_reasoning）
-                    _wr_key = f"write_reasoning_{novel_id}_{selected_ch_num}"
-                    if not st.session_state.get(_wr_key) and writer.llm.last_reasoning:
-                        st.session_state[_wr_key] = writer.llm.last_reasoning
+                    # 保存 Agentic 生成过程日志到 session_state（rerun 后仍可展示）
+                    st.session_state[f"gen_log_{novel_id}_{selected_ch_num}"] = _gen_log
+                    st.session_state[f"gen_review_agentic_{novel_id}_{selected_ch_num}"] = {
+                        "passed": review_passed,
+                        "score": review_score,
+                        "rounds": review_rounds,
+                    }
 
                     # 将最终内容交给 workflow 保存（跳过写作步骤+标准审核，直接保存+润色）
                     status_area.info("💾 正在保存并润色…")
@@ -874,56 +911,37 @@ def page_writing():
                     stream_preview_area.empty()
                     score = result.data.get("overall_score", 0)
                     passed = result.data.get("review_passed", True)
-                    if passed:
-                        st.success(
-                            f"✅ 第{selected_ch_num}章生成完成！评分：{score:.1f}/10"
-                        )
-                    else:
-                        st.warning(f"⚠️ 章节生成完成，存在问题。评分：{score:.1f}/10")
-
                     report = result.data.get("review_report", {})
-                    if report.get("conflicts"):
-                        with st.expander(
-                            f"📋 审核报告（{len(report['conflicts'])}个问题）"
-                        ):
-                            st.markdown(f"**摘要：** {report.get('summary', '')}")
-                            for c in report["conflicts"]:
-                                sev = c.get("severity", 0)
-                                icon = (
-                                    "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
-                                )
-                                st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
-                                st.markdown(f"- {c.get('description', '')}")
 
-                    write_reasoning = st.session_state.get(
-                        f"write_reasoning_{novel_id}_{selected_ch_num}", ""
-                    )
-                    if write_reasoning:
-                        with st.expander("💭 写作思考过程", expanded=False):
-                            st.markdown(write_reasoning)
+                    # 保存生成结果到 session_state，rerun 后在固定区域持续展示
+                    st.session_state[f"gen_result_{novel_id}_{selected_ch_num}"] = {
+                        "score": score,
+                        "passed": passed,
+                        "report": report,
+                    }
+
+                    # 润色说明和思维链（workflow 返回）
+                    polish_report = result.data.get("polish_report", "")
+                    polish_reasoning = result.data.get("polish_reasoning", "")
+                    if polish_report:
+                        st.session_state[f"polish_report_{novel_id}_{selected_ch_num}"] = polish_report
+                    if polish_reasoning:
+                        st.session_state[f"polish_reasoning_{novel_id}_{selected_ch_num}"] = polish_reasoning
 
                     # 自动同步检测结果写入 session state → 用户无需手动触发
                     sync_checks = result.data.get("sync_checks", {})
                     if sync_checks:
                         sync_key = f"writing_sync_{novel_id}_{selected_ch_num}"
                         st.session_state[sync_key] = sync_checks
-                        total = (
-                            len(sync_checks.get("new_characters", []))
-                            + len(sync_checks.get("character_updates", []))
-                            + len(sync_checks.get("timeline_events", []))
-                            + len(sync_checks.get("foreshadowing_updates", []))
-                            + len(sync_checks.get("outline_updates", []))
-                            + len(sync_checks.get("world_setting_updates", []))
-                        )
-                        if total:
-                            st.info(
-                                f"🔄 发现 {total} 条同步建议（含人物状态、时间线、伏笔），已在「审核」标签页等待确认"
-                            )
 
                     # 清除编辑区缓存，确保显示新生成的内容
                     st.session_state.pop(
                         f"edit_content_{novel_id}_{selected_ch_num}", None
                     )
+                    # 递增版本号，强制 ace 编辑器重建以显示新生成的内容
+                    # （ace 组件 key 不变时会用自身缓存的旧值覆盖 session_state，导致旧内容残留）
+                    _ev_key = f"editor_version_{novel_id}_{selected_ch_num}"
+                    st.session_state[_ev_key] = st.session_state.get(_ev_key, 0) + 1
                     st.rerun()
                 else:
                     stream_preview_area.empty()
@@ -933,6 +951,71 @@ def page_writing():
                 stream_preview_area.empty()
                 st.session_state.is_writing = False
                 st.error(f"生成出错：{e}")
+
+        # ── 生成结果固定展示区（rerun 后持续保留）────────────────────────────
+        gen_result = st.session_state.get(f"gen_result_{novel_id}_{selected_ch_num}")
+        if gen_result:
+            score = gen_result["score"]
+            passed = gen_result["passed"]
+            report = gen_result.get("report", {})
+            sync_checks = st.session_state.get(f"writing_sync_{novel_id}_{selected_ch_num}", {})
+
+            if passed:
+                st.success(f"✅ 第{selected_ch_num}章生成完成！评分：{score:.1f}/10")
+            else:
+                st.warning(f"⚠️ 章节生成完成，存在问题。评分：{score:.1f}/10")
+
+            # 同步建议提示
+            if sync_checks:
+                total = (
+                    len(sync_checks.get("new_characters", []))
+                    + len(sync_checks.get("character_updates", []))
+                    + len(sync_checks.get("timeline_events", []))
+                    + len(sync_checks.get("foreshadowing_updates", []))
+                    + len(sync_checks.get("outline_updates", []))
+                    + len(sync_checks.get("world_setting_updates", []))
+                )
+                if total:
+                    st.info(f"🔄 发现 {total} 条同步建议（含人物状态、时间线、伏笔），已在「审核」标签页等待确认")
+
+            # ── 写作思考过程（Agentic 写作阶段 reasoning）
+            write_reasoning = st.session_state.get(f"write_reasoning_{novel_id}_{selected_ch_num}", "")
+            if write_reasoning:
+                with st.expander("💭 写作思考过程", expanded=False):
+                    st.markdown(write_reasoning)
+
+            # ── Agentic 审核结果（含工具调用日志 + 审核 reasoning）
+            agentic_review = st.session_state.get(f"gen_review_agentic_{novel_id}_{selected_ch_num}")
+            if agentic_review:
+                r_label = "✅ PASS" if agentic_review["passed"] else "❌ REJECT"
+                with st.expander(
+                    f"🔍 Agentic 审核：{r_label} | 得分 {agentic_review['score']}/10 | 共 {agentic_review['rounds']} 轮",
+                    expanded=False,
+                ):
+                    # 审核 reasoning
+                    review_reasoning_agentic = st.session_state.get(
+                        f"review_reasoning_agentic_{novel_id}_{selected_ch_num}", ""
+                    )
+                    if review_reasoning_agentic:
+                        st.markdown("**审核思考过程**")
+                        st.markdown(review_reasoning_agentic)
+                        st.divider()
+                    # 工具调用日志
+                    gen_log = st.session_state.get(f"gen_log_{novel_id}_{selected_ch_num}", [])
+                    if gen_log:
+                        st.markdown("**Agent 工具调用过程**")
+                        for line in gen_log:
+                            st.markdown(line)
+
+            # ── 标准审核冲突报告（非 Agentic 路径）
+            elif report.get("conflicts"):
+                with st.expander(f"📋 审核报告（{len(report['conflicts'])}个问题）", expanded=False):
+                    st.markdown(f"**摘要：** {report.get('summary', '')}")
+                    for c in report["conflicts"]:
+                        sev = c.get("severity", 0)
+                        icon = "🔴" if sev >= 7 else ("🟡" if sev >= 4 else "🟢")
+                        st.markdown(f"{icon} **[{c.get('type')}] 严重度{sev}**")
+                        st.markdown(f"- {c.get('description', '')}")
 
         # 章节内容区（tabs）
         pending = st.session_state.get(pending_key)
@@ -1128,12 +1211,14 @@ def page_writing():
                             with st.spinner("润色中（含去AI味后处理，可能需要一点时间）…"):
                                 try:
                                     agent = PolisherAgent(novel_id)
-                                    polished, reasoning = agent.polish_chapter(current_text)
+                                    polished, reasoning, polish_report = agent.polish_chapter(current_text)
                                     agent.close()
                                     st.session_state[pending_key] = polished
                                     st.session_state[text_key] = polished
                                     polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"
                                     st.session_state[polish_reasoning_key] = reasoning
+                                    polish_report_key = f"polish_report_{novel_id}_{selected_ch_num}"
+                                    st.session_state[polish_report_key] = polish_report
                                     # 递增版本号，强制 ace 编辑器重建以显示新内容
                                     st.session_state[editor_version_key] = (
                                         st.session_state.get(editor_version_key, 0) + 1
@@ -1142,6 +1227,13 @@ def page_writing():
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"润色失败：{e}")
+
+                # 润色说明展示（润色思路 + 改动列表）
+                polish_report_key = f"polish_report_{novel_id}_{selected_ch_num}"
+                polish_report = st.session_state.get(polish_report_key, "")
+                if polish_report:
+                    with st.expander("📝 润色说明", expanded=True):
+                        st.markdown(polish_report)
 
                 # 润色思维链展示
                 polish_reasoning_key = f"polish_reasoning_{novel_id}_{selected_ch_num}"

@@ -218,6 +218,7 @@ class AgenticLoop:
         system_prompt: str,
         initial_user_prompt: str,
         max_tokens_per_call: int = 8192,
+        force_tool_first: bool = False,
     ):
         """
         Generator 版 Agentic Loop。
@@ -225,6 +226,9 @@ class AgenticLoop:
         每个步骤事件以 (event_type, data) 的形式 yield 出来，
         调用方可逐事件处理（UI 实时刷新）。
         最终输出在 event_type == StepEvent.FINAL_OUTPUT 的 data["text"] 里。
+
+        force_tool_first: 若为 True，第一轮若 LLM 未调用任何工具，
+        则注入强制提示要求先查询，再发起第二轮，确保至少有一轮工具调用。
 
         流程：
           1. 发送初始 prompt，LLM 响应
@@ -238,6 +242,7 @@ class AgenticLoop:
         call_cache: dict[str, str] = {}  # hash → result（去重缓存）
         stall_counter = 0  # 连续无新信息次数
         _all_reasonings: list[str] = []  # 收集所有轮次的 reasoning_content
+        _is_first_round = True  # 是否是第一轮响应
 
         # ── 主循环 ──────────────────────────────────────────────
         while True:
@@ -273,7 +278,26 @@ class AgenticLoop:
             # 解析工具调用
             tool_calls = self._parse_tool_calls(response)
 
-            # ── 无工具调用 → 最终输出 ──────────────────────────
+            # ── 无工具调用 → 检查是否需要强制工具调用 ──────────
+            if not tool_calls:
+                if force_tool_first and _is_first_round:
+                    # 第一轮没有工具调用，注入强制提示要求先查询
+                    print(
+                        "[AgenticLoop] force_tool_first: 第一轮未调用工具，丢弃输出重新要求查询",
+                        file=sys.stderr,
+                    )
+                    # 丢弃第一轮正文，追加简短 assistant 占位 + user 查询要求
+                    # 不暴露"被打断"的上下文，LLM 感知不到强制注入
+                    messages.append({"role": "assistant", "content": "好的，我先查询相关信息。"})
+                    messages.append({"role": "user", "content": "请调用工具查询出场人物档案和前情摘要后再写正文。"})
+                    _is_first_round = False
+                    continue
+                # 正常最终输出
+                yield (StepEvent.FINAL_OUTPUT, {
+                    "text": response,
+                    "all_reasoning": "\n\n---\n\n".join(_all_reasonings),
+                })
+                return
             if not tool_calls:
                 yield (StepEvent.FINAL_OUTPUT, {
                     "text": response,
@@ -288,6 +312,7 @@ class AgenticLoop:
                 "tool_count": len(tool_calls),
                 "reasoning": round_reasoning,
             })
+            _is_first_round = False  # 有工具调用，后续不再强制
 
             # 将 LLM 响应追加到消息历史
             messages.append({"role": "assistant", "content": response})

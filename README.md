@@ -1189,6 +1189,50 @@ Novel (小说项目)
 | 导出 | python-docx（Word）、EbookLib（EPUB） |
 | 部署 | Docker / PyInstaller macOS .app / 源码运行 |
 | JSON 容错 | json-repair（处理 LLM 输出格式瑕疵） |
+| 可观测性 | Arize Phoenix + OpenTelemetry（Agent 轨迹追踪） |
+
+---
+
+## Agent 轨迹追踪（Observability）
+
+系统集成了 [Arize Phoenix](https://phoenix.arize.com/) + OpenTelemetry，在 `app.py` 启动时自动拉起本地 Phoenix 服务端（`~/.local/bin/phoenix serve`），UI 地址：`http://localhost:6006`。
+
+### 架构
+
+```
+app.py
+└── @st.cache_resource init_tracing()   ← 单次初始化，保证不重复启动
+      ├── _start_phoenix_server()        ← 后台 subprocess 拉起 phoenix serve
+      │     · 查找顺序：PHOENIX_BIN env → ~/.local/bin/phoenix → PATH
+      │     · 超时 30s，端口 6006(HTTP) + 4317(gRPC OTLP)
+      ├── OTLPSpanExporter(grpc://localhost:4317)
+      └── openinference instrumentors    ← 自动追踪 Anthropic / OpenAI 调用
+```
+
+### Span 粒度
+
+| Span 名称 | 位置 | 追踪内容 |
+|-----------|------|---------|
+| `workflow.write_chapter` | `core/workflow.py` | 整章生成耗时、章节号、目标字数 |
+| `agent.writer` | `core/workflow.py` | WriterAgent 单次写作耗时 |
+| `agent.polisher` | `core/workflow.py` | PolisherAgent 润色耗时 |
+| `agent.reviewer` | `core/workflow.py` | 每轮审核耗时 |
+| `reviewer.gate.{gate_name}` | `core/agents.py` | 四关卡并行审核各关耗时与得分 |
+| LLM 调用（自动） | 全局 | token 数、model、latency（OTel instrumentor 自动注入） |
+
+### 降级机制
+
+Phoenix 未安装或启动失败时，`start_span()` 返回 `_NoopSpan`，所有 span 操作变为空操作，写作流程不受影响。可通过 `NEUPEN_TRACING=0` 环境变量强制禁用 tracing。
+
+### 安装
+
+Phoenix 需在项目 venv 之外单独安装（避免与 `opentelemetry-api` 版本冲突）：
+
+```bash
+uv tool install arize-phoenix
+# 验证
+~/.local/bin/phoenix serve
+```
 
 ---
 
