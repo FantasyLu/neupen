@@ -228,11 +228,14 @@ class NovelWorkflow:
     # ======================================
 
     def generate_outline(
-        self, total_chapters: int = 100, progress_callback: Callable = None
+        self, total_chapters: int = 100, progress_callback: Callable = None,
+        creation_notes: str = "",
     ) -> WorkflowResult:
         """
         从一句话灵感生成完整大纲
         自动保存到数据库
+
+        creation_notes: 从灵感对话提炼的具体构想，透传给 OutlineAgent 优先使用。
         """
         novel = self.memory.global_mem.get_novel()
         if not novel:
@@ -248,6 +251,7 @@ class NovelWorkflow:
                 genre=novel.genre or "",
                 world_setting=json.dumps(novel.get_world_setting(), ensure_ascii=False),
                 total_chapters=total_chapters,
+                creation_notes=creation_notes,
             )
 
             if progress_callback:

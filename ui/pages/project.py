@@ -438,6 +438,7 @@ def page_project_management():
                         genre = config.get("genre", "其他")
                         writing_style = config.get("writing_style", "")
                         total_chapters = int(config.get("total_chapters", 100))
+                        creation_notes = config.get("creation_notes", "")
 
                         st.info(f"**标题**：{title}  |  **类型**：{genre}  |  **章节**：{total_chapters} 章\n\n**梗概**：{logline}")
 
@@ -475,7 +476,8 @@ def page_project_management():
 
                                 result = workflow.generate_outline(
                                     total_chapters=total_chapters,
-                                    progress_callback=progress_cb
+                                    progress_callback=progress_cb,
+                                    creation_notes=creation_notes,
                                 )
                                 workflow.close()
                                 progress_placeholder.empty()

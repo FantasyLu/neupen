@@ -419,20 +419,33 @@ class OutlineAgent:
         genre: str = "",
         world_setting: str = "",
         total_chapters: int = 100,
+        creation_notes: str = "",
     ) -> dict:
         """
         从一句话灵感生成完整大纲
         返回结构化的大纲数据
+
+        creation_notes: 从灵感对话中提炼的具体创作细节（人物/世界观/情节/氛围），
+                        有则优先使用，避免 LLM 脑补填空导致偏离用户构想。
         """
         # 注入现有活跃伏笔调度信息（若有）
         active_fs = self.memory.global_mem.get_active_foreshadowings()
         fs_schedule_text = self._build_foreshadowing_schedule_prompt(active_fs)
         fs_prefix = f"{fs_schedule_text}\n\n" if fs_schedule_text else ""
 
+        # 创作备忘录：有内容时作为独立章节注入，引导 LLM 优先使用而非脑补
+        notes_section = ""
+        if creation_notes and creation_notes.strip():
+            notes_section = f"""
+**创作备忘录（用户在灵感对话中提到的具体构想，必须优先体现在大纲中）：**
+{creation_notes.strip()}
+
+"""
+
         user_prompt = f"""{fs_prefix}请根据以下灵感，为一部{total_chapters}章的{genre}小说生成完整大纲：
 
 **核心灵感：** {logline}
-
+{notes_section}
 **世界观提示：** {world_setting or "请自由发挥"}
 
 请生成以下结构的JSON数据：
@@ -3542,6 +3555,14 @@ class IdeaAgent:
 - genre：从以下选项中选最合适的一个：玄幻、修仙、都市、言情、悬疑、历史、科幻、末世、游戏、其他
 - writing_style：根据对话推断的风格偏好，例如"节奏明快，爽感优先"或"细腻写实，注重人物心理"，如无明显偏好则留空字符串
 - total_chapters：根据故事规模推断，短篇50-80章，中篇100-150章，长篇200章以上，默认100
+- creation_notes：从对话中整理出的**所有具体创作细节**，供后续大纲生成使用。
+  只做整理，不做发明，不补充对话中没有提到的内容。
+  包含（有则填，无则略）：
+  · 人物：主角/反派/配角的姓名、身份、性格、能力、动机、关系
+  · 世界观：世界背景、力量体系、社会结构、关键地点、特殊规则
+  · 情节：关键转折点、结局方向、重要伏笔、已构思的情节片段
+  · 氛围基调：情感走向、主题思想、读者预期体验
+  500字以内，要点式列举，不需要成段叙述。如果对话中几乎没有具体细节，留空字符串。
 
 只输出JSON，不含其他文字：
 {
@@ -3549,7 +3570,8 @@ class IdeaAgent:
   "logline": "...",
   "genre": "...",
   "writing_style": "...",
-  "total_chapters": 100
+  "total_chapters": 100,
+  "creation_notes": "..."
 }"""
 
     def __init__(self, model_id: str = None, temperature: float = None):
