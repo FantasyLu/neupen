@@ -395,11 +395,6 @@ def page_project_management():
                 with st.chat_message(msg["role"]):
                     st.write(msg["content"])
 
-            # 自动整理完成后显示一次性提示气泡
-            if st.session_state.pop("idea_show_notes_tip", False):
-                with st.chat_message("assistant"):
-                    st.info("💡 已自动整理当前创作构想，继续聊吧～")
-
             # 用户输入
             user_input = st.chat_input("说说你的想法…")
             if user_input:
@@ -421,29 +416,6 @@ def page_project_management():
                 with st.chat_message("assistant"):
                     st.write(reply)
                 st.session_state.idea_chat_history = history
-
-                # ── 自动整理触发：第 6 轮之后每隔 4 轮静默执行一次 ──
-                _TRIGGER_ROUNDS = {6, 10, 14, 18, 22}
-                user_msg_count_now = sum(1 for m in history if m["role"] == "user")
-                snapshot_round = st.session_state.get("idea_notes_snapshot_round", 0)
-                if user_msg_count_now in _TRIGGER_ROUNDS and user_msg_count_now != snapshot_round:
-                    try:
-                        agent_bg = IdeaAgent(model_id=chat_model_id)
-                        existing_notes = st.session_state.get("idea_creation_notes_snapshot", "")
-                        if existing_notes:
-                            # 有已有备忘录：只合并 snapshot 之后的增量消息
-                            new_msgs = history[snapshot_round * 2:]
-                            merged = agent_bg.merge_creation_notes(existing_notes, new_msgs)
-                        else:
-                            # 首次整理：全量提取
-                            config_bg = agent_bg.extract_project_config(history)
-                            merged = config_bg.get("creation_notes", "")
-                        st.session_state.idea_creation_notes_snapshot = merged
-                        st.session_state.idea_notes_snapshot_round = user_msg_count_now
-                        st.session_state.idea_show_notes_tip = True
-                    except Exception:
-                        pass  # 整理失败不影响对话
-
                 st.rerun()
 
             # 用户发过至少一条消息后显示创建按钮，由用户自己决定何时创建
@@ -453,42 +425,16 @@ def page_project_management():
                 col_btn, col_clear = st.columns([3, 1])
                 with col_btn:
                     if st.button("✅ 整理完了，创建项目并生成大纲", type="primary", width="stretch"):
-                        existing_notes = st.session_state.get("idea_creation_notes_snapshot", "")
-                        snapshot_round = st.session_state.get("idea_notes_snapshot_round", 0)
-
-                        with st.spinner("正在从对话中提取项目信息…"):
-                            try:
-                                agent = IdeaAgent(model_id=chat_model_id)
-                                if existing_notes:
-                                    # 有 snapshot：只对增量做合并，其余字段全量提取
-                                    new_msgs = history[snapshot_round * 2:]
-                                    if new_msgs:
-                                        final_notes = agent.merge_creation_notes(existing_notes, new_msgs)
-                                    else:
-                                        final_notes = existing_notes
-                                    config = agent.extract_project_config(history)
-                                    config["creation_notes"] = final_notes
-                                else:
-                                    # 无 snapshot：全量提取
-                                    config = agent.extract_project_config(history)
-                            except Exception as e:
-                                st.error(f"信息提取失败：{e}")
-                                st.stop()
-
-                        title = config.get("title", "未命名").strip() or "未命名"
-                        logline = config.get("logline", "").strip()
-                        genre = config.get("genre", "其他")
-                        writing_style = config.get("writing_style", "")
-                        total_chapters = int(config.get("total_chapters", 100))
-                        creation_notes = config.get("creation_notes", "")
-
-                        st.info(f"**标题**：{title}  |  **类型**：{genre}  |  **章节**：{total_chapters} 章\n\n**梗概**：{logline}")
-
+                        # 1. 用占位信息创建项目，拿到 novel_id
+                        #    真实 title/logline/genre 由 Sub-agent 提取后在 workflow 内部更新
                         with st.spinner("正在创建项目…"):
                             try:
                                 workflow = create_new_novel(
-                                    title, logline, genre, writing_style,
-                                    llm_model=chat_model_id
+                                    title="创建中…",
+                                    logline="",
+                                    genre="其他",
+                                    writing_style="",
+                                    llm_model=chat_model_id,
                                 )
                                 st.session_state.novel_id = workflow.novel_id
 
@@ -511,34 +457,41 @@ def page_project_management():
                                     "role": "owner",
                                 }
                                 db.close()
-
-                                progress_placeholder = st.empty()
-                                def progress_cb(msg):
-                                    progress_placeholder.info(msg)
-
-                                result = workflow.generate_outline(
-                                    total_chapters=total_chapters,
-                                    progress_callback=progress_cb,
-                                    creation_notes=creation_notes,
-                                )
-                                workflow.close()
-                                progress_placeholder.empty()
-
-                                if result.success:
-                                    # 清空对话历史及 snapshot
-                                    st.session_state.idea_chat_history = []
-                                    st.session_state.pop("idea_creation_notes_snapshot", None)
-                                    st.session_state.pop("idea_notes_snapshot_round", None)
-                                    st.success(f"✅ 项目「{title}」创建成功！")
-                                    st.session_state.page = "大纲管理"
-                                    st.rerun()
-                                else:
-                                    st.error(f"大纲生成失败：{result.message}")
                             except Exception as e:
                                 st.error(f"创建失败：{e}")
+                                st.stop()
+
+                        # 2. 三层并行生成大纲（全程进度提示）
+                        progress_placeholder = st.empty()
+                        def progress_cb(msg):
+                            progress_placeholder.info(msg)
+
+                        try:
+                            result = workflow.generate_outline_from_idea(
+                                messages=history,
+                                total_chapters=100,  # Sub-agent 会从对话中推断并更新
+                                progress_callback=progress_cb,
+                            )
+                        except Exception as e:
+                            st.error(f"大纲生成失败：{e}")
+                            st.stop()
+                        finally:
+                            workflow.close()
+                            progress_placeholder.empty()
+
+                        if result.success:
+                            # 清空对话历史
+                            st.session_state.idea_chat_history = []
+                            novel_title = result.data.get("novel_title", "新项目")
+                            st.success(f"✅ 项目「{novel_title}」创建成功！")
+                            # 章纲不完整时提示用户
+                            for w in result.data.get("warnings", []):
+                                st.warning(w)
+                            st.session_state.page = "大纲管理"
+                            st.rerun()
+                        else:
+                            st.error(f"大纲生成失败：{result.message}")
                 with col_clear:
                     if st.button("🗑️ 重新开始", width="stretch"):
                         st.session_state.idea_chat_history = []
-                        st.session_state.pop("idea_creation_notes_snapshot", None)
-                        st.session_state.pop("idea_notes_snapshot_round", None)
                         st.rerun()
