@@ -744,3 +744,33 @@ LanceDB 还有一个独特优势：**单表多小说**。所有小说的 chunk �
 问题在于 `WriterAgent.write_chapter_agentic_gen()`（Agentic 写作路径）有一段独立的风格档案注入代码，直接拼接了 `style_profile[k]` 的原始 int 值，没有调用 `_format_style_profile()`。而 `WriterAgent.write_chapter()`（普通路径）走了正确的转换路径。两条路径的行为不一致，导致 Agentic 写作时 prompt 里出现 `句式节奏: 4` 这样对 LLM 毫无意义的数字。
 
 **修复：** 在 `write_chapter_agentic_gen` 中删除独立的风格注入逻辑，改为调用 `PolisherAgent._format_style_profile()` 复用同一套转换，消除了两条路径的行为差异。这个 bug 的教训是：**同一份数据有多条处理路径时，转换逻辑必须集中封装，不能各自内联**。
+
+---
+
+### Q14: IdeaAgent 的大纲生成是怎么设计的？为什么用三层并行？
+
+**回答：** 早期的 IdeaAgent 是线性的：对话 → 一次 `extract_project_config()` 调用提取结构化配置 → 外部手动触发 `OutlineAgent.generate_full_outline()`。这个方案有两个核心问题：
+
+1. **信息丢失**：从多轮对话中压缩成一份结构化 JSON 时，对话里很多具体的细节（角色背景故事、特定的世界观规则、用户偏好的情节走向）会丢失，因为 `extract_project_config()` 只提取固定字段。
+2. **串行等待**：总大纲→人物档案→章纲是依次生成的，用户等待时间是三段等待的总和。
+
+**现在的三层并行架构（`generate_outline_data()`）：**
+
+```
+第1层（并行）  ┌─ _gen_meta()          → 提取 title/author/genre 等元数据
+              └─ _gen_total_outline() → 生成总大纲 + 世界观（核心，失败即终止）
+
+第2层（并行）  ┌─ _gen_volumes()       → 根据总大纲生成卷纲
+              └─ _gen_characters()    → 根据总大纲生成人物档案
+
+第3层（串行）  _gen_chapter_batch()   → 分批30章串行（每批携带上批结尾，保持连续性）
+```
+
+**关键设计决策：**
+
+- **对话历史直接传入每个 Sub-agent**：不做信息压缩，每个 Sub-agent 都拿到完整的灵感对话历史。这解决了信息丢失问题——人物生成器能从对话中读到用户随口说的"主角有一个从小失散的妹妹"这类细节。
+- **`_gen_total_outline` 失败终止，其余有兜底**：总大纲是后续所有生成的基础，失败则整个流程无意义；卷纲/人物/章纲的 Sub-agent 失败返回空列表，用户能拿到部分结果，不会全部丢失。
+- **章纲第3层串行而非并行**：每批生成时注入上批最后一章的 `ending` 作为下一批的 `prev_ending`，解决跨批次章节连续性问题。如果并行生成，各批次之间无法保持情节连贯。
+- **章纲不完整时的 warning 机制**：某批失败时，`result.data["warnings"]` 包含 `{range, hint}` 字典，`hint` 从失败章节所属卷的 `summary/arc_goal/main_conflict` 提取，为用户提供可操作的补全提示。
+
+**效果：** 对于 100 章的小说，第1+2层并行约 30-60 秒；第3层分批串行（约 4 批）约 4-8 分钟。整体比旧版线性流程快约 40%，且信息保真度更高。
