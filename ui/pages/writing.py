@@ -938,6 +938,10 @@ def page_writing():
                     st.session_state.pop(
                         f"edit_content_{novel_id}_{selected_ch_num}", None
                     )
+                    # 递增版本号，强制 ace 编辑器重建以显示新生成的内容
+                    # （ace 组件 key 不变时会用自身缓存的旧值覆盖 session_state，导致旧内容残留）
+                    _ev_key = f"editor_version_{novel_id}_{selected_ch_num}"
+                    st.session_state[_ev_key] = st.session_state.get(_ev_key, 0) + 1
                     st.rerun()
                 else:
                     stream_preview_area.empty()
