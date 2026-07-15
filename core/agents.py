@@ -3624,7 +3624,7 @@ class IdeaAgent:
     def extract_project_config(self, messages: list) -> dict:
         """
         从对话历史中提取结构化项目配置
-        返回: {title, logline, genre, writing_style, total_chapters}
+        返回: {title, logline, genre, writing_style, total_chapters, creation_notes}
         """
         history_text = "\n".join(
             f"{'用户' if m['role'] == 'user' else 'AI'}：{m['content']}"
@@ -3634,7 +3634,7 @@ class IdeaAgent:
         response = self.llm.generate(
             self.EXTRACT_PROMPT,
             user_prompt,
-            max_tokens=1024,
+            max_tokens=3000,  # creation_notes 最多 2000 字，JSON 整体需要足够空间
             cache_system=False,
             temperature=self.temperature,
         )
@@ -3643,6 +3643,45 @@ class IdeaAgent:
         if json_start >= 0 and json_end > json_start:
             return _safe_json_loads(response[json_start:json_end])
         raise ValueError(f"项目配置提取失败：{response[:300]}")
+
+    # ---- 增量合并提取专用 prompt ----
+    _MERGE_PROMPT = """你已经有一份之前整理好的创作备忘录，现在用户又继续聊了几轮，产生了新的对话。
+
+请将新对话中用户提到的具体细节，合并补充进原有备忘录中：
+- 新信息与旧信息不重复
+- 如有矛盾以新对话为准
+- 只整理用户主动说出的内容，忽略 AI 的引导语和泛泛追问
+- 按原有分类（人物/世界观/情节/氛围基调）追加，2000字以内
+- 直接输出合并后的备忘录文本，不加任何前缀或说明"""
+
+    def merge_creation_notes(self, existing_notes: str, new_messages: list) -> str:
+        """
+        将新增对话轮次的细节合并进已有 creation_notes。
+        用于中途自动整理时更新 snapshot，避免重复全量提取。
+
+        existing_notes: 上次整理好的备忘录文本
+        new_messages:   snapshot 之后新增的消息列表
+        返回: 合并后的备忘录文本
+        """
+        if not new_messages:
+            return existing_notes
+
+        new_history_text = "\n".join(
+            f"{'用户' if m['role'] == 'user' else 'AI'}：{m['content']}"
+            for m in new_messages
+        )
+        user_prompt = (
+            f"【已有备忘录】\n{existing_notes}\n\n"
+            f"【新增对话】\n{new_history_text}"
+        )
+        response = self.llm.generate(
+            self._MERGE_PROMPT,
+            user_prompt,
+            max_tokens=3000,
+            cache_system=False,
+            temperature=self.temperature,
+        )
+        return response.strip() or existing_notes
 
 
 # ======================================
