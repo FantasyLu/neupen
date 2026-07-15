@@ -16,6 +16,7 @@ from typing import Optional
 from core.llm import NovelLLM
 from core.memory import MemoryManager
 from core.detector import ConflictDetector, ReviewReport
+from core.tracing import start_span
 
 
 def _safe_json_loads(text: str) -> dict | list:
@@ -1778,28 +1779,10 @@ class WriterAgent(_ContentPostProcessMixin):
             style_profile = novel.get_style_profile()
             style_ref_text = (novel.style_reference_text or "").strip()
             style_desc = novel.writing_style or ""
-            _label_map = {
-                "overall_style": "总体风格定位",
-                "sentence_patterns": "句式特征",
-                "vocabulary": "词汇风格",
-                "narrative_voice": "叙述视角风格",
-                "dialogue_style": "对话特点",
-                "description_style": "描写特点",
-                "rhythm_pacing": "节奏与节拍",
-                "emotion_expression": "情感表达方式",
-                "signature_techniques": "标志性手法",
-                "polish_instructions": "写作核心指令",
-            }
             if style_profile:
-                lines = [
-                    f"- {lbl}：{style_profile[k]}"
-                    for k, lbl in _label_map.items()
-                    if style_profile.get(k)
-                ]
-                if lines:
-                    style_block = "\n【全书写作风格档案（请严格遵循）】\n" + "\n".join(
-                        lines
-                    )
+                _formatted = PolisherAgent.__new__(PolisherAgent)._format_style_profile(style_profile)
+                if _formatted:
+                    style_block = "\n【全书写作风格档案（请严格遵循）】\n" + _formatted
             elif style_ref_text:
                 _preview = style_ref_text[:600] + (
                     "…" if len(style_ref_text) > 600 else ""
@@ -2318,6 +2301,18 @@ class ReviewerAgent:
                 all_gate_results.append(
                     {**gate_result.to_dict(), "round": round_idx + 1}
                 )
+                # 为每个 gate 记录独立 span（已结束的子 span，携带得分和结果）
+                with start_span(
+                    f"reviewer.gate.{gate_result.gate_name}",
+                    {
+                        "chapter_number": chapter_number,
+                        "round": round_idx + 1,
+                        "gate_name": gate_result.gate_name,
+                        "score": round(gate_result.total_score, 2),
+                        "passed": gate_result.passed,
+                    },
+                ):
+                    pass  # span 数据已通过 attributes 携带，无需额外代码
 
             final_score = last_review["weighted_score"]
 

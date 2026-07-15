@@ -51,3 +51,10 @@ json-repair>=0.30.0
 # 数据同步（云同步功能）
 gitpython>=3.1.0
 cryptography>=42.0.0
+
+# Agent 轨迹追踪（Arize Phoenix + OpenTelemetry）
+arize-phoenix>=4.0.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0
+openinference-instrumentation-anthropic>=0.1.0
+openinference-instrumentation-openai>=0.1.0
