@@ -803,7 +803,8 @@ class GlobalMemory:
 
         keywords = [k.strip() for k in _re.split(r"[\s，,]+", keyword) if k.strip()]
         if not keywords:
-            return self.get_all_foreshadowings()
+            # 关键词为空时返回空列表，不兜底全量（调用方应自行处理）
+            return []
 
         all_fs = self.get_all_foreshadowings()
         results = []

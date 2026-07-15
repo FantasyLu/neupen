@@ -168,15 +168,38 @@ class ToolExecutor:
         return "\n".join(lines)
 
     def _query_foreshadowing(self, keyword: str) -> str:
-        """搜索相关伏笔"""
+        """搜索相关伏笔。
+        - keyword 非空：按关键词精确检索，返回匹配项完整内容
+        - keyword 为空：返回分级摘要（紧急项完整 + 其余单行），避免全量噪音
+        """
         if not keyword or not keyword.strip():
-            # 返回所有活跃伏笔
             foreshadowings = self.memory.global_mem.get_active_foreshadowings()
             if not foreshadowings:
                 return "[当前没有活跃伏笔]"
-            lines = [f"[所有活跃伏笔（共 {len(foreshadowings)} 条）]"]
+
+            # 按到期章节分级：有截止且 ≤ 当前章+5 的为紧急，其余只给单行摘要
+            current_ch = self.current_chapter
+            urgent, others = [], []
             for f in foreshadowings:
-                lines.append(f.to_full_text())
+                is_urgent = (
+                    current_ch is not None
+                    and f.collect_by_chapter is not None
+                    and f.collect_by_chapter <= current_ch + 5
+                )
+                (urgent if is_urgent else others).append(f)
+
+            lines = [f"[活跃伏笔摘要（共 {len(foreshadowings)} 条，请用关键词精确查询以获取完整内容）]"]
+            if urgent:
+                lines.append("【即将到期，必须处理】")
+                for f in urgent:
+                    lines.append(f.to_full_text())
+            if others:
+                brief = "、".join(
+                    f"{f.name}（{f.description[:20] if f.description else ''}…）"
+                    for f in others
+                )
+                lines.append(f"【其余 {len(others)} 条】{brief}")
+                lines.append("→ 如需某条完整详情，请用关键词再次查询，例如 query_foreshadowing(keyword='玉佩')")
             return "\n".join(lines)
 
         results = self.memory.global_mem.search_foreshadowings_by_keyword(
