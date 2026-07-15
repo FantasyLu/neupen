@@ -169,18 +169,36 @@ class ToolExecutor:
 
     def _query_foreshadowing(self, keyword: str) -> str:
         """搜索相关伏笔。
-        - keyword 非空：按关键词精确检索，返回匹配项完整内容
-        - keyword 为空：返回分级摘要（紧急项完整 + 其余单行），避免全量噪音
+
+        只返回 set_chapter <= current_chapter 的伏笔（已在当前章或之前埋下的），
+        未来章节的伏笔对写作 Agent 无意义且会造成剧透噪音。
+
+        - keyword 非空：按关键词检索，过滤未来章节后返回完整内容
+        - keyword 为空：返回分级摘要（紧急项完整 + 其余单行）
         """
+        current_ch = self.current_chapter
+
+        def _is_visible(f) -> bool:
+            """伏笔是否对当前章节可见（已埋下或章节未知）。"""
+            if current_ch is None:
+                return True
+            if f.set_chapter is None:
+                # set_chapter 为空：可能是手动录入、未关联章节，保守处理为可见
+                return True
+            return f.set_chapter <= current_ch
+
         if not keyword or not keyword.strip():
             foreshadowings = self.memory.global_mem.get_active_foreshadowings()
             if not foreshadowings:
                 return "[当前没有活跃伏笔]"
 
+            visible = [f for f in foreshadowings if _is_visible(f)]
+            if not visible:
+                return "[当前章节暂无已埋下的活跃伏笔]"
+
             # 按到期章节分级：有截止且 ≤ 当前章+5 的为紧急，其余只给单行摘要
-            current_ch = self.current_chapter
             urgent, others = [], []
-            for f in foreshadowings:
+            for f in visible:
                 is_urgent = (
                     current_ch is not None
                     and f.collect_by_chapter is not None
@@ -188,7 +206,7 @@ class ToolExecutor:
                 )
                 (urgent if is_urgent else others).append(f)
 
-            lines = [f"[活跃伏笔摘要（共 {len(foreshadowings)} 条，请用关键词精确查询以获取完整内容）]"]
+            lines = [f"[已埋下的活跃伏笔（共 {len(visible)} 条，请用关键词精确查询以获取完整内容）]"]
             if urgent:
                 lines.append("【即将到期，必须处理】")
                 for f in urgent:
@@ -208,14 +226,20 @@ class ToolExecutor:
         if not results:
             return f"[未找到与 '{keyword}' 相关的伏笔]"
 
-        lines = [f"[与 '{keyword}' 相关的伏笔（共 {len(results)} 条）]"]
-        for f in results:
-            status_label = {
-                "active": "待回收",
-                "collected": "已回收",
-                "abandoned": "已废弃",
-            }.get(f.status, f.status)
-            lines.append(f"\n[{status_label}] {f.to_full_text()}")
+        # 过滤未来章节的伏笔
+        visible_results = [f for f in results if _is_visible(f)]
+        hidden_count = len(results) - len(visible_results)
+
+        if not visible_results:
+            hint = f"（另有 {hidden_count} 条在未来章节埋下，本章不可见）" if hidden_count else ""
+            return f"[未找到与 '{keyword}' 相关的已埋下伏笔{hint}]"
+
+        status_map = {"active": "待回收", "collected": "已回收", "abandoned": "已废弃"}
+        lines = [f"[与 '{keyword}' 相关的已埋下伏笔（共 {len(visible_results)} 条）]"]
+        if hidden_count:
+            lines.append(f"（另有 {hidden_count} 条在未来章节埋下，本章不可见）")
+        for f in visible_results:
+            lines.append(f"\n[{status_map.get(f.status, f.status)}] {f.to_full_text()}")
         return "\n".join(lines)
 
     def _query_world_setting(self, section: str = "") -> str:
