@@ -246,11 +246,11 @@ class _ContentPostProcessMixin:
             print(f"[{tag}] {ch_label}比喻密度正常，跳过精简。", file=sys.stderr)
             return content
 
-        # 打印命中的比喻句子
-        metaphor_hits = _find_metaphor_sentences(content)
-        hit_lines = "\n".join(f"  - {s}" for s in metaphor_hits)
+        # 打印初始命中的比喻句子（第一轮前预览）
+        _initial_hits = _find_metaphor_sentences(content)
+        hit_lines = "\n".join(f"  - {s}" for s in _initial_hits)
         print(
-            f"[{tag}] {ch_label}检测到超密度比喻，发起精简（共 {len(metaphor_hits)} 句）：\n{hit_lines}",
+            f"[{tag}] {ch_label}检测到超密度比喻，发起精简（共 {len(_initial_hits)} 句）：\n{hit_lines}",
             file=sys.stderr,
         )
 
@@ -260,7 +260,15 @@ class _ContentPostProcessMixin:
                 f"（当前密度 {density:.1f}/千字）…",
                 file=sys.stderr,
             )
+            # 将本轮命中的比喻句列表注入 prompt，让 LLM 精准定位而非自行扫描全文
+            metaphor_hits = _find_metaphor_sentences(content)
+            hit_list_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(metaphor_hits))
+
             fix_prompt = f"""以下小说正文中比喻用量偏多（全章约 {total} 处，密度 {density:.1f}/千字，目标低于 {self._METAPHOR_DENSITY_THRESHOLD}/千字），需要逐一审查并精简无效比喻。
+
+【本轮检测到的含比喻句子（共 {len(metaphor_hits)} 句）】
+以下是正文中所有含比喻词的句子，请逐条判断是保留还是删除：
+{hit_list_text}
 
 【判断标准】
 保留标准（满足其一即保留）：
@@ -275,7 +283,7 @@ class _ContentPostProcessMixin:
    "像砂纸"、"像石灰粉"、"像一块石头"、"像被人攥住"、"像被抽干"、"像溺水"、"像稻草"、"像刀割"、"像针扎"
 
 【操作规则】
-1. 逐句检查全文中所有含"像/如同/仿佛/宛如/好似/犹如/恰似/有如"的句子
+1. 以上方比喻句清单为主要操作对象，逐条判断并处理
 2. 按上述标准判断，删除无效比喻，保留有效比喻
 3. 删除比喻时直接去掉比喻部分，保留事实描写，不改写其他内容
 4. 未含比喻的句子原样保留，不做任何修改
