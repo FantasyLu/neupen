@@ -3940,10 +3940,30 @@ class IdeaAgent:
                 chapters.extend(batch)
                 completed = batch_end
             else:
-                warnings.append(
-                    f"第 {batch_start}-{total_chapters} 章章纲生成失败，"
-                    f"可在大纲管理页手动补全。"
-                )
+                # 从 volumes 里找到失败章节所属的卷，提取摘要供用户补全时参考
+                failed_vols = [
+                    v for v in volumes
+                    if v.get("start_chapter", 1) <= total_chapters
+                    and v.get("end_chapter", total_chapters) >= batch_start
+                ]
+                vol_hints = []
+                for v in failed_vols:
+                    parts = []
+                    if v.get("summary"):
+                        parts.append(v["summary"])
+                    if v.get("arc_goal"):
+                        parts.append(f"目标：{v['arc_goal']}")
+                    if v.get("main_conflict"):
+                        parts.append(f"核心矛盾：{v['main_conflict']}")
+                    if parts:
+                        vol_hints.append(
+                            f"第{v.get('volume_number','')}卷《{v.get('title','')}》"
+                            f"（第{v.get('start_chapter','')}‑{v.get('end_chapter','')}章）：{'，'.join(parts)}"
+                        )
+                warnings.append({
+                    "range": f"第 {batch_start}-{total_chapters} 章",
+                    "hint": "\n".join(vol_hints),
+                })
                 break
 
         return {

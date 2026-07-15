@@ -429,17 +429,18 @@ class NovelWorkflow:
 
         msg = f"成功生成大纲：{chapters_count} 章详细章纲，{characters_count} 个人物档案"
         if warnings:
-            msg += f"；⚠️ 已完整生成前 {completed} 章，{warnings[0]}"
+            msg += f"；⚠️ 已完整生成前 {completed} 章，{warnings[0].get('range', '')} 章纲生成失败，可在大纲管理页手动补全"
 
         return WorkflowResult(
             success=True,
             message=msg,
             data={
-                "chapters_count":    chapters_count,
+                "chapters_count":     chapters_count,
                 "completed_chapters": completed,
-                "characters_count":  characters_count,
-                "warnings":          warnings,
-                "novel_title":       novel.title,
+                "characters_count":   characters_count,
+                "warnings":           warnings,
+                "novel_title":        novel.title,
+                "volumes":            data.get("volumes", []),
             },
         )
 

@@ -484,9 +484,16 @@ def page_project_management():
                             st.session_state.idea_chat_history = []
                             novel_title = result.data.get("novel_title", "新项目")
                             st.success(f"✅ 项目「{novel_title}」创建成功！")
-                            # 章纲不完整时提示用户
+                            # 章纲不完整时提示用户，并附上对应卷纲摘要
                             for w in result.data.get("warnings", []):
-                                st.warning(w)
+                                st.warning(
+                                    f"⚠️ {w.get('range', '')} 章纲生成失败，"
+                                    f"可在大纲管理页「AI 批量生成章纲」手动补全。"
+                                )
+                                if w.get("hint"):
+                                    st.info(
+                                        f"💡 填写剧情描述时可参考以下卷纲摘要：\n\n{w['hint']}"
+                                    )
                             st.session_state.page = "大纲管理"
                             st.rerun()
                         else:
