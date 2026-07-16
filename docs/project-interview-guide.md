@@ -4,7 +4,7 @@
 
 Neupen 是一个 AI 驱动的长篇小说协作写作系统。系统通过 **8 个专业化 Agent 协同** 完成从一句话灵感到完整章节的全流程：大纲生成、角色设计、章节撰写、质量审查、文风润色、读者评价、灵感孵化和全局 AI 助手。核心创新在于一套 **三层记忆架构**，解决了 LLM 在长篇叙事中最棘手的问题——跨章节一致性维护。
 
-**技术栈：** Python / Streamlit / SQLAlchemy / LanceDB / Sentence-Transformers / Anthropic SDK / OpenAI SDK
+**技术栈：** Python / Streamlit / SQLAlchemy / LanceDB / Sentence-Transformers / Anthropic SDK / OpenAI SDK / Arize Phoenix / OpenTelemetry
 
 ---
 
