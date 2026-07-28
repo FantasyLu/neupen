@@ -9,12 +9,17 @@ Agent 轨迹追踪模块 — Arize Phoenix + OpenTelemetry
 
 访问 UI：http://localhost:6006
 
+依赖：arize-phoenix 已在项目 venv 中安装（pip install arize-phoenix），
+      启动时优先使用 venv 内的 .venv/bin/phoenix 可执行文件。
+
 环境变量：
   NEUPEN_TRACING=0        禁用 tracing（默认启用）
   PHOENIX_HOST            指定外部 Phoenix host，设置后跳过本地启动
   PHOENIX_PORT            Phoenix HTTP 端口（默认 6006）
   PHOENIX_GRPC_PORT       Phoenix gRPC 端口（默认 4317）
-  PHOENIX_BIN             phoenix 可执行文件路径（默认自动查找）
+  PHOENIX_BIN             覆盖 phoenix 可执行文件路径（默认使用 venv 内的 phoenix）
+  PHOENIX_STARTUP_TIMEOUT Phoenix 就绪超时秒数（默认 120），
+                          首次启动需数据库迁移，等待在后台线程中进行，不阻塞应用
 """
 
 import atexit
@@ -23,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -38,26 +44,27 @@ _tracer_initialized = False
 _tracer = None
 
 # Phoenix 启动超时（秒）——首次启动需要跑数据库迁移，约 10-15s
-_PHOENIX_STARTUP_TIMEOUT = int(os.environ.get("PHOENIX_STARTUP_TIMEOUT", "30"))
+# 后台线程等待，不阻塞应用。调大默认值以适应较慢的机器。
+_PHOENIX_STARTUP_TIMEOUT = int(os.environ.get("PHOENIX_STARTUP_TIMEOUT", "120"))
 
 
 def _find_phoenix_bin() -> str:
     """
     按优先级查找 phoenix 可执行文件：
-    1. 环境变量 PHOENIX_BIN
-    2. ~/.local/bin/phoenix（uv tool install 默认位置）
+    1. 环境变量 PHOENIX_BIN（高级用户手动覆盖）
+    2. 当前 venv 的 bin 目录（与 sys.executable 同目录，pip install 默认位置）
     3. PATH 中的 phoenix
     返回找到的路径，找不到返回 None。
     """
-    # 1. 环境变量
+    # 1. 环境变量覆盖
     env_bin = os.environ.get("PHOENIX_BIN")
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
-    # 2. uv tool 默认安装位置
-    uv_bin = os.path.expanduser("~/.local/bin/phoenix")
-    if os.path.isfile(uv_bin) and os.access(uv_bin, os.X_OK):
-        return uv_bin
+    # 2. venv bin 目录（pip install arize-phoenix 的默认安装位置）
+    venv_bin = os.path.join(os.path.dirname(sys.executable), "phoenix")
+    if os.path.isfile(venv_bin) and os.access(venv_bin, os.X_OK):
+        return venv_bin
 
     # 3. PATH
     path_bin = shutil.which("phoenix")
@@ -67,10 +74,36 @@ def _find_phoenix_bin() -> str:
     return None
 
 
-def _start_phoenix_server() -> bool:
+def _wait_for_phoenix_and_setup_otel(project_name: str):
     """
-    在后台启动 Phoenix server。
-    返回 True 表示成功启动或已在运行。
+    后台线程：等待 Phoenix 端口就绪，然后初始化 OTel。
+    不阻塞主线程，Phoenix 就绪后自动连接。
+    """
+    import socket
+
+    deadline = time.time() + _PHOENIX_STARTUP_TIMEOUT
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            if s.connect_ex((_PHOENIX_HOST, _PHOENIX_PORT)) == 0:
+                logger.info(f"[Tracing] Phoenix 就绪：http://{_PHOENIX_HOST}:{_PHOENIX_PORT}")
+                _setup_otel(project_name)
+                if _tracer is not None:
+                    logger.info(f"[Tracing] 就绪。Phoenix UI: http://{_PHOENIX_HOST}:{_PHOENIX_PORT}")
+                return
+        time.sleep(0.5)
+
+    logger.warning(
+        f"[Tracing] Phoenix 在 {_PHOENIX_STARTUP_TIMEOUT}s 内未就绪，trace 数据将丢失。"
+        f"可设置 PHOENIX_STARTUP_TIMEOUT 延长等待时间。"
+    )
+
+
+def _start_phoenix_server(project_name: str = "neupen-novel") -> bool:
+    """
+    在后台启动 Phoenix server，并在后台线程中等待其就绪后连接 OTel。
+    立即返回 True（非阻塞），Phoenix 就绪后自动完成 OTel 初始化。
+    返回 False 表示无法找到 phoenix 可执行文件，tracing 不可用。
     """
     global _phoenix_proc
 
@@ -91,7 +124,7 @@ def _start_phoenix_server() -> bool:
     if not phoenix_bin:
         logger.warning(
             "[Tracing] 未找到 phoenix 可执行文件。\n"
-            "请运行：uv tool install arize-phoenix\n"
+            "请运行：pip install arize-phoenix\n"
             "或设置环境变量 PHOENIX_BIN 指向 phoenix 二进制路径"
         )
         return False
@@ -103,26 +136,20 @@ def _start_phoenix_server() -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        logger.info(f"[Tracing] Phoenix 已启动 (pid={_phoenix_proc.pid}, bin={phoenix_bin})")
+        logger.info(f"[Tracing] Phoenix 已启动 (pid={_phoenix_proc.pid}, bin={phoenix_bin})，后台等待就绪...")
     except Exception as e:
         logger.warning(f"[Tracing] Phoenix 启动失败：{e}")
         return False
 
-    # 等待端口就绪
-    deadline = time.time() + _PHOENIX_STARTUP_TIMEOUT
-    while time.time() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.3)
-            if s.connect_ex((_PHOENIX_HOST, _PHOENIX_PORT)) == 0:
-                logger.info(f"[Tracing] Phoenix 就绪：http://{_PHOENIX_HOST}:{_PHOENIX_PORT}")
-                return True
-        time.sleep(0.5)
-
-    logger.warning(
-        f"[Tracing] Phoenix 在 {_PHOENIX_STARTUP_TIMEOUT}s 内未就绪，trace 数据将丢失。"
-        f"可设置 PHOENIX_STARTUP_TIMEOUT 延长等待时间。"
+    # 后台线程等待就绪，不阻塞 Streamlit 应用启动
+    t = threading.Thread(
+        target=_wait_for_phoenix_and_setup_otel,
+        args=(project_name,),
+        daemon=True,
+        name="phoenix-ready-watcher",
     )
-    return False
+    t.start()
+    return True
 
 
 def _stop_phoenix_server():
@@ -191,8 +218,11 @@ def init_tracing(project_name: str = "neupen-novel") -> bool:
     应用启动入口：启动 Phoenix + 初始化 OTel。
     幂等，多次调用只初始化一次。
 
+    Phoenix 首次启动（需数据库迁移）时采用后台线程异步等待，
+    应用立即返回不阻塞；Phoenix 就绪后自动完成 OTel 连接。
+
     Returns:
-        True 表示 tracing 已就绪，False 表示初始化失败（应用仍可正常运行）。
+        True 表示 tracing 流程已启动，False 表示 tracing 不可用。
     """
     global _tracer_initialized
     if _tracer_initialized:
@@ -204,16 +234,34 @@ def init_tracing(project_name: str = "neupen-novel") -> bool:
         logger.info("[Tracing] NEUPEN_TRACING=0，tracing 已禁用")
         return False
 
-    ok = _start_phoenix_server()
+    import socket
+
+    # 检查 Phoenix 是否已在运行（外部实例或上次已启动）
+    phoenix_already_up = False
+    if _USE_EXTERNAL_PHOENIX:
+        phoenix_already_up = True
+    else:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((_PHOENIX_HOST, _PHOENIX_PORT)) == 0:
+                phoenix_already_up = True
+
+    ok = _start_phoenix_server(project_name)
     if not ok:
         return False
 
-    _setup_otel(project_name)
     atexit.register(_stop_phoenix_server)
 
-    if _tracer is not None:
-        logger.info(f"[Tracing] 就绪。Phoenix UI: http://{_PHOENIX_HOST}:{_PHOENIX_PORT}")
-    return _tracer is not None
+    if phoenix_already_up:
+        # Phoenix 已就绪，同步完成 OTel 初始化
+        _setup_otel(project_name)
+        if _tracer is not None:
+            logger.info(f"[Tracing] 就绪。Phoenix UI: http://{_PHOENIX_HOST}:{_PHOENIX_PORT}")
+    else:
+        # Phoenix 刚启动，后台线程会等待就绪后完成 OTel 初始化
+        logger.info("[Tracing] Phoenix 正在启动，OTel 将在就绪后自动连接，应用可继续使用")
+
+    return True
 
 
 def get_tracer():

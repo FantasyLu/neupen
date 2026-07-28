@@ -23,6 +23,7 @@ from core.agents import (
     WriterAgent,
     ReviewerAgent,
     PolisherAgent,
+    IdeaAgent,
 )
 from core.detector import ConflictDetector, ReviewReport
 from core.config import (
@@ -228,11 +229,14 @@ class NovelWorkflow:
     # ======================================
 
     def generate_outline(
-        self, total_chapters: int = 100, progress_callback: Callable = None
+        self, total_chapters: int = 100, progress_callback: Callable = None,
+        creation_notes: str = "",
     ) -> WorkflowResult:
         """
         从一句话灵感生成完整大纲
         自动保存到数据库
+
+        creation_notes: 从灵感对话提炼的具体构想，透传给 OutlineAgent 优先使用。
         """
         novel = self.memory.global_mem.get_novel()
         if not novel:
@@ -248,6 +252,7 @@ class NovelWorkflow:
                 genre=novel.genre or "",
                 world_setting=json.dumps(novel.get_world_setting(), ensure_ascii=False),
                 total_chapters=total_chapters,
+                creation_notes=creation_notes,
             )
 
             if progress_callback:
@@ -310,6 +315,134 @@ class NovelWorkflow:
 
         except Exception as e:
             return WorkflowResult(success=False, message=f"大纲生成失败：{e}")
+
+    def generate_outline_from_idea(
+        self,
+        messages: list,
+        total_chapters: int = 100,
+        progress_callback: Callable = None,
+    ) -> WorkflowResult:
+        """
+        灵感对话专用大纲生成入口。
+
+        三层并行流程（由 IdeaAgent.generate_outline_data 驱动）：
+          第 1 层（并行）：总大纲 + meta 元信息
+          第 2 层（并行）：卷纲 + 人物档案
+          第 3 层（分批串行）：全部章纲（每批 30 章）
+
+        人物档案自动入库，无需用户手动触发 generate_characters_from_outline。
+        若章纲未能全部生成，result.data["warnings"] 中会包含提示信息。
+        """
+        novel = self.memory.global_mem.get_novel()
+        if not novel:
+            return WorkflowResult(success=False, message="小说项目不存在")
+
+        genre = novel.genre or ""
+
+        # ── 调用 IdeaAgent 三层并行生成 ──────────────────────────────────────
+        idea_agent = IdeaAgent(model_id=self.model_outline)
+        try:
+            data = idea_agent.generate_outline_data(
+                messages, total_chapters, genre, progress_callback
+            )
+        except Exception as e:
+            return WorkflowResult(success=False, message=f"大纲生成失败：{e}")
+
+        # ── 更新 Novel 元信息（title/logline/genre/writing_style）────────────
+        meta = data["meta"]
+        if meta.get("title") and meta["title"] != "未命名":
+            novel.title = meta["title"]
+        if meta.get("logline"):
+            novel.logline = meta["logline"]
+        if meta.get("genre"):
+            novel.genre = meta["genre"]
+        if meta.get("writing_style"):
+            novel.writing_style = meta["writing_style"]
+        novel.status = "outlining"
+        self.db.commit()
+
+        if progress_callback:
+            progress_callback("💾 正在保存大纲数据…")
+
+        # ── 保存总大纲 ────────────────────────────────────────────────────────
+        total_outline = data["total_outline"]
+        self.memory.global_mem.save_outline({
+            "novel_id": self.novel_id,
+            **total_outline,
+            "total_chapters": total_chapters,
+        })
+
+        # ── 保存世界观 ────────────────────────────────────────────────────────
+        if data.get("world_setting"):
+            self.memory.global_mem.save_world_setting(data["world_setting"])
+
+        # ── 保存卷纲 ──────────────────────────────────────────────────────────
+        for vol in data.get("volumes", []):
+            self.memory.global_mem.save_volume(vol)
+
+        # ── 保存章纲 ──────────────────────────────────────────────────────────
+        for ch_data in data.get("chapters", []):
+            for list_field in [
+                "outline_characters",
+                "outline_foreshadowing_set",
+                "outline_foreshadowing_collect",
+            ]:
+                if list_field in ch_data and isinstance(ch_data[list_field], list):
+                    ch_data[list_field] = json.dumps(
+                        ch_data[list_field], ensure_ascii=False
+                    )
+            ch_data["novel_id"] = self.novel_id
+            ch_data["status"] = "outlined"
+            self.memory.global_mem.save_chapter_outline(ch_data)
+
+        # ── 同步伏笔库 ────────────────────────────────────────────────────────
+        synced = self.memory.global_mem.sync_foreshadowings_from_outlines()
+        if synced and progress_callback:
+            progress_callback(f"🔖 同步伏笔库：新增 {synced} 条伏笔记录")
+
+        # ── 保存人物档案（自动入库）──────────────────────────────────────────
+        characters = data.get("characters", [])
+        if characters:
+            if progress_callback:
+                progress_callback(f"👤 正在保存 {len(characters)} 个人物档案…")
+            for char_data in characters:
+                for json_field in ["abilities", "relationships", "aliases"]:
+                    if json_field in char_data and not isinstance(
+                        char_data[json_field], str
+                    ):
+                        char_data[json_field] = json.dumps(
+                            char_data[json_field], ensure_ascii=False
+                        )
+                char_data["novel_id"] = self.novel_id
+                self.memory.global_mem.save_character(char_data)
+
+        # ── 构建返回结果 ──────────────────────────────────────────────────────
+        chapters_count   = len(data.get("chapters", []))
+        completed        = data.get("completed_chapters", 0)
+        warnings         = data.get("warnings", [])
+        characters_count = len(characters)
+
+        if progress_callback:
+            progress_callback(
+                f"✅ 大纲生成完成！共 {chapters_count} 章章纲，{characters_count} 个人物档案"
+            )
+
+        msg = f"成功生成大纲：{chapters_count} 章详细章纲，{characters_count} 个人物档案"
+        if warnings:
+            msg += f"；⚠️ 已完整生成前 {completed} 章，{warnings[0].get('range', '')} 章纲生成失败，可在大纲管理页手动补全"
+
+        return WorkflowResult(
+            success=True,
+            message=msg,
+            data={
+                "chapters_count":     chapters_count,
+                "completed_chapters": completed,
+                "characters_count":   characters_count,
+                "warnings":           warnings,
+                "novel_title":        novel.title,
+                "volumes":            data.get("volumes", []),
+            },
+        )
 
     def generate_characters_from_outline(
         self, progress_callback: Callable = None

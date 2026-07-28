@@ -419,20 +419,33 @@ class OutlineAgent:
         genre: str = "",
         world_setting: str = "",
         total_chapters: int = 100,
+        creation_notes: str = "",
     ) -> dict:
         """
         从一句话灵感生成完整大纲
         返回结构化的大纲数据
+
+        creation_notes: 从灵感对话中提炼的具体创作细节（人物/世界观/情节/氛围），
+                        有则优先使用，避免 LLM 脑补填空导致偏离用户构想。
         """
         # 注入现有活跃伏笔调度信息（若有）
         active_fs = self.memory.global_mem.get_active_foreshadowings()
         fs_schedule_text = self._build_foreshadowing_schedule_prompt(active_fs)
         fs_prefix = f"{fs_schedule_text}\n\n" if fs_schedule_text else ""
 
+        # 创作备忘录：有内容时作为独立章节注入，引导 LLM 优先使用而非脑补
+        notes_section = ""
+        if creation_notes and creation_notes.strip():
+            notes_section = f"""
+**创作备忘录（用户在灵感对话中提到的具体构想，必须优先体现在大纲中）：**
+{creation_notes.strip()}
+
+"""
+
         user_prompt = f"""{fs_prefix}请根据以下灵感，为一部{total_chapters}章的{genre}小说生成完整大纲：
 
 **核心灵感：** {logline}
-
+{notes_section}
 **世界观提示：** {world_setting or "请自由发挥"}
 
 请生成以下结构的JSON数据：
@@ -3517,7 +3530,7 @@ class IdeaAgent:
     职责：通过多轮对话帮助用户将模糊灵感整理成结构化的小说方案
     - 每轮只问一个问题，自然引导
     - 用户自己决定何时进入下一步，随时可点击创建项目
-    - 支持从对话历史提取结构化项目配置
+    - 点击创建后，5 个 Sub-agent 三层并行生成完整大纲数据
     """
 
     SYSTEM_PROMPT = """你是一位亲切的资深小说编辑，正在和一位有创作灵感的作者聊天。
@@ -3534,23 +3547,116 @@ class IdeaAgent:
 4. 如果对方说得很笼统，帮他举例或追问细节
 5. 不需要每个信息都集齐，故事核心（梗概）+ 风格方向 + 大致篇幅 就够了"""
 
-    EXTRACT_PROMPT = """根据以下对话记录，提取小说项目的关键信息，输出JSON格式。
+    # ── Sub-agent 专用 prompt ──────────────────────────────────────────────────
 
-要求：
-- title：从对话中提炼一个简洁有力的标题，如果用户没提就根据故事自拟
-- logline：用一句话概括核心故事（主角+处境+目标/冲突），80字以内
-- genre：从以下选项中选最合适的一个：玄幻、修仙、都市、言情、悬疑、历史、科幻、末世、游戏、其他
-- writing_style：根据对话推断的风格偏好，例如"节奏明快，爽感优先"或"细腻写实，注重人物心理"，如无明显偏好则留空字符串
-- total_chapters：根据故事规模推断，短篇50-80章，中篇100-150章，长篇200章以上，默认100
+    _META_PROMPT = """根据以下对话记录，提取小说项目的基础信息，输出JSON格式。
 
 只输出JSON，不含其他文字：
 {
-  "title": "...",
-  "logline": "...",
-  "genre": "...",
-  "writing_style": "...",
+  "title": "从对话中提炼的简洁标题，没有就根据故事自拟",
+  "logline": "一句话概括核心故事（主角+处境+目标/冲突），80字以内",
+  "genre": "从以下选一个：玄幻、修仙、都市、言情、悬疑、历史、科幻、末世、游戏、其他",
+  "writing_style": "风格偏好，如'节奏明快，爽感优先'，无明显偏好则留空字符串",
   "total_chapters": 100
 }"""
+
+    _TOTAL_OUTLINE_PROMPT = """你是一位世界级的小说大纲策划师。根据以下灵感对话，生成小说的总大纲和世界观设定。
+
+要求：
+- 只生成总大纲和世界观，不生成章节列表
+- 优先使用用户在对话中明确提到的设定，不足之处再合理发挥
+- 忽略 AI 的引导语，只关注用户说的内容
+
+只输出JSON，不含其他文字：
+{
+  "premise": "前提设定（世界背景+主角起点）",
+  "theme": "核心主题（一句话）",
+  "main_conflict": "全书主要矛盾（主角 vs 什么）",
+  "story_structure": {
+    "act1": "第一幕：开端（约前20%）——发生什么，建立什么",
+    "act2": "第二幕：发展（约60%）——核心冲突如何升级",
+    "act3": "第三幕：高潮+结局（约20%）——如何解决，结局如何"
+  },
+  "protagonist_arc": "主角成长弧光（从什么到什么）",
+  "ending_summary": "结局概要（不超过100字）",
+  "world_setting": {
+    "基本规则": "世界运转的核心规则",
+    "特殊体系": "魔法/科技/武功/修炼等特殊体系",
+    "社会结构": "社会制度和权力结构",
+    "地理环境": "主要地点和地理特征"
+  }
+}"""
+
+    _VOLUMES_PROMPT = """你是一位小说结构规划师。根据以下总大纲，为这部小说规划卷纲。
+
+要求：
+- 按三幕结构合理划分卷，每卷 25-50 章
+- 每卷有独立的核心矛盾和阶段目标
+- start_chapter 和 end_chapter 必须连续且覆盖全部章节，不得有遗漏或重叠
+
+只输出JSON数组，不含其他文字：
+[
+  {
+    "volume_number": 1,
+    "title": "卷名",
+    "summary": "本卷简介（50字内）",
+    "main_conflict": "本卷核心矛盾",
+    "arc_goal": "本卷目标主题",
+    "start_chapter": 1,
+    "end_chapter": 30
+  }
+]"""
+
+    _CHARACTERS_PROMPT = """你是一位人物设定师。根据以下灵感对话和总大纲，生成主要人物档案。
+
+要求：
+- 优先使用对话中用户明确提到的人物信息
+- 生成主角、主要配角、反派，共 3-8 个人物
+- 人物设定要与总大纲的主要矛盾和主角弧光相符
+- 忽略 AI 的引导语，只提取用户说的内容
+
+只输出JSON数组，不含其他文字：
+[
+  {
+    "name": "人物名",
+    "role": "主角/配角/反派等",
+    "age": "年龄或年龄段",
+    "gender": "性别",
+    "personality": "性格特点（2-3个关键词+简短描述）",
+    "background": "背景经历（50字内）",
+    "abilities": {"核心能力": "描述", "特殊技能": "描述"},
+    "motivations": "核心动机（为什么做这件事）",
+    "growth_arc": "成长弧光（从什么到什么）",
+    "relationships": {"其他人物名": "关系描述"},
+    "is_main": true
+  }
+]"""
+
+    _CHAPTER_BATCH_PROMPT = """你是一位小说章纲规划师。根据总大纲、卷纲和灵感对话，为指定章节范围生成详细章纲。
+
+要求：
+- 每章必须包含所有字段，不得简略
+- 章节内容要符合本卷的核心矛盾和目标
+- 伏笔要合理布局，有埋有收
+- outline_characters 只填本章实际出场的人物名
+- 上一章结尾状态已提供，注意保持连续性
+
+只输出JSON数组，数组长度必须等于章节数，不含其他文字：
+[
+  {
+    "chapter_number": 1,
+    "volume_number": 1,
+    "title": "章节标题",
+    "outline_core_event": "本章最重要的事件（必填，不得为空）",
+    "outline_conflict": "主要冲突（内部冲突/外部冲突）",
+    "outline_characters": ["人物A", "人物B"],
+    "outline_scene": "场景描述（时间、地点、氛围）",
+    "outline_foreshadowing_set": ["埋下的伏笔（如有）"],
+    "outline_foreshadowing_collect": ["回收的伏笔（如有）"],
+    "outline_emotion": "情感基调",
+    "outline_ending": "本章结尾方式（悬念/温馨/震撼等）"
+  }
+]"""
 
     def __init__(self, model_id: str = None, temperature: float = None):
         self.temperature = temperature
@@ -3598,28 +3704,278 @@ class IdeaAgent:
             temperature=self.temperature,
         )
 
-    def extract_project_config(self, messages: list) -> dict:
+    # ── Sub-agent 私有方法（各司其职，失败有兜底）────────────────────────────
+
+    def _gen_meta(self, history_text: str) -> dict:
+        """Sub-agent A：提取 title/logline/genre/writing_style/total_chapters。
+        失败返回默认值，不上抛异常。"""
+        _default = {
+            "title": "未命名",
+            "logline": "",
+            "genre": "其他",
+            "writing_style": "",
+            "total_chapters": 100,
+        }
+        try:
+            response = self.llm.generate(
+                self._META_PROMPT,
+                f"【对话记录】\n{history_text}",
+                max_tokens=500,
+                cache_system=False,
+                temperature=self.temperature,
+            )
+            j0, j1 = response.find("{"), response.rfind("}") + 1
+            if j0 >= 0 and j1 > j0:
+                result = _safe_json_loads(response[j0:j1])
+                # 用默认值填补缺失字段
+                for k, v in _default.items():
+                    if not result.get(k):
+                        result[k] = v
+                return result
+        except Exception:
+            pass
+        return _default
+
+    def _gen_total_outline(
+        self, history_text: str, total_chapters: int, genre: str
+    ) -> dict:
+        """Sub-agent B：从对话生成 total_outline + world_setting。
+        这是关键步骤，失败直接抛异常。"""
+        context = (
+            f"【小说类型】{genre}，共约 {total_chapters} 章\n\n"
+            f"【灵感对话】\n{history_text}"
+        )
+        response = self.llm.generate(
+            self._TOTAL_OUTLINE_PROMPT,
+            context,
+            max_tokens=4000,
+            cache_system=False,
+            temperature=self.temperature,
+        )
+        j0, j1 = response.find("{"), response.rfind("}") + 1
+        if j0 >= 0 and j1 > j0:
+            return _safe_json_loads(response[j0:j1])
+        raise ValueError(f"总大纲生成失败：{response[:300]}")
+
+    def _gen_volumes(self, total_outline: dict, total_chapters: int) -> list:
+        """Sub-agent C：从 total_outline 生成 volumes。失败返回 []。"""
+        try:
+            outline_text = json.dumps(total_outline, ensure_ascii=False)
+            context = (
+                f"【总章节数】{total_chapters}\n\n"
+                f"【总大纲】\n{outline_text}"
+            )
+            response = self.llm.generate(
+                self._VOLUMES_PROMPT,
+                context,
+                max_tokens=2000,
+                cache_system=False,
+                temperature=self.temperature,
+            )
+            a0, a1 = response.find("["), response.rfind("]") + 1
+            if a0 >= 0 and a1 > a0:
+                result = _safe_json_loads(response[a0:a1])
+                if isinstance(result, list):
+                    return result
+        except Exception:
+            pass
+        return []
+
+    def _gen_characters(self, history_text: str, total_outline: dict) -> list:
+        """Sub-agent D：从对话 + total_outline 生成人物档案列表。失败返回 []。"""
+        try:
+            outline_text = json.dumps(total_outline, ensure_ascii=False)
+            context = (
+                f"【总大纲】\n{outline_text}\n\n"
+                f"【灵感对话】\n{history_text}"
+            )
+            response = self.llm.generate(
+                self._CHARACTERS_PROMPT,
+                context,
+                max_tokens=3000,
+                cache_system=False,
+                temperature=self.temperature,
+            )
+            a0, a1 = response.find("["), response.rfind("]") + 1
+            if a0 >= 0 and a1 > a0:
+                result = _safe_json_loads(response[a0:a1])
+                if isinstance(result, list):
+                    return result
+        except Exception:
+            pass
+        return []
+
+    def _gen_chapter_batch(
+        self,
+        start: int,
+        end: int,
+        total_outline: dict,
+        volumes: list,
+        history_text: str,
+        prev_ending: str = "",
+    ) -> list:
+        """Sub-agent E（分批）：生成第 start~end 章的章纲。失败返回 []。"""
+        try:
+            # 找到本批所属的卷信息
+            relevant_volumes = [
+                v for v in volumes
+                if v.get("start_chapter", 1) <= end
+                and v.get("end_chapter", end) >= start
+            ]
+            vol_text = json.dumps(relevant_volumes, ensure_ascii=False) if relevant_volumes else "（无卷纲）"
+            outline_summary = (
+                f"主题：{total_outline.get('theme', '')}\n"
+                f"主矛盾：{total_outline.get('main_conflict', '')}\n"
+                f"主角弧光：{total_outline.get('protagonist_arc', '')}\n"
+                f"结局方向：{total_outline.get('ending_summary', '')}"
+            )
+            prev_text = f"\n【上一章结尾状态】\n{prev_ending}" if prev_ending else ""
+            ch_count = end - start + 1
+            context = (
+                f"【章节范围】第 {start} 章到第 {end} 章（共 {ch_count} 章）\n\n"
+                f"【总大纲摘要】\n{outline_summary}\n\n"
+                f"【相关卷纲】\n{vol_text}"
+                f"{prev_text}\n\n"
+                f"【灵感对话（提取情节/人物/世界观细节）】\n{history_text[:3000]}"
+                f"{'…（已截断）' if len(history_text) > 3000 else ''}"
+            )
+            response = self.llm.generate(
+                self._CHAPTER_BATCH_PROMPT,
+                context,
+                max_tokens=8000,
+                cache_system=False,
+                temperature=self.temperature,
+            )
+            a0, a1 = response.find("["), response.rfind("]") + 1
+            if a0 >= 0 and a1 > a0:
+                result = _safe_json_loads(response[a0:a1])
+                if isinstance(result, list):
+                    return result
+        except Exception:
+            pass
+        return []
+
+    # ── 主入口 ────────────────────────────────────────────────────────────────
+
+    def generate_outline_data(
+        self,
+        messages: list,
+        total_chapters: int,
+        genre: str,
+        progress_callback=None,
+    ) -> dict:
         """
-        从对话历史中提取结构化项目配置
-        返回: {title, logline, genre, writing_style, total_chapters}
+        三层并行生成大纲数据。
+
+        第 1 层（并行）：Sub-agent A（meta） + Sub-agent B（总大纲）
+        第 2 层（并行，依赖总大纲）：Sub-agent C（卷纲） + Sub-agent D（人物）
+        第 3 层（分批串行，依赖卷纲）：Sub-agent E 每批 30 章生成章纲
+
+        返回:
+        {
+            "meta": {title, logline, genre, writing_style, total_chapters},
+            "total_outline": {...},
+            "world_setting": {...},
+            "volumes": [...],
+            "characters": [...],
+            "chapters": [...],
+            "completed_chapters": int,   # 实际完成的章纲数
+            "warnings": [],              # 章纲不完整时的警告信息
+        }
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         history_text = "\n".join(
             f"{'用户' if m['role'] == 'user' else 'AI'}：{m['content']}"
             for m in messages
         )
-        user_prompt = f"【对话记录】\n{history_text}"
-        response = self.llm.generate(
-            self.EXTRACT_PROMPT,
-            user_prompt,
-            max_tokens=1024,
-            cache_system=False,
-            temperature=self.temperature,
-        )
-        json_start = response.find("{")
-        json_end = response.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            return _safe_json_loads(response[json_start:json_end])
-        raise ValueError(f"项目配置提取失败：{response[:300]}")
+
+        # ── 第 1 层：meta + 总大纲（并行）────────────────────────────────────
+        if progress_callback:
+            progress_callback("📖 正在分析对话内容，生成总大纲和世界观…")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_meta          = executor.submit(self._gen_meta, history_text)
+            f_total_outline = executor.submit(
+                self._gen_total_outline, history_text, total_chapters, genre
+            )
+
+        meta          = f_meta.result()
+        total_outline = f_total_outline.result()  # 失败会抛异常，终止整个流程
+        world_setting = total_outline.pop("world_setting", {})
+
+        # ── 第 2 层：卷纲 + 人物（并行，依赖总大纲）─────────────────────────
+        if progress_callback:
+            progress_callback("📚 正在生成卷纲和人物档案…")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_volumes    = executor.submit(self._gen_volumes, total_outline, total_chapters)
+            f_characters = executor.submit(self._gen_characters, history_text, total_outline)
+
+        volumes    = f_volumes.result()
+        characters = f_characters.result()
+
+        # ── 第 3 层：章纲分批串行（依赖卷纲）────────────────────────────────
+        _BATCH_SIZE = 30
+        chapters   = []
+        completed  = 0
+        warnings   = []
+
+        batch_starts = list(range(1, total_chapters + 1, _BATCH_SIZE))
+        total_batches = len(batch_starts)
+
+        for i, batch_start in enumerate(batch_starts):
+            batch_end  = min(batch_start + _BATCH_SIZE - 1, total_chapters)
+            if progress_callback:
+                progress_callback(
+                    f"📝 正在生成第 {batch_start}-{batch_end} 章章纲… ({i + 1}/{total_batches})"
+                )
+            prev_ending = chapters[-1].get("outline_ending", "") if chapters else ""
+            batch = self._gen_chapter_batch(
+                batch_start, batch_end,
+                total_outline, volumes,
+                history_text, prev_ending,
+            )
+            if batch:
+                chapters.extend(batch)
+                completed = batch_end
+            else:
+                # 从 volumes 里找到失败章节所属的卷，提取摘要供用户补全时参考
+                failed_vols = [
+                    v for v in volumes
+                    if v.get("start_chapter", 1) <= total_chapters
+                    and v.get("end_chapter", total_chapters) >= batch_start
+                ]
+                vol_hints = []
+                for v in failed_vols:
+                    parts = []
+                    if v.get("summary"):
+                        parts.append(v["summary"])
+                    if v.get("arc_goal"):
+                        parts.append(f"目标：{v['arc_goal']}")
+                    if v.get("main_conflict"):
+                        parts.append(f"核心矛盾：{v['main_conflict']}")
+                    if parts:
+                        vol_hints.append(
+                            f"第{v.get('volume_number','')}卷《{v.get('title','')}》"
+                            f"（第{v.get('start_chapter','')}‑{v.get('end_chapter','')}章）：{'，'.join(parts)}"
+                        )
+                warnings.append({
+                    "range": f"第 {batch_start}-{total_chapters} 章",
+                    "hint": "\n".join(vol_hints),
+                })
+                break
+
+        return {
+            "meta":               meta,
+            "total_outline":      total_outline,
+            "world_setting":      world_setting,
+            "volumes":            volumes,
+            "characters":         characters,
+            "chapters":           chapters,
+            "completed_chapters": completed,
+            "warnings":           warnings,
+        }
 
 
 # ======================================

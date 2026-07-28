@@ -53,6 +53,11 @@ CHUNK_SIZE = 500
 # Embedding 模型（用于向量化章节内容，需支持中文）
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 
+# HuggingFace 网络配置
+# 模型已在本地缓存（~/.cache/huggingface/hub/），默认启用离线模式避免每次启动联网检查
+# 如需更新模型，在 .env 中设置 HF_HUB_OFFLINE=0
+os.environ.setdefault("HF_HUB_OFFLINE", os.getenv("HF_HUB_OFFLINE", "1"))
+
 # ======================================
 # 写作配置
 # ======================================

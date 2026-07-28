@@ -425,27 +425,16 @@ def page_project_management():
                 col_btn, col_clear = st.columns([3, 1])
                 with col_btn:
                     if st.button("✅ 整理完了，创建项目并生成大纲", type="primary", width="stretch"):
-                        with st.spinner("正在从对话中提取项目信息…"):
-                            try:
-                                agent = IdeaAgent(model_id=chat_model_id)
-                                config = agent.extract_project_config(history)
-                            except Exception as e:
-                                st.error(f"信息提取失败：{e}")
-                                st.stop()
-
-                        title = config.get("title", "未命名").strip() or "未命名"
-                        logline = config.get("logline", "").strip()
-                        genre = config.get("genre", "其他")
-                        writing_style = config.get("writing_style", "")
-                        total_chapters = int(config.get("total_chapters", 100))
-
-                        st.info(f"**标题**：{title}  |  **类型**：{genre}  |  **章节**：{total_chapters} 章\n\n**梗概**：{logline}")
-
+                        # 1. 用占位信息创建项目，拿到 novel_id
+                        #    真实 title/logline/genre 由 Sub-agent 提取后在 workflow 内部更新
                         with st.spinner("正在创建项目…"):
                             try:
                                 workflow = create_new_novel(
-                                    title, logline, genre, writing_style,
-                                    llm_model=chat_model_id
+                                    title="创建中…",
+                                    logline="",
+                                    genre="其他",
+                                    writing_style="",
+                                    llm_model=chat_model_id,
                                 )
                                 st.session_state.novel_id = workflow.novel_id
 
@@ -468,28 +457,47 @@ def page_project_management():
                                     "role": "owner",
                                 }
                                 db.close()
-
-                                progress_placeholder = st.empty()
-                                def progress_cb(msg):
-                                    progress_placeholder.info(msg)
-
-                                result = workflow.generate_outline(
-                                    total_chapters=total_chapters,
-                                    progress_callback=progress_cb
-                                )
-                                workflow.close()
-                                progress_placeholder.empty()
-
-                                if result.success:
-                                    # 清空对话历史
-                                    st.session_state.idea_chat_history = []
-                                    st.success(f"✅ 项目「{title}」创建成功！")
-                                    st.session_state.page = "大纲管理"
-                                    st.rerun()
-                                else:
-                                    st.error(f"大纲生成失败：{result.message}")
                             except Exception as e:
                                 st.error(f"创建失败：{e}")
+                                st.stop()
+
+                        # 2. 三层并行生成大纲（全程进度提示）
+                        progress_placeholder = st.empty()
+                        def progress_cb(msg):
+                            progress_placeholder.info(msg)
+
+                        try:
+                            result = workflow.generate_outline_from_idea(
+                                messages=history,
+                                total_chapters=100,  # Sub-agent 会从对话中推断并更新
+                                progress_callback=progress_cb,
+                            )
+                        except Exception as e:
+                            st.error(f"大纲生成失败：{e}")
+                            st.stop()
+                        finally:
+                            workflow.close()
+                            progress_placeholder.empty()
+
+                        if result.success:
+                            # 清空对话历史
+                            st.session_state.idea_chat_history = []
+                            novel_title = result.data.get("novel_title", "新项目")
+                            st.success(f"✅ 项目「{novel_title}」创建成功！")
+                            # 章纲不完整时提示用户，并附上对应卷纲摘要
+                            for w in result.data.get("warnings", []):
+                                st.warning(
+                                    f"⚠️ {w.get('range', '')} 章纲生成失败，"
+                                    f"可在大纲管理页「AI 批量生成章纲」手动补全。"
+                                )
+                                if w.get("hint"):
+                                    st.info(
+                                        f"💡 填写剧情描述时可参考以下卷纲摘要：\n\n{w['hint']}"
+                                    )
+                            st.session_state.page = "大纲管理"
+                            st.rerun()
+                        else:
+                            st.error(f"大纲生成失败：{result.message}")
                 with col_clear:
                     if st.button("🗑️ 重新开始", width="stretch"):
                         st.session_state.idea_chat_history = []
